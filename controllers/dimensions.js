@@ -51,11 +51,29 @@ dimensionController.getDimensionsPagination = async (req, res) => {
 dimensionController.getDimensionsByResponsible = async (req, res) => {
   const email = req.query.email;
   try {
-    const dimensions = await Dimension.find().populate({
-      path: 'responsible',
-      match: { responsible: email }
-    });
-      res.status(200).json(dimensions);
+    const User = require('../models/users');
+    
+    // Buscar el usuario
+    const user = await User.findOne({ email, isActive: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Buscar las dependencias donde el usuario es el líder (responsible)
+    const leaderDependencies = await Dependency.find({ responsible: email });
+    
+    if (leaderDependencies.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    const dependencyIds = leaderDependencies.map(dep => dep._id);
+
+    // Buscar dimensiones donde las dependencias del líder son responsables
+    const dimensions = await Dimension.find({
+      responsible: { $in: dependencyIds }
+    }).populate('responsible');
+
+    res.status(200).json(dimensions);
   } catch (error) {
     console.error('Error fetching dimensions by responsible:', error);
     res.status(500).json({ error: 'Internal Server Error' });

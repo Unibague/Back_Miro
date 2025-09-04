@@ -120,12 +120,13 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
 }
 
 
-static async findPublishedReportsProducer(user, _, __, search = "", periodId, session) {
+static async findPublishedReportsProducer(user, _, __, search = "", periodId, dimensionId, session) {
 
   
   const query = {
     ...(search && { "report.name": { $regex: search, $options: "i" } }),
     ...(periodId && { period: periodId }),
+    ...(dimensionId && { "report.dimensions": dimensionId }),
   };
   
   console.log('Query:', JSON.stringify(query));
