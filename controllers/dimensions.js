@@ -68,7 +68,7 @@ dimensionController.getDimensionsByResponsible = async (req, res) => {
 
     const dependencyIds = leaderDependencies.map(dep => dep._id);
 
-    // Buscar dimensiones donde las dependencias del líder son responsables
+    // Buscar dimensiones donde las dependencias del lídr son responsables
     const dimensions = await Dimension.find({
       responsible: { $in: dependencyIds }
     }).populate('responsible');
