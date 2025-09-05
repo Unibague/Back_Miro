@@ -67,7 +67,7 @@ dependencyController.getTemplates = async (req, res) => {
 
     return res.status(200).json(templates);
   } catch (err) {
-    console.error("Error fetching templates:", err.message);
+    console.error("Errores fetching templates:", err.message);
     return res.status(500).json({ error: err.message });
   }
 };
