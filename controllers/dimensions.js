@@ -59,8 +59,10 @@ dimensionController.getDimensionsByResponsible = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Buscar las dependencias donde el usuario es el líder (responsible)
-    const leaderDependencies = await Dependency.find({ responsible: email });
+    // Buscar las dependencias donde el usuario es visualizer
+    const leaderDependencies = await Dependency.find({ 
+      visualizers: { $in: [email] }
+    });
     
     if (leaderDependencies.length === 0) {
       return res.status(200).json([]);

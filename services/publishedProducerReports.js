@@ -58,23 +58,24 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
   let reports;
 
   if (user.activeRole === "Responsable") {
-    // Traemos todos, no aplicamos paginación aquí
+    // Traemos todos los reportes
     reports = await PubReport.find(query)
       .populate({
         path: 'report.dimensions',
         model: 'dimensions',
         populate: {
           path: 'responsible',
-          model: 'dependencies',
-          match: { responsible: user.email }
+          model: 'dependencies'
         }
       })
       .populate('period')
       .session(session);
 
-    // Filtramos por dimensión responsable
+    // Filtramos por dimensiones donde el usuario es visualizer
     reports = reports.filter(report =>
-      report.report.dimensions.some(d => d.responsible !== null)
+      report.report.dimensions.some(d => 
+        d.responsible && d.responsible.visualizers && d.responsible.visualizers.includes(user.email)
+      )
     );
   } else {
     // Administrador: solo los necesarioss

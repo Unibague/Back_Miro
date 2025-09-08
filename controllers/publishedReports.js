@@ -216,7 +216,7 @@ pubReportController.getPublishedReportsResponsible = async (req, res) => {
         model: "dimensions",
         populate: {
           path: "responsible",
-          match: { responsible: email },
+          match: { visualizers: { $in: [email] } },
           select: "name email",
           model: "dependencies",
         },
@@ -226,7 +226,7 @@ pubReportController.getPublishedReportsResponsible = async (req, res) => {
         select: "name responsible",
         populate: {
           path: "responsible",
-          match: { responsible: email },
+          match: { visualizers: { $in: [email] } },
           select: "name email",
           model: "dependencies",
         },
