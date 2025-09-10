@@ -58,7 +58,7 @@ dependencyController.getTemplates = async (req, res) => {
 
     const dependency = await Dependency.findById(id, "dep_code");
     if (!dependency) {
-      return res.status(404).json({ error: "Dependency not found" });
+      return res.status(404).json({ error: "Dependency not foun" });
     }
 
     console.log("Obteniendo plantillas con:", { dependencyCode: dependency.dep_code, periodId });
@@ -67,7 +67,7 @@ dependencyController.getTemplates = async (req, res) => {
 
     return res.status(200).json(templates);
   } catch (err) {
-    console.error("Error fetching templates:", err.message);
+    console.error("Errores fetching templates:", err.message);
     return res.status(500).json({ error: err.message });
   }
 };
@@ -113,22 +113,19 @@ dependencyController.getDependency = async (req, res) => {
 
 dependencyController.getDependencyByResponsible = async (req, res) => {
   const email = req.query.email;
-  console.log("Fetching dependency for responsible:", email);
+  console.log("Fetching dependency for visualizer:", email);
   try {
     const dependency = await Dependency.findOne({ 
-      $or: [
-        { responsible: email },          // Match responsible field
-        { visualizers: email }           // Match inside visualizers array
-      ]
+      visualizers: { $in: [email] }
      });
     if (!dependency) {
-      console.log(`No dependency found for responsible: ${email}`);
+      console.log(`No dependency found for visualizer: ${email}`);
       return res.status(404).json({ status: "Dependency not found" });
     }
     console.log("Found dependency:", dependency);
     res.status(200).json(dependency);
   } catch (error) {
-    console.error("Error fetching dependency by responsible:", error);
+    console.error("Error fetching dependency by visualizer:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 };
@@ -380,7 +377,7 @@ dependencyController.getChildrenDependenciesPublishedTemplates = async (req,res)
       return res.status(404).json({ status: "User not found" });
     }
 
-    const fatherDependency = await Dependency.findOne({ responsible: email });
+    const fatherDependency = await Dependency.findOne({ visualizers: { $in: [email] } });
 
     console.log(fatherDependency)
 
@@ -470,7 +467,7 @@ dependencyController.getDependencyHierarchy = async (req, res) => {
       return res.status(404).json({ status: "Usuario no encontrado" });
     }
 
-    const fatherDependency = await Dependency.findOne({ visualizers : {$in: [email]} });
+    const fatherDependency = await Dependency.findOne({ visualizers: { $in: [email] } });
 
     if (!fatherDependency) {
     return res.status(404).json({ message: "User is not authorized to view any dependency..." });  

@@ -216,7 +216,7 @@ pubReportController.getPublishedReportsResponsible = async (req, res) => {
         model: "dimensions",
         populate: {
           path: "responsible",
-          match: { responsible: email },
+          match: { visualizers: { $in: [email] } },
           select: "name email",
           model: "dependencies",
         },
@@ -226,7 +226,7 @@ pubReportController.getPublishedReportsResponsible = async (req, res) => {
         select: "name responsible",
         populate: {
           path: "responsible",
-          match: { responsible: email },
+          match: { visualizers: { $in: [email] } },
           select: "name email",
           model: "dependencies",
         },
@@ -467,6 +467,15 @@ pubReportController.loadResponsibleReportDraft = async (req, res) => {
     let { email, publishedReportId, newAttachmentsDescriptions, dimension } = req.body;
  
     console.log(req.body);
+    console.log(dimension);
+    
+    // Filtrar valores vacíos del array dimension
+    if (Array.isArray(dimension)) {
+      dimension = dimension.filter(d => d && d.trim() !== '');
+      dimension = dimension.length > 0 ? dimension[0] : null;
+    }
+    
+    console.log('Filtered dimension:', dimension);
 
 
     if (!Array.isArray(newAttachmentsDescriptions)) {

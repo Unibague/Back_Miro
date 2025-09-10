@@ -12,26 +12,55 @@ dimensionController.getDimensionsPagination = async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
+  const email = req.query.email;
   const skip = (page - 1) * limit;
 
   try {
-    const query = search
-      ? {
-        $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { responsible: { $regex: search, $options: 'i' } }, // Asegúrate de que coincide con el modelo
-          { producers: { $regex: search, $options: 'i' } }
-        ]
+    let query = {};
+    
+    // Si hay email, filtrar por dimensiones donde el usuario es visualizer
+    if (email) {
+      const User = require('../models/users');
+      
+      // Buscar el usuario
+      const user = await User.findOne({ email, isActive: true });
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
       }
-      : {};
+
+      // Si es administrador, mostrar todas las dimensiones
+      if (user.activeRole === 'Administrador') {
+        // No agregar filtro, mostrar todas
+      } else {
+        // Buscar las dependencias donde el usuario es visualizer
+        const leaderDependencies = await Dependency.find({ 
+          visualizers: { $in: [email] }
+        });
+        
+        if (leaderDependencies.length === 0) {
+          return res.status(200).json({
+            dimensions: [],
+            total: 0,
+            page,
+            pages: 0
+          });
+        }
+
+        const dependencyIds = leaderDependencies.map(dep => dep._id);
+        
+        // Filtrar dimensiones por dependencias del usuario
+        query.responsible = { $in: dependencyIds };
+      }
+    }
+    
+    // Agregar filtro de búsqueda si existe
+    if (search) {
+      query.name = { $regex: search, $options: 'i' };
+    }
+    
     const dimensions = await Dimension
       .find(query)
-      .populate({
-        path: 'responsible',
-        populate: {
-          path: 'responsible',
-        },
-      })
+      .populate('responsible')
       .skip(skip)
       .limit(limit);
     const total = await Dimension.countDocuments(query);
@@ -51,11 +80,31 @@ dimensionController.getDimensionsPagination = async (req, res) => {
 dimensionController.getDimensionsByResponsible = async (req, res) => {
   const email = req.query.email;
   try {
-    const dimensions = await Dimension.find().populate({
-      path: 'responsible',
-      match: { responsible: email }
+    const User = require('../models/users');
+    
+    // Buscar el usuario
+    const user = await User.findOne({ email, isActive: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Buscar las dependencias donde el usuario es visualizer
+    const leaderDependencies = await Dependency.find({ 
+      visualizers: { $in: [email] }
     });
-      res.status(200).json(dimensions);
+    
+    if (leaderDependencies.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    const dependencyIds = leaderDependencies.map(dep => dep._id);
+
+    // Buscar dimensiones donde las dependencias del líder son responsables
+    const dimensions = await Dimension.find({
+      responsible: { $in: dependencyIds }
+    }).populate('responsible');
+
+    res.status(200).json(dimensions);
   } catch (error) {
     console.error('Error fetching dimensions by responsible:', error);
     res.status(500).json({ error: 'Internal Server Error' });

@@ -139,7 +139,33 @@ templateController.getPlantillasByCreator = async (req, res) => {
   const skip = (page - 1) * limit;
 
   try {
-    const dimensions = await Dimension.find({ responsible: email });
+    console.log('=== DEBUG getPlantillasByCreator ===');
+    console.log('Email:', email);
+    
+    // Obtener usuario con dependencias adicionales
+    const user = await User.findOne({ email }).select('dep_code additional_dependencies');
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+    
+    console.log('User dep_code:', user.dep_code);
+    console.log('User additional_dependencies:', user.additional_dependencies);
+
+    // Crear array con todas las dependencias del usuario
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    console.log('All user dependencies:', allUserDependencies);
+    
+    // Obtener IDs de las dependencias
+    const dependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } }).select('_id dep_code name');
+    console.log('Found dependencies:', dependencies);
+    const dependencyIds = dependencies.map(dep => dep._id);
+    console.log('Dependency IDs:', dependencyIds);
+    
+    // Buscar dimensiones donde las dependencias del usuario son responsables
+    const dimensions = await Dimension.find({
+      responsible: { $in: dependencyIds }
+    });
+    console.log('Found dimensions:', dimensions);
 
     const query = {
       dimension: { $in: dimensions.map((dimension) => dimension._id) },
@@ -149,7 +175,10 @@ templateController.getPlantillasByCreator = async (req, res) => {
         { file_description: { $regex: search, $options: "i" } },
       ],
     };
+    console.log('Template query:', JSON.stringify(query, null, 2));
+    
     const templates = await Template.find(query).skip(skip).limit(limit);
+    console.log('Found templates count:', templates.length);
     const total = await Template.countDocuments(query);
 
     const templatesWithValidators = await Promise.all(
