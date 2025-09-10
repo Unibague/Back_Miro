@@ -8,6 +8,8 @@ router.get("/allPagination", controller.getUsersPagination);
 
 router.get("/roles", controller.getUserRoles);
 
+router.get("/available-roles", controller.getAvailableRoles);
+
 router.get("/responsibles", controller.getResponsibles);
 
 router.get("/producers", controller.getProducers);

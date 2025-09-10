@@ -58,7 +58,7 @@ dependencyController.getTemplates = async (req, res) => {
 
     const dependency = await Dependency.findById(id, "dep_code");
     if (!dependency) {
-      return res.status(404).json({ error: "Dependency not found" });
+      return res.status(404).json({ error: "Dependency not foun" });
     }
 
     console.log("Obteniendo plantillas con:", { dependencyCode: dependency.dep_code, periodId });

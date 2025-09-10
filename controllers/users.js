@@ -448,6 +448,15 @@ userController.migrateUserDependecy = async (req, res) => {
   }
 }
 
+// Obtener todos los roles disponibles
+userController.getAvailableRoles = async (req, res) => {
+    try {
+        res.status(200).json({ roles });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
 const validateRoles = (userRoles) => {
     return userRoles.every(role => roles.includes(role));
 }
