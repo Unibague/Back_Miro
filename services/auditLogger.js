@@ -42,8 +42,8 @@ class AuditLogger {
             user_name: user.full_name,
             action: 'UPDATE',
             entity_type: entityType,
-            entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || 'Unknown',
-            entity_id: details.templateId || details.reportId || details.dimensionId || details.validatorId || details.sectionId || 'Unknown',
+            entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || details.userEmail || 'Usuario A/I',
+            entity_id: details.templateId || details.reportId || details.dimensionId || details.validatorId || details.sectionId || details.userId || 'Unknown',
             details: JSON.stringify(details),
             ip_address: req?.ip,
             user_agent: req?.get('User-Agent')

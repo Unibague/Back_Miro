@@ -5,7 +5,7 @@ const auditController = {};
 auditController.getLogs = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 20;
+        const limit = parseInt(req.query.limit) || 15; // 15 registros por página
         const entityType = req.query.entityType;
         const search = req.query.search || '';
         const skip = (page - 1) * limit;
@@ -26,6 +26,10 @@ auditController.getLogs = async (req, res) => {
             ];
         }
 
+        // Debug: Log total de registros
+        const totalLogs = await AuditLog.countDocuments(query);
+        console.log(`Total audit logs in DB: ${totalLogs}, Page: ${page}, Limit: ${limit}`);
+
         // Obtener logs con paginación
         const logs = await AuditLog.find(query)
             .sort({ timestamp: -1 })
@@ -33,14 +37,15 @@ auditController.getLogs = async (req, res) => {
             .limit(limit)
             .lean();
 
-        const totalLogs = await AuditLog.countDocuments(query);
         const totalPages = Math.ceil(totalLogs / limit);
 
         res.status(200).json({
             logs,
             totalPages,
             currentPage: page,
-            totalLogs
+            totalLogs,
+            hasNextPage: page < totalPages,
+            hasPrevPage: page > 1
         });
     } catch (error) {
         console.error('Error fetching audit logs:', error);
