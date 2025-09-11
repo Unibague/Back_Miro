@@ -7,7 +7,9 @@ const requireAdmin = async (req, res, next) => {
         const email = req.headers['user-email'] || 
                      req.headers['x-user-email'] ||
                      req.query.adminEmail ||
-                     req.body.adminEmail;
+                     req.body.adminEmail ||
+                     req.query.email ||  // Para casos donde el email viene en query
+                     req.body.email;     // Para casos donde el email viene en body
         
         if (!email) {
             console.log('Headers disponibles:', req.headers);
