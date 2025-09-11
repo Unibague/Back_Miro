@@ -40,7 +40,7 @@ dependencyController.getReports = async (req, res) => {
 
     return res.status(200).json(reports);
   } catch (err) {
-    console.error("Error fetching reports:", err.message);
+    console.error("Error feetching reports:", err.message);
     return res.status(500).json({ error: err.message });
   }
 };
