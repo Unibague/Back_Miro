@@ -129,25 +129,28 @@ dimensionController.createDimension = async (req, res) => {
 
     await dimension.save();
     
-    // Registrar en auditoría
+    // Registrar en auditoría (non-blocking)
     try {
       const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
+      console.log('🔍 Attempting audit log for dimension creation, userEmail:', userEmail);
       if (userEmail) {
         const user = await User.findOne({ email: userEmail });
+        console.log('🔍 User found for audit:', user ? 'YES' : 'NO');
         if (user) {
           const dependency = await Dependency.findById(dimension.responsible);
-          await AuditLogger.logCreate(
-            user,
-            'DIMENSION',
-            dimension.name,
-            dimension._id.toString(),
-            `Creó el ámbito "${dimension.name}" asignado a ${dependency?.name || 'dependencia desconocida'}`,
-            req
-          );
+          console.log('🔍 Dependency found:', dependency?.name);
+          await AuditLogger.logCreate(req, user, 'dimension', {
+            dimensionId: dimension._id.toString(),
+            dimensionName: dimension.name,
+            responsibleDependency: dependency?.name || 'dependencia desconocida'
+          });
+          console.log('✅ Audit log created successfully for dimension');
         }
+      } else {
+        console.log('⚠️ No userEmail found for audit logging');
       }
     } catch (auditError) {
-      console.error('Error logging audit:', auditError);
+      console.error('❌ Audit logging failed:', auditError);
     }
     
     res.status(200).json({ status: "Dimension created" });
@@ -193,24 +196,26 @@ dimensionController.deleteDimension = async (req, res) => {
     
     await Dimension.findByIdAndDelete(id);
     
-    // Registrar en auditoría
+    // Registrar en auditoría (non-blocking)
     try {
       const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
+      console.log('🔍 Attempting audit log for dimension deletion, userEmail:', userEmail);
       if (userEmail) {
         const user = await User.findOne({ email: userEmail });
+        console.log('🔍 User found for audit:', user ? 'YES' : 'NO');
         if (user) {
-          await AuditLogger.logDelete(
-            user,
-            'DIMENSION',
-            dimensionName,
-            id,
-            `Eliminó el ámbito "${dimensionName}" que estaba asignado a ${dependencyName}`,
-            req
-          );
+          await AuditLogger.logDelete(req, user, 'dimension', {
+            dimensionId: id,
+            dimensionName: dimensionName,
+            responsibleDependency: dependencyName
+          });
+          console.log('✅ Audit log created successfully for dimension deletion');
         }
+      } else {
+        console.log('⚠️ No userEmail found for audit logging');
       }
     } catch (auditError) {
-      console.error('Error logging audit:', auditError);
+      console.error('❌ Audit logging failed:', auditError);
     }
     
     res.status(200).json({ status: "Dimension deleted" });
