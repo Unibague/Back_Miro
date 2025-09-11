@@ -7,6 +7,7 @@ const User = require("../models/users");
 const Period = require("../models/periods");
 const PubReport = require("../models/publishedReports");
 const UserService = require("../services/users");
+const AuditLogger = require('../services/auditLogger');
 
 const datetime_now = () => {
   const now = new Date();
@@ -147,6 +148,20 @@ reportController.createReport = async (req, res) => {
     // Guarda los cambios en el informe, también dentro de la transacción
     await newReport.save({ session });
 
+    // Registrar en auditoría
+    try {
+      await AuditLogger.logCreate(
+        user,
+        'REPORT',
+        newReport.name,
+        newReport._id.toString(),
+        `Creó el informe de ámbito "${newReport.name}" (${newReport.file_name})`,
+        req
+      );
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
+
     // Confirma la transacción solo si todo fue exitoso
     await session.commitTransaction();
     session.endSession();
@@ -244,6 +259,23 @@ reportController.updateReport = async (req, res) => {
       pubReport.report = report;
       await pubReport.save({ session });
     }
+    
+    // Registrar en auditoría
+    try {
+      const user = await User.findOne({ email });
+      if (user) {
+        await AuditLogger.logUpdate(
+          user,
+          'REPORT',
+          report.name,
+          id,
+          `Actualizó el informe de ámbito "${report.name}" (${report.file_name})`,
+          req
+        );
+      }
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
 
     await session.commitTransaction();
     res.status(200).json({ status: "Report updated successfully" });
@@ -264,13 +296,37 @@ reportController.deleteReport = async (req, res) => {
 
   try {
     const { id } = req.params;
+    const { email } = req.query;
     const nowDate = datetime_now().toDateString();
     const pubReportsToDelete = []
 
-    // Buscar el informe
-    const report = await Report.findByIdAndDelete(id);
+    // Buscar el informe antes de eliminarlo
+    const report = await Report.findById(id);
     if (!report) {
       return res.status(404).json({ status: "Report not found" });
+    }
+    
+    const reportName = report.name;
+    const reportFileName = report.file_name;
+    
+    await Report.findByIdAndDelete(id);
+    
+    // Registrar en auditoría
+    try {
+      const userEmail = email || 'practicantes.g3@unibague.edu.co'; // Temporal
+      const user = await User.findOne({ email: userEmail });
+      if (user) {
+        await AuditLogger.logDelete(
+          user,
+          'REPORT',
+          reportName,
+          id,
+          `Eliminó el informe de ámbito "${reportName}" (${reportFileName})`,
+          req
+        );
+      }
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
     }
 
     res.status(200).json({ status: "Report deleted" });

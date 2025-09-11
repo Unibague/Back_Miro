@@ -1,8 +1,7 @@
 const express = require('express')
-
 const router = express.Router()
-
 const controller = require('../controllers/dependencies.js')
+const { requireAdmin, requireReadAccess } = require('../middleware/auth')
 
 router.get("/all", controller.getDependencies)
 
@@ -22,11 +21,13 @@ router.get("/", controller.getDependency)
 
 router.post("/updateAll", controller.loadDependencies)
 
-router.put("/setResponsible", controller.setResponsible)
+// Rutas de escritura (solo para administradores)
+router.put("/setResponsible", requireAdmin, controller.setResponsible)
+router.put("/:id", requireAdmin, controller.updateDependency)
+router.put("/:id/visualizers", requireAdmin, controller.updateVisualizers)
 
+// Rutas de lectura (disponibles para líderes y administradores)
 router.get("/:dep_code/members", controller.getMembers)
-
-router.put("/:id", controller.updateDependency)
 
 router.get("/members", controller.getMembersWithFather)
 
@@ -36,7 +37,7 @@ router.get("/:email/hierarchy", controller.getDependencyHierarchy)
 
 router.get("/:id/visualizers", controller.getVisualizers);
 
-router.put("/:id/visualizers", controller.updateVisualizers);
+
 
 
 

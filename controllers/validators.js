@@ -3,6 +3,7 @@ const User = require('../models/users')
 const Validator = require('../models/validators');
 const Student = require('../models/students');
 const { all } = require('../routes/users');
+const auditLogger = require('../services/auditLogger');
 
 const validatorController = {}
 
@@ -83,8 +84,20 @@ validatorController.createValidator = async (req, res) => {
             return res.status(400).json({ status: "Columns name cannot contain '-' character" });
         }
 
+        const user = await User.findOne({ email: req.body.email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+
         const validator = new Validator(req.body);
         await validator.save();
+        
+        // Audit log
+        await auditLogger.logCreate(req, user, 'validator', {
+            validatorId: validator._id,
+            validatorName: req.body.name
+        });
+        
         res.status(200).json({ status: "Validator created" });
 
     } catch (error) {
@@ -115,7 +128,13 @@ validatorController.updateName = async (req, res) => {
 
 validatorController.updateValidator = async (req, res) => {
     try {
-        const { id } = req.body;
+        const { id, email } = req.body;
+        
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
         const validator = await Validator.findById(id);
         if (!validator) {
             return res.status(404).json({ status: "Validator not found" })
@@ -126,7 +145,14 @@ validatorController.updateValidator = async (req, res) => {
             });
         }
         validator.set(req.body)
-        await validator.save()      
+        await validator.save()
+        
+        // Audit log
+        await auditLogger.logUpdate(req, user, 'validator', {
+            validatorId: id,
+            validatorName: validator.name
+        });
+        
         res.status(200).json({ status: "Validator updated" })
     }
     catch (error) {
@@ -255,8 +281,26 @@ validatorController.getValidatorsWithPagination = async (req, res) => {
 
 validatorController.deleteValidator = async (req, res) => {
     try {
-        const { id } = req.body;
+        const { id, email } = req.body;
+        
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
+        const validator = await Validator.findById(id);
+        if (!validator) {
+            return res.status(404).json({ status: "Validator not found" });
+        }
+        
         await Validator.findByIdAndDelete(id);
+        
+        // Audit log
+        await auditLogger.logDelete(req, user, 'validator', {
+            validatorId: id,
+            validatorName: validator.name
+        });
+        
         res.status(200).json({ status: "Validator deleted" });
     } catch (error) {
         res.status(500).json({ error: error.message });

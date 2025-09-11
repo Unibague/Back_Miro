@@ -6,6 +6,7 @@ const dependencyController = require('./dependencies.js');
 const { default: mongoose } = require('mongoose');
 const periodController = require('./periods.js');
 const PendingUserChanges = require('../models/pendingUserChanges');
+const auditLogger = require('../services/auditLogger');
 
 const userController = {}
 
@@ -315,10 +316,18 @@ userController.getProducers = async (req, res) => {
   userController.updateUserRoles = async (req, res) => {
     const email = req.body.email;
     const roles = Array.from(req.body.roles);
+    const adminEmail = req.body.adminEmail;
+    
     try {
         if(!validateRoles(roles)) {
             throw new Error("Invalid roles");
         }
+        
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+        
         const user = await User.findOneAndUpdate(
             { email },
             { roles },
@@ -327,6 +336,14 @@ userController.getProducers = async (req, res) => {
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
+        
+        // Audit log
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            userId: user._id,
+            userEmail: email,
+            newRoles: roles
+        });
+        
         res.status(200).json({ user });
     } catch (error){
         res.status(500).json({ error: error.message });
@@ -387,9 +404,14 @@ userController.updateUserActiveRole = async (req, res) => {
 };
 
 userController.updateUserStatus = async (req, res) => {
-    const { userId, isActive } = req.body;
+    const { userId, isActive, adminEmail } = req.body;
 
     try {
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+        
         const user = await User.findByIdAndUpdate(
             userId,
             { isActive },
@@ -398,6 +420,14 @@ userController.updateUserStatus = async (req, res) => {
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
+        
+        // Audit log
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            userId: user._id,
+            userEmail: user.email,
+            statusChange: isActive ? 'activated' : 'deactivated'
+        });
+        
         res.status(200).json({ user });
     } catch (error) {
         res.status(500).json({ error: error.message });

@@ -1,5 +1,7 @@
 const Dimension = require('../models/dimensions');
 const Dependency = require('../models/dependencies');
+const AuditLogger = require('../services/auditLogger');
+const User = require('../models/users');
 
 const dimensionController = {};
 
@@ -20,7 +22,6 @@ dimensionController.getDimensionsPagination = async (req, res) => {
     
     // Si hay email, filtrar por dimensiones donde el usuario es visualizer
     if (email) {
-      const User = require('../models/users');
       
       // Buscar el usuario
       const user = await User.findOne({ email, isActive: true });
@@ -127,6 +128,28 @@ dimensionController.createDimension = async (req, res) => {
     });
 
     await dimension.save();
+    
+    // Registrar en auditoría
+    try {
+      const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
+      if (userEmail) {
+        const user = await User.findOne({ email: userEmail });
+        if (user) {
+          const dependency = await Dependency.findById(dimension.responsible);
+          await AuditLogger.logCreate(
+            user,
+            'DIMENSION',
+            dimension.name,
+            dimension._id.toString(),
+            `Creó el ámbito "${dimension.name}" asignado a ${dependency?.name || 'dependencia desconocida'}`,
+            req
+          );
+        }
+      }
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
+    
     res.status(200).json({ status: "Dimension created" });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -160,10 +183,36 @@ dimensionController.deleteDimension = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const dimension = await Dimension.findByIdAndDelete(id);
+    const dimension = await Dimension.findById(id).populate('responsible');
     if (!dimension) {
       return res.status(404).json({ error: "Dimension not found" });
     }
+    
+    const dimensionName = dimension.name;
+    const dependencyName = dimension.responsible?.name || 'dependencia desconocida';
+    
+    await Dimension.findByIdAndDelete(id);
+    
+    // Registrar en auditoría
+    try {
+      const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
+      if (userEmail) {
+        const user = await User.findOne({ email: userEmail });
+        if (user) {
+          await AuditLogger.logDelete(
+            user,
+            'DIMENSION',
+            dimensionName,
+            id,
+            `Eliminó el ámbito "${dimensionName}" que estaba asignado a ${dependencyName}`,
+            req
+          );
+        }
+      }
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
+    
     res.status(200).json({ status: "Dimension deleted" });
   } catch (error) {
     res.status(500).json({ error: error.message });

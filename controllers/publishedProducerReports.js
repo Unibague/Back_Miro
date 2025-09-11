@@ -8,6 +8,7 @@ const dayjs = require('dayjs');
 const User = require('../models/users');
 const Dependency = require('../models/dependencies');
 const Period = require('../models/periods');
+const auditLogger = require('../services/auditLogger');
 
 const datetime_now = () => {
   const now = new Date();
@@ -64,8 +65,14 @@ pubProdReportController.getPublishedProducerReports = async (req, res) => {
 
 pubProdReportController.deletePublishedProducerReport = async (req, res) => {
   const { id } = req.params;
+  const { email } = req.query;
 
   try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
     const report = await PubProdReport.findById(id);
     if (!report) {
       return res.status(404).json({ error: "Informe no encontrado" });
@@ -76,6 +83,13 @@ pubProdReportController.deletePublishedProducerReport = async (req, res) => {
     }
 
     await PubProdReport.findByIdAndDelete(id);
+    
+    // Audit log
+    await auditLogger.logDelete(req, user, 'publishedProducerReport', {
+      reportId: id,
+      reportName: report.report?.name
+    });
+    
     return res.status(200).json({ status: "Informe eliminado correctamente" });
   } catch (error) {
     console.error("Error eliminando publishedProducerReport:", error);
@@ -257,10 +271,17 @@ pubProdReportController.sendProducerReport = async (req, res) => {
 pubProdReportController.publishProducerReport = async (req, res) => {
   try {
     const {email, reportId, deadline, period} = req.body;
-    await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
+    const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
     const report = await ProducerReportsService.getReport(reportId);
 
-    await PublishedReportService.publishReport(report, period, deadline)
+    const publishedReport = await PublishedReportService.publishReport(report, period, deadline);
+    
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedProducerReport', {
+      reportId: publishedReport._id,
+      reportName: report.name
+    });
+    
     res.status(200).json({ message: 'Report succesfully published' });
   } catch (error) {
     console.error('Error publishing producer report:', error);

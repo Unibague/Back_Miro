@@ -10,6 +10,7 @@ const UserService = require("../services/users");
 const PublishedReportService = require("../services/publishedReports");
 const { attachment } = require("express/lib/response");
 const PeriodService = require("../services/period");
+const AuditLogger = require('../services/auditLogger');
 
 const pubReportController = {};
 
@@ -408,6 +409,26 @@ pubReportController.publishReport = async (req, res) => {
       deadline
     });
     await publishedReport.save();
+    
+    // Registrar en auditoría
+    try {
+      const userEmail = req.body.email || 'practicantes.g3@unibague.edu.co'; // Temporal
+      const user = await User.findOne({ email: userEmail });
+      if (user) {
+        const period = await Period.findById(periodId);
+        await AuditLogger.logCreate(
+          user,
+          'REPORT',
+          `${report.name} (Publicado)`,
+          publishedReport._id.toString(),
+          `Publicó el informe "${report.name}" para el período ${period?.name || 'desconocido'}`,
+          req
+        );
+      }
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
+    
     res.status(200).json({ status: "Published Report created" });
   } catch (error) {
     console.log(error);
@@ -644,7 +665,24 @@ pubReportController.deletePublishedReport = async (req, res) => {
         .json({ status: "Cannot delete a published report from finished periods" });
     }
 
+    const reportName = publishedReport.report?.name || 'Informe desconocido';
+    
     await publishedReport.deleteOne()
+    
+    // Registrar en auditoría
+    try {
+      await AuditLogger.logDelete(
+        user,
+        'REPORT',
+        `${reportName} (Publicado)`,
+        reportId,
+        `Eliminó el informe publicado "${reportName}"`,
+        req
+      );
+    } catch (auditError) {
+      console.error('Error logging audit:', auditError);
+    }
+    
     res.status(200).json({ status: "Published Report deleted" });
   } catch (error) {
     console.log(error);

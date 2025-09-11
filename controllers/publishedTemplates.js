@@ -10,6 +10,7 @@ const Log = require('../models/logs');
 const UserService = require('../services/users.js');
 const Category = require('../models/categories.js');  
 const ExcelJS = require("exceljs");
+const auditLogger = require('../services/auditLogger');
 
 const publTempController = {};
 
@@ -624,8 +625,19 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     const index = pubTem.loaded_data.findIndex(data => allUserDependencies.includes(data.dependency))
     if (index === -1) { return res.status(404).json({ status: 'Data not found' }) }
   
+    const deletedData = pubTem.loaded_data[index];
     pubTem.loaded_data.splice(index, 1);
     await pubTem.save();
+    
+    // Audit log
+    console.log('🔍 Executing audit log for publishedTemplateData deletion');
+    await auditLogger.logDelete(req, user, 'publishedTemplateData', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: deletedData.dependency
+    });
+    console.log('✅ Audit log completed for publishedTemplateData deletion');
+    
     return res.status(200).json({ status: 'Data deleted successfully' })
   } catch (error) {
     console.log(error.message)
@@ -1071,7 +1083,7 @@ publTempController.deletePublishedTemplate = async (req, res) => {
   const { id, email } = req.query;
 
   try {
-    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    const user = await UserService.findUserByEmailAndRole(email, 'Administrador');
 
     const template = await PublishedTemplate.findById(id);
     if (!template) {
@@ -1083,6 +1095,15 @@ publTempController.deletePublishedTemplate = async (req, res) => {
     }
 
     await PublishedTemplate.findByIdAndDelete(id);
+    
+    // Audit log
+    console.log('🔍 Executing audit log for publishedTemplate deletion');
+    await auditLogger.logDelete(req, user, 'publishedTemplate', {
+      templateId: id,
+      templateName: template.name
+    });
+    console.log('✅ Audit log completed for publishedTemplate deletion');
+    
     res.status(200).json({ status: 'Template deleted successfully' });
   } catch (error) {
     console.error('Error deleting template:', error);
