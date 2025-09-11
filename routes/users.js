@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/users.js');
+const { requireAdmin, requireReadAccess } = require('../middleware/auth');
 
 router.get("/all", controller.getUsers);
 
@@ -14,23 +15,23 @@ router.get("/responsibles", controller.getResponsibles);
 
 router.get("/producers", controller.getProducers);
 
-router.put("/updateRole", controller.updateUserRoles);
+router.put("/updateRole", requireAdmin, controller.updateUserRoles);
 
-router.put("/updateProducer", controller.updateUsersToProducer);
+router.put("/updateProducer", requireAdmin, controller.updateUsersToProducer);
 
-router.put("/updateActiveRole", controller.updateUserActiveRole);
+router.put("/updateActiveRole", requireAdmin, controller.updateUserActiveRole);
 
 router.get("/", controller.getUser);
 
-router.get("/impersonate", controller.getUserToImpersonate);
+router.get("/impersonate", requireReadAccess, controller.getUserToImpersonate);
 
-router.post("/updateAll", controller.loadUsers);
+router.post("/updateAll", requireAdmin, controller.loadUsers);
 
-router.post("/addExternalUser", controller.addExternalUser);
+router.post("/addExternalUser", requireAdmin, controller.addExternalUser);
 
-router.put("/updateStatus", controller.updateUserStatus);
+router.put("/updateStatus", requireAdmin, controller.updateUserStatus);
 
-router.put("/migrate", controller.migrateUserDependecy);
+router.put("/migrate", requireAdmin, controller.migrateUserDependecy);
 
 router.get("/:dep_code/users", controller.getUsersByDependency);
 
