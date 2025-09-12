@@ -77,6 +77,20 @@ class AuditLogger {
             user_agent: req?.get('User-Agent')
         });
     }
+
+    static async logImpersonate(req, user, targetUserEmail) {
+        await this.log({
+            user_email: user.email,
+            user_name: user.full_name,
+            action: 'IMPERSONATE',
+            entity_type: 'user',
+            entity_name: targetUserEmail,
+            entity_id: 'impersonation',
+            details: JSON.stringify({ targetUser: targetUserEmail }),
+            ip_address: req?.ip,
+            user_agent: req?.get('User-Agent')
+        });
+    }
 }
 
 module.exports = AuditLogger;

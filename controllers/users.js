@@ -269,12 +269,22 @@ userController.getUser = async (req, res) => {
 
 
 userController.getUserToImpersonate = async (req, res) => {
-    const id = req.query.id; 
+    const id = req.query.id;
+    const adminEmail = req.query.adminEmail;
     try {
         const user = await User.findOne({ _id: id });
         if (!user) {
             return res.status(404).json({ error: "User not found in DB" });
         }
+        
+        // Registrar impersonación si se proporciona adminEmail
+        if (adminEmail) {
+            const adminUser = await User.findOne({ email: adminEmail });
+            if (adminUser) {
+                await auditLogger.logImpersonate(req, adminUser, user.email);
+            }
+        }
+        
         res.status(200).json(user);
     } catch (error) {
         res.status(500).json({ error: "Internal Server Error", details: error.message });
