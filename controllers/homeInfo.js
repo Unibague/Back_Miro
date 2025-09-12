@@ -38,11 +38,6 @@ exports.updateSection = async (req, res) => {
   const { id } = req.params;
   const { title, description, order, email } = req.body;
   try {
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ message: 'Usuario no encontrado' });
-    }
-    
     const updatedSection = await AccordionSection.findByIdAndUpdate(
       id,
       { title, description, order, updated_at: Date.now() },
@@ -52,11 +47,16 @@ exports.updateSection = async (req, res) => {
       return res.status(404).json({ message: 'Sección no encontrada' });
     }
     
-    // Audit log
-    await auditLogger.logUpdate(req, user, 'homeInfoSection', {
-      sectionId: id,
-      sectionTitle: title
-    });
+    // Audit log solo si hay email
+    if (email) {
+      const user = await User.findOne({ email });
+      if (user) {
+        await auditLogger.logUpdate(req, user, 'homeInfoSection', {
+          sectionId: id,
+          sectionTitle: title
+        });
+      }
+    }
     
     res.status(200).json(updatedSection);
   } catch (error) {

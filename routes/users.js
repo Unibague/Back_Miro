@@ -23,7 +23,7 @@ router.put("/updateActiveRole", requireAdmin, controller.updateUserActiveRole);
 
 router.get("/", controller.getUser);
 
-router.get("/impersonate", requireReadAccess, controller.getUserToImpersonate);
+router.get("/impersonate", controller.getUserToImpersonate);
 
 router.post("/updateAll", requireAdmin, controller.loadUsers);
 
