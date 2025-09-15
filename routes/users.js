@@ -19,7 +19,7 @@ router.put("/updateRole", requireAdmin, controller.updateUserRoles);
 
 router.put("/updateProducer", requireAdmin, controller.updateUsersToProducer);
 
-router.put("/updateActiveRole", requireAdmin, controller.updateUserActiveRole);
+router.put("/updateActiveRole", controller.updateUserActiveRole);
 
 router.get("/", controller.getUser);
 
