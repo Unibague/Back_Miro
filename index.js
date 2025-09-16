@@ -80,7 +80,7 @@ const PORT = process.env.PORT || 6000;
 
 app.listen(PORT, () => {
   if (process.env.NODE_ENV === 'production') {
-    console.log('Server running in production mode on ' + PORT);
+    console.log('Servr running in production mode on ' + PORT);
   } else {
     console.log('Server running in development mode on ' + PORT);
   }
