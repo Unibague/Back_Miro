@@ -51,6 +51,13 @@ const allowedDataTypes = {
         };
     },
     "Fecha": (value) => {
+        if (value === null || value === undefined) {
+            return {
+                isValid: false,
+                message: "El valor no es una fecha válida."
+            };
+        }
+        
         const isValid = !isNaN(Date.parse(value));
         return {
             isValid,
@@ -270,7 +277,6 @@ validatorController.validateColumn = async (column) => {
 
 
   if (!name || !datatype || !values) {
-    console.log(column);
     return { status: false, errors: [{ register: null, message: 'Hace falta el nombre, tipo de dato o valor para la columna ' + column?.name }] };
   }
 
@@ -312,7 +318,7 @@ validatorController.validateColumn = async (column) => {
 if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
-      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '';
+      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
       if (!required && isEmpty) return null;
       const num = Number(value);
       return isNaN(num) ? value : num;
@@ -379,8 +385,16 @@ if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje"
   values.forEach((value, index) => {
 const realIndex = index;
 
-  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '';
+  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
 
+
+
+  // PRIMERO: Si el valor es vacío y no es requerido, saltar TODA validación
+  if (!required && isEmpty) {
+    return; // Saltar toda validación para campos no obligatorios vacíos
+  }
+
+  // SEGUNDO: Si es requerido y está vacío, error
   if (required && isEmpty) {
     result.status = false;
     result.errors.push({
@@ -390,16 +404,6 @@ const realIndex = index;
     });
     return;
   }
-
-
-  if(!required && validate_with === 'FUENTE_INTERNACIONAL - ID_FUENTE_INTERNACIONAL'){
-    console.log(value, 'el valor');
-  }
-
-// Si el valor es vacío y no es requerido, lo ignoramos
-if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
-  return;
-}
 
 if (multiple && Array.isArray(value)) {
   value.forEach(val => {
@@ -417,21 +421,29 @@ if (multiple && Array.isArray(value)) {
     }
   });
 } else {
-  const validateFn = allowedDataTypes[datatype];
-  if (typeof validateFn === 'function') {
-    const validation = validateFn(value);
-    if (!validation.isValid) {
-      result.status = false;
-      result.errors.push({
-        register: realIndex + 1,
-        message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
-        value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-      });
+  // Solo validar tipo de dato si el campo es obligatorio O si tiene valor
+  if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+    const validateFn = allowedDataTypes[datatype];
+    if (typeof validateFn === 'function') {
+      const validation = validateFn(value);
+      if (!validation.isValid) {
+        result.status = false;
+        result.errors.push({
+          register: realIndex + 1,
+          message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
+          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        });
+      }
     }
   }
 }
 
 if (columnToValidate && validValuesSet) {
+  // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
+  if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
+    return; // Saltar validación de validate_with para campos no obligatorios vacíos
+  }
+  
   if (multiple && Array.isArray(value)) {
     value.forEach(val => {
       let normalizedVal = val;
@@ -455,22 +467,25 @@ if (columnToValidate && validValuesSet) {
       }
     });
   } else {
-    let normalizedVal = value;
+    // Solo validar validate_with si el campo es obligatorio O si tiene valor
+    if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+      let normalizedVal = value;
 
-    if (column.validator_type === 'Número') {
-      const num = Number(value);
-      normalizedVal = isNaN(num) ? value : num;
-    } else {
-      normalizedVal = String(value).trim();
-    }
+      if (column.validator_type === 'Número') {
+        const num = Number(value);
+        normalizedVal = isNaN(num) ? value : num;
+      } else {
+        normalizedVal = String(value).trim();
+      }
 
-    if (!validValuesSet.has(normalizedVal)) {
-      result.status = false;
-      result.errors.push({
-        register: realIndex + 1,
-        message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
-        value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-      });
+      if (!validValuesSet.has(normalizedVal)) {
+        result.status = false;
+        result.errors.push({
+          register: realIndex + 1,
+          message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
+          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        });
+      }
     }
   }
 }
