@@ -429,6 +429,16 @@ const result = pubTem.template.fields.map((field) => {
       console.warn(`⚠️  Campo ${field.name} contiene '[object Object]' - problema en el frontend`);
       val = null; // Convertir a null para que se maneje como valor vacío
     }
+    
+    // Limpiar valores: convertir string "null" a null real
+    if (typeof val === 'string' && val.trim() === 'null') {
+      val = null;
+    }
+    
+    // Limpiar valores vacíos para campos no obligatorios
+    if (!field.required && (val === null || val === undefined || (typeof val === 'string' && val.trim() === ''))) {
+      val = null;
+    }
 
 if (field.multiple) {
   if (val === null || val === undefined) return [];
@@ -454,7 +464,7 @@ if (field.multiple) {
 });
 
 
-    console.dir(result, { depth: null });
+
 
     // Validación con valores externos si hay validate_with
     const validations = result.map(async field => {
@@ -486,13 +496,7 @@ if (field.multiple) {
     const validationResults = await Promise.all(validations);
     const validationErrors = validationResults.filter(v => v.status === false);
 
-// Debug: mostrar errores de validación
-validationErrors.forEach((err, i) => {
-  console.log(`Campo con error #${i}: ${err.column}`);
-  err.errors.forEach((e, j) => {
-    console.log(`  Error ${j}:`, e.message, '| Valor:', e.value);
-  });
-});
+
 
     if (validationErrors.length > 0) {
       const sanitizedErrors = validationErrors.map(err => ({
