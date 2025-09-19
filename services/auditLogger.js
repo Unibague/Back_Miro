@@ -25,7 +25,7 @@ class AuditLogger {
     static async logCreate(req, user, entityType, details) {
         await this.log({
             user_email: user.email,
-            user_name: user.full_name,
+            user_name: user.full_name || user.name || 'Usuario',
             action: 'CREATE',
             entity_type: entityType,
             entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || 'Unknown',
@@ -39,7 +39,7 @@ class AuditLogger {
     static async logUpdate(req, user, entityType, details) {
         await this.log({
             user_email: user.email,
-            user_name: user.full_name,
+            user_name: user.full_name || user.name || 'Usuario',
             action: 'UPDATE',
             entity_type: entityType,
             entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || details.userEmail || 'Usuario A/I',
@@ -53,7 +53,7 @@ class AuditLogger {
     static async logDelete(req, user, entityType, details) {
         await this.log({
             user_email: user.email,
-            user_name: user.full_name,
+            user_name: user.full_name || user.name || 'Usuario',
             action: 'DELETE',
             entity_type: entityType,
             entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || 'Unknown',
@@ -67,7 +67,7 @@ class AuditLogger {
     static async logUpload(req, user, entityType, details) {
         await this.log({
             user_email: user.email,
-            user_name: user.full_name,
+            user_name: user.full_name || user.name || 'Usuario',
             action: 'UPLOAD',
             entity_type: entityType,
             entity_name: details.templateName || details.reportName || details.dimensionName || details.validatorName || details.sectionTitle || 'Unknown',
@@ -81,7 +81,7 @@ class AuditLogger {
     static async logImpersonate(req, user, targetUserEmail) {
         await this.log({
             user_email: user.email,
-            user_name: user.full_name,
+            user_name: user.full_name || user.name || 'Usuario',
             action: 'IMPERSONATE',
             entity_type: 'user',
             entity_name: targetUserEmail,
