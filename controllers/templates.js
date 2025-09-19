@@ -8,6 +8,7 @@ const Validator = require("./validators");
 const mongoose = require("mongoose");
 const UserService = require("../services/users");
 const Dependency = require('../models/dependencies');
+const AuditLogger = require('../services/auditLogger');
 
 const { ObjectId } = mongoose.Types;
 
@@ -247,6 +248,18 @@ templateController.createPlantilla = async (req, res) => {
     const user = await UserService.findUserByEmailAndRole(req.body.email, "Administrador");
     const plantilla = new Template({ ...req.body, created_by: user });
     await plantilla.save();
+    
+    // Registrar en auditoría (non-blocking)
+    try {
+      await AuditLogger.logCreate(req, user, 'template', {
+        templateId: plantilla._id.toString(),
+        templateName: plantilla.name,
+        fileName: plantilla.file_name
+      });
+    } catch (auditError) {
+      console.warn('Audit logging failed (non-critical):', auditError.message);
+    }
+    
     res.status(200).json({ status: "Plantilla creada" });
   } catch (error) {
     console.error("Error al crear la plantilla:", error);
@@ -352,6 +365,22 @@ templateController.updatePlantilla = async (req, res) => {
     );
 
     console.log(`Sincronizados ${updatedPublishedTemplates.modifiedCount} publishedTemplates con los nuevos datos`);
+    
+    // Registrar en auditoría (non-blocking)
+    try {
+      const userEmail = updatedFields.email || 'practicantes.g3@unibague.edu.co';
+      const user = await User.findOne({ email: userEmail });
+      if (user) {
+        await AuditLogger.logUpdate(req, user, 'template', {
+          templateId: id,
+          templateName: updatedTemplate.name,
+          fileName: updatedTemplate.file_name
+        });
+      }
+    } catch (auditError) {
+      console.warn('Audit logging failed (non-critical):', auditError.message);
+    }
+    
     return res.status(200).json(updatedTemplate);
 
   } catch (error) {
@@ -417,6 +446,13 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
 templateController.deletePlantilla = async (req, res) => {
   try {
     const { id } = req.body;
+    
+    // Obtener la plantilla antes de eliminarla para la auditoría
+    const template = await Template.findById(id);
+    if (!template) {
+      return res.status(404).json({ mensaje: "Plantilla no encontrada" });
+    }
+    
     const publishedTemplate = await PubTemplate.find({
       'template._id': new ObjectId(id)
     });
@@ -426,10 +462,24 @@ templateController.deletePlantilla = async (req, res) => {
     if (publishedTemplate.length > 0) {
       return res.status(400).json({ mensaje: "No se puede eliminar la plantilla porque ya está publicada" });
     }
+    
     const plantillaEliminada = await Template.findByIdAndDelete(id);
-    if (!plantillaEliminada) {
-      return res.status(404).json({ mensaje: "Plantilla no encontrada" });
+    
+    // Registrar en auditoría (non-blocking)
+    try {
+      const userEmail = req.body.userEmail || req.query.email || 'practicantes.g3@unibague.edu.co';
+      const user = await User.findOne({ email: userEmail });
+      if (user) {
+        await AuditLogger.logDelete(req, user, 'template', {
+          templateId: id,
+          templateName: template.name,
+          fileName: template.file_name
+        });
+      }
+    } catch (auditError) {
+      console.warn('Audit logging failed (non-critical):', auditError.message);
     }
+    
     res.status(200).json({ status: "Plantilla eliminada" });
   } catch (error) {
     console.error("Error al eliminar la plantilla:", error);
