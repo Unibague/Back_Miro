@@ -65,6 +65,8 @@ apiRouter.use("/homeInfo", require('./routes/homeInfo'));
 apiRouter.use("/pending-user-changes", require('./routes/pendingUserChanges'));
 apiRouter.use("/user-dependencies", require('./routes/userDependencies'));
 apiRouter.use("/audit", require('./routes/auditLogs'));
+apiRouter.use("/template-filters", require('./routes/templateFilters'));
+apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFiltered'));
 
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);
