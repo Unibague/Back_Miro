@@ -21,7 +21,7 @@ const auditLogSchema = new mongoose.Schema({
         enum: ['DEPENDENCY', 'USER', 'SCOPE', 'TEMPLATE', 'REPORT', 'FILE', 'DIMENSION', 
                'dimension', 'template', 'report', 'publishedReport', 'publishedTemplate', 
                'publishedTemplateData', 'producerReport', 'publishedProducerReport', 
-               'validator', 'homeInfoSection', 'user', 'templateFilter']
+               'validator', 'homeInfoSection', 'user', 'templateFilter', 'userDependencies']
     },
     entity_name: {
         type: String,

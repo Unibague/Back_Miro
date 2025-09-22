@@ -1,5 +1,6 @@
 const User = require('../models/users');
 const Dependency = require('../models/dependencies');
+const auditLogger = require('../services/auditLogger');
 
 const getUsersWithDependencies = async (req, res) => {
     try {
@@ -13,7 +14,7 @@ const getUsersWithDependencies = async (req, res) => {
 const updateUserDependencies = async (req, res) => {
     try {
         const { email } = req.params;
-        const { additionalDependencies } = req.body;
+        const { additionalDependencies, adminEmail } = req.body;
         const additional_dependencies = additionalDependencies; // Mapear al nombre interno
 
         // Validar que additional_dependencies sea un array
@@ -35,10 +36,29 @@ const updateUserDependencies = async (req, res) => {
         // Obtener todas las dependencias del usuario (principal + adicionales)
         const allUserDependencies = await getUserAllDependencies(user);
         
-        // Detectar nuevas dependencias agregadas
+        // Detectar cambios en dependencias
         const newDependencies = (additional_dependencies || []).filter(
             depId => !previousDependencies.includes(depId)
         );
+        const removedDependencies = previousDependencies.filter(
+            depId => !(additional_dependencies || []).includes(depId)
+        );
+        
+        // Registrar en audit log si hay cambios
+        if ((newDependencies.length > 0 || removedDependencies.length > 0) && adminEmail) {
+            const adminUser = await User.findOne({ email: adminEmail });
+            if (adminUser) {
+                const changes = {
+                    added: newDependencies,
+                    removed: removedDependencies
+                };
+                
+                await auditLogger.logUpdate(req, adminUser, 'userDependencies', {
+                    userEmail: email,
+                    dependencyChanges: JSON.stringify(changes)
+                });
+            }
+        }
         
         // Si hay nuevas dependencias, enviar email
         if (newDependencies.length > 0) {
