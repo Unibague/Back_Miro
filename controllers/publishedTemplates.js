@@ -14,6 +14,49 @@ const auditLogger = require('../services/auditLogger');
 
 const publTempController = {};
 
+// Función para convertir hipervínculos de Excel a texto
+const convertHyperlinkToText = (value) => {
+  if (value && typeof value === 'object') {
+    // Si es un array, tomar el primer elemento o convertir a string
+    if (Array.isArray(value)) {
+      return value.length > 0 ? String(value[0]) : '';
+    }
+    
+    // Si es un hipervínculo de Excel
+    if (value.hyperlink || value.text) {
+      return value.text || value.hyperlink || String(value);
+    }
+    // Si es un objeto MongoDB
+    if ('$numberInt' in value || '$numberDouble' in value) {
+      return value.$numberInt || value.$numberDouble;
+    }
+    // Si tiene propiedades como richText, formula, etc. (objetos de Excel)
+    if (value.richText) {
+      return value.richText.map(rt => rt.text || '').join('');
+    }
+    if (value.formula) {
+      return value.result || value.formula;
+    }
+    if (value.result !== undefined) {
+      return value.result;
+    }
+    // Si es un objeto con valor directo
+    if (value.value !== undefined) {
+      return value.value;
+    }
+    // Intentar extraer cualquier propiedad que parezca texto
+    const possibleTextProps = ['text', 'value', 'result', 'displayText', 'content'];
+    for (const prop of possibleTextProps) {
+      if (value[prop] !== undefined) {
+        return value[prop];
+      }
+    }
+    // Si es otro tipo de objeto, convertir a string
+    return String(value);
+  }
+  return value ?? '';
+};
+
 datetime_now = () => {
   const now = new Date();
 
@@ -218,7 +261,12 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
             if (!acc[index]) {
               acc[index] = { Dependencia: ld.dependency };
             }
-            acc[index][item.field_name] = value.$numberInt || value;
+            // Fix para datos existentes con '[object Object]'
+            if (typeof value === 'string' && value === '[object Object]') {
+              acc[index][item.field_name] = '';
+            } else {
+              acc[index][item.field_name] = convertHyperlinkToText(value);
+            }
           });
           return acc;
         }, []);
@@ -424,10 +472,41 @@ const result = pubTem.template.fields.map((field) => {
   const values = data.map(row => {
     let val = row[field.name];
     
+    // FIX: Manejar objetos de Excel (hipervínculos, etc.)
+    if (typeof val === 'object' && val !== null) {
+      val = convertHyperlinkToText(val);
+    }
+    
     // FIX TEMPORAL: Detectar [object Object] strings del frontend
     if (typeof val === 'string' && val === '[object Object]') {
       console.warn(`⚠️  Campo ${field.name} contiene '[object Object]' - problema en el frontend`);
       val = null; // Convertir a null para que se maneje como valor vacío
+    }
+    
+    // FIX: Manejar arrays que vienen del frontend (incluyendo arrays anidados)
+    if (Array.isArray(val)) {
+      console.log(`DEBUG - Campo ${field.name}: Array detectado:`, val);
+      
+      // Normalizar arrays anidados
+      let normalizedVal = val;
+      while (Array.isArray(normalizedVal) && normalizedVal.length === 1) {
+        normalizedVal = normalizedVal[0];
+      }
+      
+      // Si después de normalizar es un string JSON, parsearlo
+      if (typeof normalizedVal === 'string' && normalizedVal.startsWith('[') && normalizedVal.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(normalizedVal);
+          if (Array.isArray(parsed) && parsed.length === 1) {
+            normalizedVal = parsed[0];
+          }
+        } catch (e) {
+          // Si no se puede parsear, mantener el valor
+        }
+      }
+      
+      val = normalizedVal;
+      console.log(`DEBUG - Campo ${field.name}: Valor final normalizado:`, val);
     }
     
     // Limpiar valores: convertir string "null" a null real
@@ -698,11 +777,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-
-    if (value && typeof value === 'object' && ('$numberInt' in value || '$numberDouble' in value)) {
-      acc[index][item.field_name] = value.$numberInt || value.$numberDouble;
+    // Fix para datos existentes con '[object Object]'
+    if (typeof value === 'string' && value === '[object Object]') {
+      acc[index][item.field_name] = '';
     } else {
-      acc[index][item.field_name] = value ?? "";
+      acc[index][item.field_name] = convertHyperlinkToText(value) ?? "";
     }
   });
   return acc;
@@ -1075,7 +1154,19 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
       return res.status(404).json({ status: 'No data found for dependency' });
     }
 
-    res.status(200).json({ data: producerData.filled_data });
+    // Aplicar conversión de hipervínculos a los datos
+    const processedData = producerData.filled_data.map(item => ({
+      ...item,
+      values: item.values.map(value => {
+        // Fix para datos existentes con '[object Object]'
+        if (typeof value === 'string' && value === '[object Object]') {
+          return ''; // Convertir a string vacío
+        }
+        return convertHyperlinkToText(value);
+      })
+    }));
+    
+    res.status(200).json({ data: processedData });
   } catch (error) {
     console.error('Error fetching template data:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -1132,6 +1223,23 @@ publTempController.updateDeadlines = async (req, res) => {
   } catch (error) {
     console.error("Error al actualizar deadlines:", error);
     return res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanObjectObjectData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    const { cleanObjectObjectData } = require('../scripts/cleanObjectObjectData');
+    const result = await cleanObjectObjectData();
+    
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error cleaning object data:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
