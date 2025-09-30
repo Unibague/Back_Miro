@@ -257,7 +257,14 @@ dependencyController.addUserToDependency = async (dep_code, user) => {
 };
 
 dependencyController.setResponsible = async (req, res) => {
-  const { dep_code, email } = req.body;
+  const { dep_code, email: responsibleEmail } = req.body;
+  const adminUser = req.user; // Usuario administrador del middleware
+  
+  console.log('=== DEBUG setResponsible ===');
+  console.log('Admin user:', adminUser?.email);
+  console.log('Dependency code:', dep_code);
+  console.log('Responsible email:', responsibleEmail);
+  
   try {
     const dependency = await Dependency.findOne({ dep_code });
     if (!dependency) {
@@ -265,12 +272,12 @@ dependencyController.setResponsible = async (req, res) => {
     }
 
     // Asigna el email como responsable
-    dependency.responsible = email;
+    dependency.responsible = responsibleEmail;
     await dependency.save();
 
     res.status(200).json({ status: "Responsible assigned" });
   } catch (error) {
-    console.log(error);
+    console.error('Error in setResponsible:', error);
     res
       .status(500)
       .json({ status: "Error assigning responsible", error: error.message });

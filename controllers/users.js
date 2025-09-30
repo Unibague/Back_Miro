@@ -26,6 +26,12 @@ userController.addExternalUser = async (req, res) => {
 }
 
 userController.loadUsers = async (req, res) => {
+    console.log('=== DEBUG loadUsers ===');
+    console.log('Headers:', req.headers);
+    console.log('Query:', req.query);
+    console.log('Body:', req.body);
+    console.log('User from middleware:', req.user);
+    
     try {
         dependencyController.loadDependencies();
 
@@ -362,9 +368,17 @@ userController.getProducers = async (req, res) => {
 }
 
 userController.updateUsersToProducer = async (req, res) => {
-    const rolesToUpdate = req.body;
+    const { users, adminEmail } = req.body;
+    console.log('=== DEBUG updateUsersToProducer ===');
+    console.log('users:', users);
+    console.log('adminEmail:', adminEmail);
+    
     try {
-        const updatePromises = rolesToUpdate.map(async ({ email, roles }) => {
+        if (!Array.isArray(users)) {
+            throw new Error('Users must be an array');
+        }
+        
+        const updatePromises = users.map(async ({ email, roles }) => {
         const user = await User.findOne({ email });
 
         if (!user) {

@@ -766,7 +766,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   // Añadir todas las columnas vacías según template.fields
   template.template.fields.forEach(field => {
-    emptyRow[field.name] = "";
+    emptyRow[field.name.toUpperCase()] = "";
   });
 
   return [emptyRow];
@@ -779,9 +779,9 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     }
     // Fix para datos existentes con '[object Object]'
     if (typeof value === 'string' && value === '[object Object]') {
-      acc[index][item.field_name] = '';
+      acc[index][item.field_name.toUpperCase()] = '';
     } else {
-      acc[index][item.field_name] = convertHyperlinkToText(value) ?? "";
+      acc[index][item.field_name.toUpperCase()] = convertHyperlinkToText(value) ?? "";
     }
   });
   return acc;
