@@ -807,43 +807,60 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
   const periodId = req.query.periodId;
+  const filterByDependency = req.query.filterByDependency;
   const skip = (page - 1) * limit;
 
   try {
     console.log('=== DEBUG getUploadedTemplatesByProducer ===');
     console.log('Email:', email);
+    console.log('FilterByDependency:', filterByDependency);
+    console.log('All query params:', req.query);
     
     const user = await User.findOne({ email });
     console.log('User found:', user ? 'YES' : 'NO');
-    console.log('User roles:', user?.roles);
     
     if (!user) {
       console.log('ERROR: User not found');
       return res.status(404).json({ status: 'User not found' });
     }
-    
-    console.log('User validation passed');
 
-    console.log('User dep_code:', user.dep_code);
-    console.log('User additional_dependencies:', user.additional_dependencies);
-
-    // Obtener todas las dependencias del usuario
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     console.log('All user dependencies:', allUserDependencies);
     
+    // Si hay filtro por dependencia, convertir nombre a dep_code si es necesario
+    let dependenciesToQuery = allUserDependencies;
+    if (filterByDependency) {
+      console.log('FilterByDependency received:', filterByDependency);
+      
+      const dependencyByCode = await Dependency.findOne({ dep_code: filterByDependency });
+      const dependencyByName = await Dependency.findOne({ name: { $regex: new RegExp(`^${filterByDependency}$`, 'i') } });
+      
+      if (dependencyByCode) {
+        dependenciesToQuery = [filterByDependency];
+        console.log('Filtering by dep_code:', filterByDependency);
+      } else if (dependencyByName) {
+        dependenciesToQuery = [dependencyByName.dep_code];
+        console.log('Filtering by name, converted to dep_code:', dependencyByName.dep_code);
+      } else {
+        console.log('Dependency not found, using all user dependencies');
+      }
+    }
+    console.log('Dependencies to query:', dependenciesToQuery);
+    console.log('🔍 CRITICAL: Is filterByDependency being processed?', !!filterByDependency);
+    
+    // Obtener IDs de las dependencias para filtrar por template.producers
+    const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
+    const dependencyIds = dependencies.map(dep => dep._id);
+    console.log('Dependency IDs for producers filter:', dependencyIds);
+    
     const query = {
-      'loaded_data.dependency': { $in: allUserDependencies },
+      'template.producers': { $in: dependencyIds },
       name: { $regex: search, $options: 'i' }
     };
     
-    console.log('Query for uploaded templates:', JSON.stringify(query, null, 2));
-
     if (periodId) {
       query.period = periodId;
     }
-    
-    console.log('Final query with period:', JSON.stringify(query, null, 2));
-    console.log('About to execute PublishedTemplate.find...');
 
     const templates = await PublishedTemplate.find(query)
       .skip(skip)
@@ -851,45 +868,57 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       .populate('period')
       .populate({
         path: 'template',
-        populate: {
-          path: 'dimensions',
-          model: 'dimensions'
-        }
+        populate: [
+          { path: 'dimensions', model: 'dimensions' },
+          { path: 'producers', model: 'dependencies' }
+        ]
       });
-      
-    console.log('Found uploaded templates:', templates.length);
-    templates.forEach(t => {
-      console.log(`Template: ${t.name}, loaded_data dependencies:`, t.loaded_data.map(ld => ld.dependency));
+
+    // Filtrar solo plantillas asignadas que tienen información cargada
+    const templatesWithData = templates.filter(template => {
+      const hasDataForDependencies = template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
+      );
+      console.log(`\n🔍 Template '${template.name}':`);
+      console.log('  - loaded_data dependencies:', template.loaded_data.map(ld => ld.dependency));
+      console.log('  - dependenciesToQuery:', dependenciesToQuery);
+      console.log('  - hasDataForDependencies:', hasDataForDependencies);
+      return hasDataForDependencies;
     });
 
-      const templatesWithValidators = await Promise.all(
-        templates.map(async (template) => {
-          const validators = await Promise.all(
-            template.template.fields.map(async (field) => {
-              return Validator.giveValidatorToExcel(field.validate_with);
-            })
-          );
-  
-          template = template.toObject();
-          validatorsFiltered = validators.filter(v => v !== undefined)
-          template.validators = validatorsFiltered // Añadir validators al objeto
-  
-          return template;
-        })
-      );
+    const templatesWithValidators = await Promise.all(
+      templatesWithData.map(async (template) => {
+        const validators = await Promise.all(
+          template.template.fields.map(async (field) => {
+            return Validator.giveValidatorToExcel(field.validate_with);
+          })
+        );
 
-    const total = await PublishedTemplate.countDocuments(query);
+        template = template.toObject();
+        template.validators = validators.filter(v => v !== undefined);
+        return template;
+      })
+    );
+
+    // Contar total real después del filtrado
+    const allTemplatesForCount = await PublishedTemplate.find(query);
+    const totalWithData = allTemplatesForCount.filter(template => {
+      return template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
+      );
+    }).length;
 
     res.status(200).json({
-      "templates": templatesWithValidators,
-      total,
+      templates: templatesWithValidators,
+      total: totalWithData,
       page,
-      pages: Math.ceil(total / limit),
+      pages: Math.ceil(totalWithData / limit),
     });
   } catch (error) {
     console.error('=== ERROR in getUploadedTemplatesByProducer ===');
     console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 };
@@ -911,7 +940,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     console.log('User dep_code:', user.dep_code);
     console.log('User additional_dependencies:', user.additional_dependencies);
 
-    // Obtener todas las dependencias del usuario (principal + adicionales)
+    // Obtener todas las dependencias del usuario (principal + adicionales)l + adicionales)
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     console.log('All user dependencies:', allUserDependencies);
     

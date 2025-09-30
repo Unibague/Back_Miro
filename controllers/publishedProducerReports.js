@@ -270,21 +270,40 @@ pubProdReportController.sendProducerReport = async (req, res) => {
 
 pubProdReportController.publishProducerReport = async (req, res) => {
   try {
+    console.log('=== DEBUG publishProducerReport ===');
+    console.log('Request body:', req.body);
+    
     const {email, reportId, deadline, period} = req.body;
+    console.log('Extracted params:', { email, reportId, deadline, period });
+    
     const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
+    console.log('User found:', user ? 'YES' : 'NO');
+    
     const report = await ProducerReportsService.getReport(reportId);
+    console.log('Report found:', report ? 'YES' : 'NO');
 
     const publishedReport = await PublishedReportService.publishReport(report, period, deadline);
+    console.log('Report published successfully');
+    console.log('Published report:', publishedReport);
     
     // Audit log
-    await auditLogger.logCreate(req, user, 'publishedProducerReport', {
-      reportId: publishedReport._id,
-      reportName: report.name
-    });
+    if (publishedReport && publishedReport._id) {
+      await auditLogger.logCreate(req, user, 'publishedProducerReport', {
+        reportId: publishedReport._id,
+        reportName: report.name
+      });
+    } else {
+      console.warn('Published report is undefined or missing _id, skipping audit log');
+    }
     
-    res.status(200).json({ message: 'Report succesfully published' });
+    res.status(200).json({ 
+      message: 'Report succesfully published',
+      publishedReportId: publishedReport?._id 
+    });
   } catch (error) {
-    console.error('Error publishing producer report:', error);
+    console.error('=== ERROR in publishProducerReport ===');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ message: error.message });
   }
 }
