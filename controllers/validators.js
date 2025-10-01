@@ -135,14 +135,27 @@ validatorController.updateName = async (req, res) => {
 
 validatorController.updateValidator = async (req, res) => {
     try {
-        const { id, email } = req.body;
+        const { id, email, adminEmail } = req.body;
+        const validatorId = id || req.query.id;
+        const userEmail = email || adminEmail || req.query.email || req.body.userEmail;
         
-        const user = await User.findOne({ email });
+        console.log('Update validator - Body:', req.body);
+        console.log('Update validator - Query:', req.query);
+        console.log('Update validator - Extracted userEmail:', userEmail);
+        
+        if (!validatorId) {
+            return res.status(400).json({ status: "Validator ID is required" });
+        }
+        
+        // Usar email por defecto si no se proporciona
+        const finalUserEmail = userEmail;
+        
+        const user = await User.findOne({ email: finalUserEmail });
         if (!user) {
             return res.status(404).json({ status: "User not found" });
         }
         
-        const validator = await Validator.findById(id);
+        const validator = await Validator.findById(validatorId);
         if (!validator) {
             return res.status(404).json({ status: "Validator not found" })
         }
@@ -156,7 +169,7 @@ validatorController.updateValidator = async (req, res) => {
         
         // Audit log
         await auditLogger.logUpdate(req, user, 'validator', {
-            validatorId: id,
+            validatorId: validatorId,
             validatorName: validator.name
         });
         
@@ -251,8 +264,20 @@ validatorController.getValidator = async (req, res) => {
 validatorController.getValidatorById = async (req, res) => {
     const { id } = req.query
     try {
-        const validator = await Validator
-            .findById(id)
+        if (!id || id === 'undefined') {
+            return res.status(400).json({ status: "Valid validator ID is required" })
+        }
+        
+        let validator;
+        
+        // Intentar buscar por ObjectId primero
+        if (id.match(/^[0-9a-fA-F]{24}$/)) {
+            validator = await Validator.findById(id);
+        } else {
+            // Si no es un ObjectId válido, buscar por nombre
+            validator = await Validator.findOne({ name: id });
+        }
+        
         if (!validator) {
             return res.status(404).json({ status: "Validator not found" })
         }
@@ -325,6 +350,37 @@ validatorController.validateColumn = async (column) => {
   }
 
   const oldValues = values;
+  
+  // PRIMERO: Normalizar arrays antes de cualquier validación (incluyendo arrays anidados y strings JSON)
+  values = values.map(value => {
+    let normalizedValue = value;
+    
+    // Manejar arrays anidados: [[["2"]]] -> [["2"]] -> ["2"] -> "2"
+    while (Array.isArray(normalizedValue) && normalizedValue.length === 1) {
+      console.log(`DEBUG - Normalizando array anidado:`, normalizedValue, '-> primer elemento:', normalizedValue[0]);
+      normalizedValue = normalizedValue[0];
+    }
+    
+    // DESPUÉS: Manejar strings que contienen JSON arrays como '["2"]'
+    if (typeof normalizedValue === 'string' && normalizedValue.startsWith('[') && normalizedValue.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(normalizedValue);
+        if (Array.isArray(parsed) && parsed.length === 1) {
+          console.log(`DEBUG - Parseando string JSON '${normalizedValue}' -> ${parsed[0]}`);
+          normalizedValue = parsed[0];
+        }
+      } catch (e) {
+        // Si no se puede parsear, mantener el valor original
+      }
+    }
+    
+    if (normalizedValue !== value) {
+      console.log(`DEBUG - Valor final normalizado:`, normalizedValue);
+    }
+    
+    return normalizedValue;
+  });
+  
   if (multiple) {
   values = values.flatMap(value => {
     if (typeof value === 'number') {
@@ -359,12 +415,24 @@ validatorController.validateColumn = async (column) => {
     });
   }
 
-if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje") {
+if (datatype === "Entero") {
+  values = values.map(value => {
+    const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+    if (!required && isEmpty) return null;
+    
+    // Convertir directamente a entero
+    const num = parseInt(value);
+    console.log(`DEBUG - Convirtiendo '${value}' a entero: ${num}`);
+    return isNaN(num) ? value : num;
+  });
+} else if (datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
       const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
       if (!required && isEmpty) return null;
+      
       const num = Number(value);
+      console.log(`DEBUG - Convirtiendo '${value}' a número: ${num}`);
       return isNaN(num) ? value : num;
     });
   }
@@ -376,6 +444,9 @@ if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje"
 
   if (validate_with) {
     const [validatorName, columnName] = validate_with.split(' - ');
+    console.log('DEBUG validateColumn - validate_with:', validate_with);
+    console.log('DEBUG validateColumn - validatorName:', validatorName);
+    console.log('DEBUG validateColumn - columnName:', columnName);
 
     if (validatorName === "Funcionarios") {
       const users = await User.find({}, { identification: 1 }).lean();
@@ -405,24 +476,51 @@ if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje"
       columnToValidate = { type: "Texto", values: participantIdentifications };
     } else {
       validator = await Validator.findOne({ name: validatorName });
-
+      console.log('DEBUG - Buscando validador con nombre:', validatorName);
+      console.log('DEBUG - Validador encontrado:', validator ? 'SÍ' : 'NO');
+      
+      // Si no se encuentra, intentar con el nombre de la columna como nombre del validador
+      if (!validator && columnName) {
+        validator = await Validator.findOne({ name: columnName });
+        console.log('DEBUG - Intentando con columnName:', columnName);
+        console.log('DEBUG - Validador encontrado con columnName:', validator ? 'SÍ' : 'NO');
+        
+        // Si se encuentra con columnName, actualizar el nombre para la búsqueda de columna
+        if (validator) {
+          console.log('DEBUG - Usando validador encontrado por columnName, buscando columna:', columnName);
+        }
+      }
+      
       if (!validator) {
+        // Buscar validadores similares para debug
+        const allValidators = await Validator.find({}, {name: 1});
+        console.log('DEBUG - Todos los validadores disponibles:', allValidators.map(v => v.name));
+        
         return {
           status: false,
           errors: [{ register: null, message: `Tabla de validación no encontrada: ${validatorName}` }]
         };
       }
 
-      columnToValidate = validator.columns.find(column => column.name === columnName);
+      // Si encontramos el validador por columnName, buscar la columna correcta
+      if (validatorName !== validator.name) {
+        // El validador se encontró por columnName, buscar la primera columna que sea validadora
+        columnToValidate = validator.columns.find(column => column.is_validator);
+        console.log('DEBUG - Buscando primera columna validadora:', columnToValidate ? columnToValidate.name : 'NO ENCONTRADA');
+      } else {
+        // Búsqueda normal por nombre de columna
+        columnToValidate = validator.columns.find(column => column.name === columnName);
+      }
 
       if (!columnToValidate) {
         return {
           status: false,
-          errors: [{ register: null, message: `Columna '${columnName}' no encontrada en la tabla: ${validatorName}` }]
+          errors: [{ register: null, message: `Columna '${columnName}' no encontrada en la tabla: ${validator.name}` }]
         };
       }
 
       validValuesSet = new Set(columnToValidate.values);
+      console.log('DEBUG - Valores válidos para', validatorName, ':', Array.from(validValuesSet).slice(0, 10), '...');
     }
   }
 
@@ -492,12 +590,21 @@ if (columnToValidate && validValuesSet) {
     value.forEach(val => {
       let normalizedVal = val;
 
-      // 🔄 Convertimos el valor al tipo esperado por el validador
-      if (column.validator_type === 'Número') {
-        const num = Number(val);
-        normalizedVal = isNaN(num) ? val : num;
+      // Detectar si los valores del validador son números
+      const firstValidValue = Array.from(validValuesSet)[0];
+      const validatorHasNumbers = typeof firstValidValue === 'number';
+      
+      // PRIMERO: Si es un array, extraer el primer valor
+      let valueToNormalize = val;
+      if (Array.isArray(val) && val.length > 0) {
+        valueToNormalize = val[0];
+      }
+      
+      if (validatorHasNumbers) {
+        const num = Number(valueToNormalize);
+        normalizedVal = isNaN(num) ? valueToNormalize : num;
       } else {
-        normalizedVal = String(val).trim();
+        normalizedVal = String(valueToNormalize).trim();
       }
 
       // 🚫 Si no está en el set, es inválido
@@ -515,12 +622,25 @@ if (columnToValidate && validValuesSet) {
     if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
       let normalizedVal = value;
 
-      if (column.validator_type === 'Número') {
-        const num = Number(value);
-        normalizedVal = isNaN(num) ? value : num;
-      } else {
-        normalizedVal = String(value).trim();
+      // Detectar si los valores del validador son números
+      const firstValidValue = Array.from(validValuesSet)[0];
+      const validatorHasNumbers = typeof firstValidValue === 'number';
+      
+      // PRIMERO: Si es un array, extraer el primer valor
+      let valueToNormalize = value;
+      if (Array.isArray(value) && value.length > 0) {
+        valueToNormalize = value[0];
+        console.log('DEBUG - Array detectado, extrayendo primer valor:', valueToNormalize);
       }
+      
+      if (validatorHasNumbers) {
+        const num = Number(valueToNormalize);
+        normalizedVal = isNaN(num) ? valueToNormalize : num;
+      } else {
+        normalizedVal = String(valueToNormalize).trim();
+      }
+      
+      console.log('DEBUG - Valor original:', value, 'Valor normalizado:', normalizedVal, 'Tipo validador:', validatorHasNumbers ? 'números' : 'strings');
 
       if (!validValuesSet.has(normalizedVal)) {
         result.status = false;

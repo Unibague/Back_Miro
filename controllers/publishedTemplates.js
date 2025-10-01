@@ -14,6 +14,49 @@ const auditLogger = require('../services/auditLogger');
 
 const publTempController = {};
 
+// Función para convertir hipervínculos de Excel a texto
+const convertHyperlinkToText = (value) => {
+  if (value && typeof value === 'object') {
+    // Si es un array, tomar el primer elemento o convertir a string
+    if (Array.isArray(value)) {
+      return value.length > 0 ? String(value[0]) : '';
+    }
+    
+    // Si es un hipervínculo de Excel
+    if (value.hyperlink || value.text) {
+      return value.text || value.hyperlink || String(value);
+    }
+    // Si es un objeto MongoDB
+    if ('$numberInt' in value || '$numberDouble' in value) {
+      return value.$numberInt || value.$numberDouble;
+    }
+    // Si tiene propiedades como richText, formula, etc. (objetos de Excel)
+    if (value.richText) {
+      return value.richText.map(rt => rt.text || '').join('');
+    }
+    if (value.formula) {
+      return value.result || value.formula;
+    }
+    if (value.result !== undefined) {
+      return value.result;
+    }
+    // Si es un objeto con valor directo
+    if (value.value !== undefined) {
+      return value.value;
+    }
+    // Intentar extraer cualquier propiedad que parezca texto
+    const possibleTextProps = ['text', 'value', 'result', 'displayText', 'content'];
+    for (const prop of possibleTextProps) {
+      if (value[prop] !== undefined) {
+        return value[prop];
+      }
+    }
+    // Si es otro tipo de objeto, convertir a string
+    return String(value);
+  }
+  return value ?? '';
+};
+
 datetime_now = () => {
   const now = new Date();
 
@@ -218,7 +261,12 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
             if (!acc[index]) {
               acc[index] = { Dependencia: ld.dependency };
             }
-            acc[index][item.field_name] = value.$numberInt || value;
+            // Fix para datos existentes con '[object Object]'
+            if (typeof value === 'string' && value === '[object Object]') {
+              acc[index][item.field_name] = '';
+            } else {
+              acc[index][item.field_name] = convertHyperlinkToText(value);
+            }
           });
           return acc;
         }, []);
@@ -424,10 +472,41 @@ const result = pubTem.template.fields.map((field) => {
   const values = data.map(row => {
     let val = row[field.name];
     
+    // FIX: Manejar objetos de Excel (hipervínculos, etc.)
+    if (typeof val === 'object' && val !== null) {
+      val = convertHyperlinkToText(val);
+    }
+    
     // FIX TEMPORAL: Detectar [object Object] strings del frontend
     if (typeof val === 'string' && val === '[object Object]') {
       console.warn(`⚠️  Campo ${field.name} contiene '[object Object]' - problema en el frontend`);
       val = null; // Convertir a null para que se maneje como valor vacío
+    }
+    
+    // FIX: Manejar arrays que vienen del frontend (incluyendo arrays anidados)
+    if (Array.isArray(val)) {
+      console.log(`DEBUG - Campo ${field.name}: Array detectado:`, val);
+      
+      // Normalizar arrays anidados
+      let normalizedVal = val;
+      while (Array.isArray(normalizedVal) && normalizedVal.length === 1) {
+        normalizedVal = normalizedVal[0];
+      }
+      
+      // Si después de normalizar es un string JSON, parsearlo
+      if (typeof normalizedVal === 'string' && normalizedVal.startsWith('[') && normalizedVal.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(normalizedVal);
+          if (Array.isArray(parsed) && parsed.length === 1) {
+            normalizedVal = parsed[0];
+          }
+        } catch (e) {
+          // Si no se puede parsear, mantener el valor
+        }
+      }
+      
+      val = normalizedVal;
+      console.log(`DEBUG - Campo ${field.name}: Valor final normalizado:`, val);
     }
     
     // Limpiar valores: convertir string "null" a null real
@@ -687,7 +766,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   // Añadir todas las columnas vacías según template.fields
   template.template.fields.forEach(field => {
-    emptyRow[field.name] = "";
+    emptyRow[field.name.toUpperCase()] = "";
   });
 
   return [emptyRow];
@@ -698,11 +777,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-
-    if (value && typeof value === 'object' && ('$numberInt' in value || '$numberDouble' in value)) {
-      acc[index][item.field_name] = value.$numberInt || value.$numberDouble;
+    // Fix para datos existentes con '[object Object]'
+    if (typeof value === 'string' && value === '[object Object]') {
+      acc[index][item.field_name.toUpperCase()] = '';
     } else {
-      acc[index][item.field_name] = value ?? "";
+      acc[index][item.field_name.toUpperCase()] = convertHyperlinkToText(value) ?? "";
     }
   });
   return acc;
@@ -728,43 +807,60 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
   const periodId = req.query.periodId;
+  const filterByDependency = req.query.filterByDependency;
   const skip = (page - 1) * limit;
 
   try {
     console.log('=== DEBUG getUploadedTemplatesByProducer ===');
     console.log('Email:', email);
+    console.log('FilterByDependency:', filterByDependency);
+    console.log('All query params:', req.query);
     
     const user = await User.findOne({ email });
     console.log('User found:', user ? 'YES' : 'NO');
-    console.log('User roles:', user?.roles);
     
     if (!user) {
       console.log('ERROR: User not found');
       return res.status(404).json({ status: 'User not found' });
     }
-    
-    console.log('User validation passed');
 
-    console.log('User dep_code:', user.dep_code);
-    console.log('User additional_dependencies:', user.additional_dependencies);
-
-    // Obtener todas las dependencias del usuario
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     console.log('All user dependencies:', allUserDependencies);
     
+    // Si hay filtro por dependencia, convertir nombre a dep_code si es necesario
+    let dependenciesToQuery = allUserDependencies;
+    if (filterByDependency) {
+      console.log('FilterByDependency received:', filterByDependency);
+      
+      const dependencyByCode = await Dependency.findOne({ dep_code: filterByDependency });
+      const dependencyByName = await Dependency.findOne({ name: { $regex: new RegExp(`^${filterByDependency}$`, 'i') } });
+      
+      if (dependencyByCode) {
+        dependenciesToQuery = [filterByDependency];
+        console.log('Filtering by dep_code:', filterByDependency);
+      } else if (dependencyByName) {
+        dependenciesToQuery = [dependencyByName.dep_code];
+        console.log('Filtering by name, converted to dep_code:', dependencyByName.dep_code);
+      } else {
+        console.log('Dependency not found, using all user dependencies');
+      }
+    }
+    console.log('Dependencies to query:', dependenciesToQuery);
+    console.log('🔍 CRITICAL: Is filterByDependency being processed?', !!filterByDependency);
+    
+    // Obtener IDs de las dependencias para filtrar por template.producers
+    const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
+    const dependencyIds = dependencies.map(dep => dep._id);
+    console.log('Dependency IDs for producers filter:', dependencyIds);
+    
     const query = {
-      'loaded_data.dependency': { $in: allUserDependencies },
+      'template.producers': { $in: dependencyIds },
       name: { $regex: search, $options: 'i' }
     };
     
-    console.log('Query for uploaded templates:', JSON.stringify(query, null, 2));
-
     if (periodId) {
       query.period = periodId;
     }
-    
-    console.log('Final query with period:', JSON.stringify(query, null, 2));
-    console.log('About to execute PublishedTemplate.find...');
 
     const templates = await PublishedTemplate.find(query)
       .skip(skip)
@@ -772,45 +868,57 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       .populate('period')
       .populate({
         path: 'template',
-        populate: {
-          path: 'dimensions',
-          model: 'dimensions'
-        }
+        populate: [
+          { path: 'dimensions', model: 'dimensions' },
+          { path: 'producers', model: 'dependencies' }
+        ]
       });
-      
-    console.log('Found uploaded templates:', templates.length);
-    templates.forEach(t => {
-      console.log(`Template: ${t.name}, loaded_data dependencies:`, t.loaded_data.map(ld => ld.dependency));
+
+    // Filtrar solo plantillas asignadas que tienen información cargada
+    const templatesWithData = templates.filter(template => {
+      const hasDataForDependencies = template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
+      );
+      console.log(`\n🔍 Template '${template.name}':`);
+      console.log('  - loaded_data dependencies:', template.loaded_data.map(ld => ld.dependency));
+      console.log('  - dependenciesToQuery:', dependenciesToQuery);
+      console.log('  - hasDataForDependencies:', hasDataForDependencies);
+      return hasDataForDependencies;
     });
 
-      const templatesWithValidators = await Promise.all(
-        templates.map(async (template) => {
-          const validators = await Promise.all(
-            template.template.fields.map(async (field) => {
-              return Validator.giveValidatorToExcel(field.validate_with);
-            })
-          );
-  
-          template = template.toObject();
-          validatorsFiltered = validators.filter(v => v !== undefined)
-          template.validators = validatorsFiltered // Añadir validators al objeto
-  
-          return template;
-        })
-      );
+    const templatesWithValidators = await Promise.all(
+      templatesWithData.map(async (template) => {
+        const validators = await Promise.all(
+          template.template.fields.map(async (field) => {
+            return Validator.giveValidatorToExcel(field.validate_with);
+          })
+        );
 
-    const total = await PublishedTemplate.countDocuments(query);
+        template = template.toObject();
+        template.validators = validators.filter(v => v !== undefined);
+        return template;
+      })
+    );
+
+    // Contar total real después del filtrado
+    const allTemplatesForCount = await PublishedTemplate.find(query);
+    const totalWithData = allTemplatesForCount.filter(template => {
+      return template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
+      );
+    }).length;
 
     res.status(200).json({
-      "templates": templatesWithValidators,
-      total,
+      templates: templatesWithValidators,
+      total: totalWithData,
       page,
-      pages: Math.ceil(total / limit),
+      pages: Math.ceil(totalWithData / limit),
     });
   } catch (error) {
     console.error('=== ERROR in getUploadedTemplatesByProducer ===');
     console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 };
@@ -832,7 +940,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     console.log('User dep_code:', user.dep_code);
     console.log('User additional_dependencies:', user.additional_dependencies);
 
-    // Obtener todas las dependencias del usuario (principal + adicionales)
+    // Obtener todas las dependencias del usuario (principal + adicionales)l + adicionales)
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     console.log('All user dependencies:', allUserDependencies);
     
@@ -1075,7 +1183,19 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
       return res.status(404).json({ status: 'No data found for dependency' });
     }
 
-    res.status(200).json({ data: producerData.filled_data });
+    // Aplicar conversión de hipervínculos a los datos
+    const processedData = producerData.filled_data.map(item => ({
+      ...item,
+      values: item.values.map(value => {
+        // Fix para datos existentes con '[object Object]'
+        if (typeof value === 'string' && value === '[object Object]') {
+          return ''; // Convertir a string vacío
+        }
+        return convertHyperlinkToText(value);
+      })
+    }));
+    
+    res.status(200).json({ data: processedData });
   } catch (error) {
     console.error('Error fetching template data:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -1132,6 +1252,23 @@ publTempController.updateDeadlines = async (req, res) => {
   } catch (error) {
     console.error("Error al actualizar deadlines:", error);
     return res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanObjectObjectData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    const { cleanObjectObjectData } = require('../scripts/cleanObjectObjectData');
+    const result = await cleanObjectObjectData();
+    
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error cleaning object data:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
