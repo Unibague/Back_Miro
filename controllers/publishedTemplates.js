@@ -873,7 +873,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const skip = (page - 1) * limit;
 
   try {
-    console.log('=== DEBUG getUploadedTemplatesByProducer ===');
+    console.log('== DEBUG getUploadedTemplatesByProducer ===');
     console.log('Email:', email);
     console.log('FilterByDependency:', filterByDependency);
     console.log('All query params:', req.query);
