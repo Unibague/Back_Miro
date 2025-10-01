@@ -14,47 +14,98 @@ const auditLogger = require('../services/auditLogger');
 
 const publTempController = {};
 
+// Función para normalizar nombres de campos para Excel
+const normalizeFieldName = (fieldName) => {
+  return fieldName
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_') // Reemplazar caracteres especiales con guión bajo
+    .replace(/_+/g, '_') // Reemplazar múltiples guiones bajos con uno solo
+    .replace(/^_|_$/g, ''); // Eliminar guiones bajos al inicio y final
+};
+
 // Función para convertir hipervínculos de Excel a texto
 const convertHyperlinkToText = (value) => {
-  if (value && typeof value === 'object') {
-    // Si es un array, tomar el primer elemento o convertir a string
-    if (Array.isArray(value)) {
-      return value.length > 0 ? String(value[0]) : '';
+  let result;
+  
+  // Manejar valores null, undefined o proxy revocados
+  if (value === null || value === undefined) {
+    return '';
+  }
+  
+  // Detectar proxy revocado
+  try {
+    if (typeof value === 'object' && value.toString() === '[object Object]') {
+      // Intentar acceder a una propiedad para detectar proxy revocado
+      Object.keys(value);
     }
-    
+  } catch (e) {
+    console.log('   ⚠️ Detected revoked proxy, returning empty string');
+    return '';
+  }
+  
+  if (value && typeof value === 'object') {
+    // Si es un array, manejar arrays anidados
+    if (Array.isArray(value)) {
+      // Si es un array anidado como [['15']], aplanar
+      const flattened = value.flat(Infinity);
+      result = flattened.length > 0 ? String(flattened[0]) : '';
+    }
     // Si es un hipervínculo de Excel
-    if (value.hyperlink || value.text) {
-      return value.text || value.hyperlink || String(value);
+    else if (value.hyperlink || value.text) {
+      result = value.text || value.hyperlink || String(value);
     }
     // Si es un objeto MongoDB
-    if ('$numberInt' in value || '$numberDouble' in value) {
-      return value.$numberInt || value.$numberDouble;
+    else if ('$numberInt' in value || '$numberDouble' in value) {
+      result = value.$numberInt || value.$numberDouble;
     }
     // Si tiene propiedades como richText, formula, etc. (objetos de Excel)
-    if (value.richText) {
-      return value.richText.map(rt => rt.text || '').join('');
+    else if (value.richText) {
+      result = value.richText.map(rt => rt.text || '').join('');
     }
-    if (value.formula) {
-      return value.result || value.formula;
+    else if (value.formula) {
+      result = value.result || value.formula;
     }
-    if (value.result !== undefined) {
-      return value.result;
+    else if (value.result !== undefined) {
+      result = value.result;
     }
     // Si es un objeto con valor directo
-    if (value.value !== undefined) {
-      return value.value;
+    else if (value.value !== undefined) {
+      result = value.value;
     }
-    // Intentar extraer cualquier propiedad que parezca texto
-    const possibleTextProps = ['text', 'value', 'result', 'displayText', 'content'];
-    for (const prop of possibleTextProps) {
-      if (value[prop] !== undefined) {
-        return value[prop];
+    else {
+      // Intentar extraer cualquier propiedad que parezca texto
+      const possibleTextProps = ['text', 'value', 'result', 'displayText', 'content'];
+      for (const prop of possibleTextProps) {
+        if (value[prop] !== undefined) {
+          result = value[prop];
+          break;
+        }
+      }
+      // Si es otro tipo de objeto, convertir a string
+      if (result === undefined) {
+        result = String(value);
       }
     }
-    // Si es otro tipo de objeto, convertir a string
-    return String(value);
+  } else {
+    result = value ?? '';
   }
-  return value ?? '';
+  
+  // Limpiar saltos de línea y caracteres especiales que rompen Excel
+  if (typeof result === 'string') {
+    // Eliminar comillas que rodean todo el contenido
+    result = result.replace(/^"(.*)"$/g, '$1');
+    
+    // Reemplazar múltiples saltos de línea con punto y coma para separar URLs/valores
+    result = result.replace(/[\r\n]+/g, '; ')
+                   .replace(/[\t]/g, ' ')
+                   .replace(/""/g, '"') // Desescapar comillas dobles
+                   .replace(/;\s*;/g, ';') // Eliminar punto y coma duplicados
+                   .replace(/^;\s*|\s*;$/g, '') // Eliminar punto y coma al inicio/final
+                   .replace(/\s+/g, ' ') // Reemplazar múltiples espacios con uno solo
+                   .trim();
+  }
+  
+  return result;
 };
 
 datetime_now = () => {
@@ -172,6 +223,15 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           'name -_id'
         );
         data.dependency = loadedDependency ? loadedDependency.name : data.dependency;
+        
+        // Aplicar conversión de hipervínculos a los datos cargados
+        if (data.filled_data) {
+          data.filled_data = data.filled_data.map(fieldData => ({
+            ...fieldData,
+            values: fieldData.values.map(value => convertHyperlinkToText(value))
+          }));
+        }
+        
         return data;
       }));
       
@@ -743,11 +803,13 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
   }
 
   try {
-    const template = await PublishedTemplate.findById(pubTem_id);
+    const template = await PublishedTemplate.findById(pubTem_id).populate('template');
 
     if (!template) {
       return res.status(404).json({ status: 'Published template not found' });
     }
+    
+
 
     const dependencies = await Dependency.find({ dep_code: { $in: template.loaded_data.map(data => data.dependency) } });
 
@@ -766,7 +828,8 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   // Añadir todas las columnas vacías según template.fields
   template.template.fields.forEach(field => {
-    emptyRow[field.name.toUpperCase()] = "";
+    const cleanFieldName = normalizeFieldName(field.name);
+    emptyRow[cleanFieldName] = "";
   });
 
   return [emptyRow];
@@ -777,12 +840,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-    // Fix para datos existentes con '[object Object]'
-    if (typeof value === 'string' && value === '[object Object]') {
-      acc[index][item.field_name.toUpperCase()] = '';
-    } else {
-      acc[index][item.field_name.toUpperCase()] = convertHyperlinkToText(value) ?? "";
-    }
+    // Aplicar conversión de hipervínculos (ya incluye limpieza de saltos de línea)
+    const cleanValue = convertHyperlinkToText(value);
+    // Limpiar nombre del campo eliminando comillas y caracteres problemáticos
+    const fieldName = normalizeFieldName(item.field_name);
+    acc[index][fieldName] = cleanValue || "";
   });
   return acc;
 }, []);
@@ -811,7 +873,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const skip = (page - 1) * limit;
 
   try {
-    console.log('=== DEBUG getUploadedTemplatesByProducer ===');
+    console.log('== DEBUG getUploadedTemplatesByProducer ===');
     console.log('Email:', email);
     console.log('FilterByDependency:', filterByDependency);
     console.log('All query params:', req.query);
@@ -1186,13 +1248,7 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
     // Aplicar conversión de hipervínculos a los datos
     const processedData = producerData.filled_data.map(item => ({
       ...item,
-      values: item.values.map(value => {
-        // Fix para datos existentes con '[object Object]'
-        if (typeof value === 'string' && value === '[object Object]') {
-          return ''; // Convertir a string vacío
-        }
-        return convertHyperlinkToText(value);
-      })
+      values: item.values.map(value => convertHyperlinkToText(value))
     }));
     
     res.status(200).json({ data: processedData });
@@ -1268,6 +1324,58 @@ publTempController.cleanObjectObjectData = async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     console.error('Error cleaning object data:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanHyperlinkData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    console.log('🧹 Iniciando limpieza de hipervínculos en todas las plantillas...');
+    
+    const templates = await PublishedTemplate.find({});
+    let totalCleaned = 0;
+    let templatesProcessed = 0;
+    
+    for (const template of templates) {
+      let templateModified = false;
+      
+      for (const loadedData of template.loaded_data) {
+        for (const fieldData of loadedData.filled_data) {
+          for (let i = 0; i < fieldData.values.length; i++) {
+            const originalValue = fieldData.values[i];
+            const cleanedValue = convertHyperlinkToText(originalValue);
+            
+            if (originalValue !== cleanedValue) {
+              fieldData.values[i] = cleanedValue;
+              totalCleaned++;
+              templateModified = true;
+            }
+          }
+        }
+      }
+      
+      if (templateModified) {
+        await template.save();
+        templatesProcessed++;
+        console.log(`✅ Plantilla limpiada: ${template.name}`);
+      }
+    }
+    
+    console.log(`🎉 Limpieza completada: ${totalCleaned} valores limpiados en ${templatesProcessed} plantillas`);
+    
+    res.status(200).json({
+      message: 'Limpieza de hipervínculos completada',
+      totalCleaned,
+      templatesProcessed,
+      totalTemplates: templates.length
+    });
+  } catch (error) {
+    console.error('Error cleaning hyperlink data:', error);
     res.status(500).json({ error: error.message });
   }
 };
