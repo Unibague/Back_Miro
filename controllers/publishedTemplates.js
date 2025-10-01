@@ -172,6 +172,15 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           'name -_id'
         );
         data.dependency = loadedDependency ? loadedDependency.name : data.dependency;
+        
+        // Aplicar conversión de hipervínculos a los datos cargados
+        if (data.filled_data) {
+          data.filled_data = data.filled_data.map(fieldData => ({
+            ...fieldData,
+            values: fieldData.values.map(value => convertHyperlinkToText(value))
+          }));
+        }
+        
         return data;
       }));
       
@@ -777,12 +786,9 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-    // Fix para datos existentes con '[object Object]'
-    if (typeof value === 'string' && value === '[object Object]') {
-      acc[index][item.field_name.toUpperCase()] = '';
-    } else {
-      acc[index][item.field_name.toUpperCase()] = convertHyperlinkToText(value) ?? "";
-    }
+    // Aplicar conversión de hipervínculos a todos los valores
+    const cleanValue = convertHyperlinkToText(value);
+    acc[index][item.field_name.toUpperCase()] = cleanValue || "";
   });
   return acc;
 }, []);
@@ -1186,13 +1192,7 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
     // Aplicar conversión de hipervínculos a los datos
     const processedData = producerData.filled_data.map(item => ({
       ...item,
-      values: item.values.map(value => {
-        // Fix para datos existentes con '[object Object]'
-        if (typeof value === 'string' && value === '[object Object]') {
-          return ''; // Convertir a string vacío
-        }
-        return convertHyperlinkToText(value);
-      })
+      values: item.values.map(value => convertHyperlinkToText(value))
     }));
     
     res.status(200).json({ data: processedData });
@@ -1268,6 +1268,58 @@ publTempController.cleanObjectObjectData = async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     console.error('Error cleaning object data:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanHyperlinkData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    console.log('🧹 Iniciando limpieza de hipervínculos en todas las plantillas...');
+    
+    const templates = await PublishedTemplate.find({});
+    let totalCleaned = 0;
+    let templatesProcessed = 0;
+    
+    for (const template of templates) {
+      let templateModified = false;
+      
+      for (const loadedData of template.loaded_data) {
+        for (const fieldData of loadedData.filled_data) {
+          for (let i = 0; i < fieldData.values.length; i++) {
+            const originalValue = fieldData.values[i];
+            const cleanedValue = convertHyperlinkToText(originalValue);
+            
+            if (originalValue !== cleanedValue) {
+              fieldData.values[i] = cleanedValue;
+              totalCleaned++;
+              templateModified = true;
+            }
+          }
+        }
+      }
+      
+      if (templateModified) {
+        await template.save();
+        templatesProcessed++;
+        console.log(`✅ Plantilla limpiada: ${template.name}`);
+      }
+    }
+    
+    console.log(`🎉 Limpieza completada: ${totalCleaned} valores limpiados en ${templatesProcessed} plantillas`);
+    
+    res.status(200).json({
+      message: 'Limpieza de hipervínculos completada',
+      totalCleaned,
+      templatesProcessed,
+      totalTemplates: templates.length
+    });
+  } catch (error) {
+    console.error('Error cleaning hyperlink data:', error);
     res.status(500).json({ error: error.message });
   }
 };

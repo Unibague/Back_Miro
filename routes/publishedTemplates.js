@@ -26,5 +26,6 @@ router.get("/export-pending/:periodId", controller.exportPendingTemplates);
 
 router.put("/update-deadlines", controller.updateDeadlines);
 
+// router.post("/clean-hyperlinks", controller.cleanHyperlinkData); // Comentado por seguridad
 
 module.exports = router
