@@ -1062,7 +1062,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     const dependenciesToQuery = filterByDependency ? [filterByDependency] : allUserDependencies;
     console.log('Dependencies to query:', dependenciesToQuery);
     
-    // Obtener IDs de las dependencias a consultar
+    // Obtener IDs de las dependencias a consulta
     const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
     console.log('Found dependencies:', dependencies.map(d => ({ code: d.dep_code, name: d.name })));
     const dependencyIds = dependencies.map(dep => dep._id);
