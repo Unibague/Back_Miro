@@ -156,6 +156,8 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
   const periodId = req.query.periodId || null;
+  const filterByUserScope = req.query.filterByUserScope;
+  const userRole = req.query.userRole;
   const skip = (page - 1) * limit;
 
   try {
@@ -164,11 +166,6 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       return res.status(404).json({ status: 'User not found' });
     }
 
-    const dimensions = await Dimension.find().populate({
-      path: 'responsible',
-      match: { responsible: email }
-    }).then(dimensions => dimensions.filter(dim => dim.responsible));
-
     const activeRole = user.activeRole;
 
     let query = {
@@ -176,12 +173,65 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       ...(periodId && { period: periodId }),
     };
     
-    if (activeRole !== 'Administrador') {
-      const dimensionIds = dimensions.map(dim => dim._id);
-      if (dimensionIds.length > 0) {
-        query['template.dimensions'] = { $in: dimensionIds };
+    // Filtrado específico para Productores cuando filterByUserScope=true
+    if (filterByUserScope === 'true' && userRole === 'Productor') {
+      const userDependency = await Dependency.findOne({
+        members: { $elemMatch: { email: email } }
+      });
+      
+      if (userDependency) {
+        query['template.producers'] = userDependency._id;
+        console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
       } else {
-        return res.status(403).json({ status: 'Access denied' });
+        // Si no encuentra dependencia, no mostrar plantillas
+        return res.status(200).json({
+          templates: [],
+          total: 0,
+          page,
+          pages: 0,
+        });
+      }
+    }
+    // Aplicar filtrado según el rol del usuario (lógica original)
+    else if (activeRole === 'Administrador') {
+      // Los administradores ven todas las plantillas
+      console.log('Usuario Administrador: mostrando todas las plantillas');
+    } else {
+      // Para todos los demás roles, construir filtros combinados
+      const orConditions = [];
+      
+      // 1. Verificar si es responsable de dimensiones
+      const userDependencies = await Dependency.find({ responsible: email });
+      const userDependencyIds = userDependencies.map(dep => dep._id);
+      
+      const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+      if (dimensions.length > 0) {
+        const dimensionIds = dimensions.map(dim => dim._id);
+        orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
+        console.log('Usuario responsable de dimensiones:', dimensions.map(d => d.name));
+      }
+      
+      // 2. Verificar si es responsable o visualizador de dependencias (para plantillas)
+      const allUserDependencies = await Dependency.find({
+        $or: [
+          { responsible: email },
+          { visualizers: email }
+        ]
+      });
+      
+      if (allUserDependencies.length > 0) {
+        const dependencyIds = allUserDependencies.map(dep => dep._id);
+        orConditions.push({ 'template.producers': { $in: dependencyIds } });
+        console.log('Usuario responsable/visualizador de dependencias:', allUserDependencies.map(d => d.name));
+      }
+      
+      // Si tiene alguna relación (dimensiones o dependencias), aplicar filtros
+      if (orConditions.length > 0) {
+        query.$or = orConditions;
+        console.log('Aplicando filtros combinados para', activeRole);
+      } else {
+        // Si no tiene relaciones específicas, mostrar todas las plantillas
+        console.log('Usuario sin relaciones específicas: mostrando todas las plantillas');
       }
     }
 
@@ -794,9 +844,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   user = await User.findOne({ email })
 
-  if(!user || (!user.roles.includes('Responsable') && !user.roles.includes('Administrador'))) {
+  if(!user) {
     return res.status(404).json({status: 'User not available'})
   }
+  
+  // Permitir acceso a todos los usuarios autenticados
 
   if (!pubTem_id) {
     return res.status(400).json({ status: 'Missing pubTem_id' });
