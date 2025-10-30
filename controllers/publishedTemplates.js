@@ -173,23 +173,46 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       ...(periodId && { period: periodId }),
     };
     
-    // Filtrado específico para Productores cuando filterByUserScope=true
-    if (filterByUserScope === 'true' && userRole === 'Productor') {
-      const userDependency = await Dependency.findOne({
-        members: { $elemMatch: { email: email } }
-      });
-      
-      if (userDependency) {
-        query['template.producers'] = userDependency._id;
-        console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
-      } else {
-        // Si no encuentra dependencia, no mostrar plantillas
-        return res.status(200).json({
-          templates: [],
-          total: 0,
-          page,
-          pages: 0,
+    // Filtrado específico cuando filterByUserScope=true
+    if (filterByUserScope === 'true') {
+      if (userRole === 'Productor') {
+        const userDependency = await Dependency.findOne({
+          members: { $elemMatch: { email: email } }
         });
+        
+        if (userDependency) {
+          query['template.producers'] = userDependency._id;
+          console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
+        } else {
+          return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
+        }
+      } else if (userRole === 'Responsable') {
+        const orConditions = [];
+        
+        // Dimensiones donde es responsable
+        const userDependencies = await Dependency.find({ responsible: email });
+        const userDependencyIds = userDependencies.map(dep => dep._id);
+        const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+        if (dimensions.length > 0) {
+          const dimensionIds = dimensions.map(dim => dim._id);
+          orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
+        }
+        
+        // Dependencias donde es responsable/visualizador
+        const allUserDependencies = await Dependency.find({
+          $or: [{ responsible: email }, { visualizers: email }]
+        });
+        if (allUserDependencies.length > 0) {
+          const dependencyIds = allUserDependencies.map(dep => dep._id);
+          orConditions.push({ 'template.producers': { $in: dependencyIds } });
+        }
+        
+        if (orConditions.length > 0) {
+          query.$or = orConditions;
+          console.log('Filtro Responsable aplicado');
+        } else {
+          return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
+        }
       }
     }
     // Aplicar filtrado según el rol del usuario (lógica original)
