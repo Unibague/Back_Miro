@@ -292,7 +292,7 @@ async function findTemplatesByStudentCodes(studentCodes) {
 }
 
 async function findTemplatesByUserIdentifications(identifications) {
-  // Buscar en loaded_data de PublishedTemplates
+  // Buscar en loaded_data de PublishedTemplate
   const publishedTemplates = await PublishedTemplate.find({
     'loaded_data.filled_data': {
       $elemMatch: {
