@@ -83,8 +83,8 @@ const requireReadAccess = async (req, res, next) => {
             return res.status(404).json({ message: 'Usuario no encontrado o inactivo' });
         }
         
-        // Permitir acceso a Administradores y Responsables
-        const allowedRoles = ['Administrador', 'Responsable'];
+        // Permitir acceso a todos los usuarios autenticados
+        const allowedRoles = ['Administrador', 'Responsable', 'Productor'];
         if (!allowedRoles.includes(user.activeRole)) {
             return res.status(403).json({ 
                 message: 'Acceso denegado. Rol insuficiente.',

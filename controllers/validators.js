@@ -91,7 +91,13 @@ validatorController.createValidator = async (req, res) => {
             return res.status(400).json({ status: "Columns name cannot contain '-' character" });
         }
 
-        const user = await User.findOne({ email: req.body.email });
+        // Obtener email del body, query o usuario autenticado
+        const email = req.body.email || req.query.email || req.user?.email;
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+
+        const user = await User.findOne({ email });
         if (!user) {
             return res.status(404).json({ status: "User not found" });
         }
@@ -114,22 +120,33 @@ validatorController.createValidator = async (req, res) => {
 
 validatorController.updateName = async (req, res) => {
     try {
-        const { name } = req.body
-        const { newName } = req.body
-        const validator = await Validator.findOne({name})
+        const { name, newName } = req.body;
+        const email = req.body.email || req.query.email || req.user?.email;
+        
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+        
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
+        const validator = await Validator.findOne({name});
 
         if(name.includes('-') || newName.includes('-')) {
-            return res.status(400).json({ status: "New name cannot contain '-' character" })
+            return res.status(400).json({ status: "New name cannot contain '-' character" });
         }
 
         if (!validator) {
-            return res.status(404).json({ status: "Validator not found" })
+            return res.status(404).json({ status: "Validator not found" });
         }
-        await Validator.updateOne({ name }, { name: newName })        
-        res.status(200).json({ status: "Name updated" })
+        
+        await Validator.updateOne({ name }, { name: newName });
+        res.status(200).json({ status: "Name updated" });
     }
     catch (error) {
-        res.status(500).json({ error: error.message })
+        res.status(500).json({ error: error.message });
     }
 }
 
@@ -313,7 +330,12 @@ validatorController.getValidatorsWithPagination = async (req, res) => {
 
 validatorController.deleteValidator = async (req, res) => {
     try {
-        const { id, email } = req.body;
+        const { id } = req.body;
+        const email = req.body.email || req.query.email || req.user?.email;
+        
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
         
         const user = await User.findOne({ email });
         if (!user) {
