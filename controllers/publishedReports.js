@@ -27,7 +27,7 @@ pubReportController.getPublishedReports = async (req, res) => {
   try {
     const { email, page = 1, limit = 10, search = "", periodId } = req.query;
 
-    // Verificar si el usuario es un administrador o Productor activo
+    // Verificar si el usuario es un administrador o Productor activ
     const user = await User.findOne({
       email,
       activeRole: { $in: ["Administrador"] },
