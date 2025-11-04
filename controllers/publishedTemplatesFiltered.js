@@ -4,6 +4,7 @@ const User = require('../models/users');
 const Dependency = require('../models/dependencies');
 const Student = require('../models/students');
 const TemplateFilter = require('../models/templateFilters');
+const auditLogger = require('../services/auditLogger');
 
 const filteredController = {};
 
@@ -34,6 +35,13 @@ filteredController.getAllPublishedTemplates = async (req, res) => {
         }
       })
       .lean();
+
+    // Audit log
+    await auditLogger.logRead(req, user, 'publishedTemplatesFiltered', {
+      action: 'getAllPublishedTemplates',
+      periodId: periodId,
+      totalTemplates: templates.length
+    });
 
     res.status(200).json({
       templates,
@@ -141,6 +149,14 @@ filteredController.getFilteredPublishedTemplates = async (req, res) => {
       });
 
     const total = await PublishedTemplate.countDocuments(query);
+
+    // Audit log
+    await auditLogger.logRead(req, user, 'publishedTemplatesFiltered', {
+      action: 'getFilteredPublishedTemplates',
+      appliedFilters: { dependency, field, fieldValue },
+      totalResults: total,
+      page: parseInt(page)
+    });
 
     res.status(200).json({
       templates,
