@@ -10,8 +10,11 @@ class UserService {
 
   static async findUserByEmailAndRole(email, role, session) {
     const user = await User.findOne({ email, activeRole: role, isActive: true })
+      .sort({ updatedAt: -1 })
       .session(session);
-    if (!user) throw new Error("User not found.")
+    if (!user) {
+      throw new Error("User not found.");
+    }
     return user;
   }
 

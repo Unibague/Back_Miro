@@ -30,14 +30,21 @@ publTempController.publishTemplate = async (req, res) => {
       return res.status(404).json({ status: 'Template not found' })
     }
 
-    const user = await UserService.findUserByEmailAndRole(email, 'Administrador')
+    const user = await UserService.findUserByEmailAndRole(email, 'Administrador');
+
+    // Ensure user has all required fields
+    const userForPublish = {
+      ...user.toObject(),
+      position: user.position || 'Administrador',
+      identification: user.identification || 0
+    };
 
     const category = template.category;  
     const sequence = template.sequence;  
 
     const newPublTemp = new PublishedTemplate({
       name: req.body.name || template.name,
-      published_by: user,
+      published_by: userForPublish,
       template: template,
       period: req.body.period_id,
       deadline: req.body.deadline,
@@ -50,6 +57,7 @@ publTempController.publishTemplate = async (req, res) => {
 
     return res.status(201).json({ status: 'Template published successfully' })
   } catch (error) {
+    console.error('Error in publishTemplate:', error);
     return res.status(500).json({ status: error.message })
   }
 }
