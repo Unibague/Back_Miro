@@ -12,6 +12,7 @@ const PublishedProducerReport = require("../models/publishedProducerReports");
 const ProducerReport = require("../models/producerReports");
 const { Types } = require("mongoose");
 const { deleteDriveFile } = require("../config/googleDrive");
+const auditLogger = require('../services/auditLogger');
 
 const datetime_now = () => {
   const now = new Date();
@@ -70,8 +71,9 @@ reportController.getReportsPagination = async (req, res) => {
 };
 
 reportController.createReport = async (req, res) => {
-  const session = await mongoose.startSession(); // Inicia una sesión de MongoDB
-  session.startTransaction(); // Inicia una transacción
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  let committed = false;
 
   try {
     const { email } = req.body;
@@ -82,7 +84,8 @@ reportController.createReport = async (req, res) => {
     const user = await UserService.findUserByEmailAndRole(email, "Administrador", session);
 
     if (!req.file) {
-      throw new Error("File is required");
+      await session.abortTransaction();
+      return res.status(400).json({ status: "File is required" });
     }
 
     if(!name || !description || !requires_attachment || !file_name 
@@ -97,27 +100,44 @@ reportController.createReport = async (req, res) => {
     });
   }
 
-    await ProducerReportsService.createReport(user, name, description, req.file, file_name, 
+    const newReport = await ProducerReportsService.createReport(user, name, description, req.file, file_name, 
       dimensions, producers, requires_attachment, session);
 
     await session.commitTransaction();
+    committed = true;
+    
+    // Audit log
+    await auditLogger.logCreate(req, user, 'producerReport', {
+      reportId: newReport?._id || 'unknown',
+      reportName: name
+    });
 
     res.status(201).json({ status: "Report created" });
   } catch (error) {
-    await session.abortTransaction();
+    if (!committed) {
+      await session.abortTransaction();
+    }
     console.error(error);
     res.status(400).json({ status: "Error creating report", error: error.message });
   } finally {
-    if (req.file) fs.unlinkSync(req.file.path);
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (err) {
+        console.warn('Warning: Could not delete temp file:', req.file.path);
+      }
+    }
     session.endSession();
   }
 };
 
 reportController.updateReport = async (req, res) => {
   const session = await mongoose.startSession();
+  session.startTransaction();
+  let committed = false;
+  
   try {
     const { id, email, requires_attachment, description, name, file_name, dimensions, producers } = req.body;
-    session.startTransaction();
 
     const invalidFileNameChars = /[<>:"/\\|?*]/;
     if (invalidFileNameChars.test(req.body.file_name)) {
@@ -126,32 +146,62 @@ reportController.updateReport = async (req, res) => {
     });
   }
     
-    await UserService.findUserByEmailAndRole(email, "Administrador", session);
+    const user = await UserService.findUserByEmailAndRole(email, "Administrador", session);
     if(!name || !description || !requires_attachment || !file_name 
       || dimensions?.length === 0 || producers?.length === 0) {
             throw new Error("All fields are required");
     }
     await ProducerReportsService.updateReport(id, name, description, req.file, file_name, dimensions, producers, requires_attachment, session);
     await session.commitTransaction();
+    committed = true;
+    
+    // Audit log
+    await auditLogger.logUpdate(req, user, 'producerReport', {
+      reportId: id,
+      reportName: name
+    });
+    
     res.status(200).json({ status: "Report updated" });
   } catch (error) {
-    await session.abortTransaction();
+    if (!committed) {
+      await session.abortTransaction();
+    }
     if(error.status === 401) 
       res.status(401).json({ message: "Cannot update this report because it is already filled in a published report" });
     else 
       res.status(500).json({ status: "Error updating report", error: error.message });
     
   } finally {
-    if (req.file) fs.unlinkSync(req.file.path);
+    if (req.file && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (err) {
+        console.warn('Warning: Could not delete temp file:', req.file.path);
+      }
+    }
     session.endSession();
   }
 }
 
 reportController.deleteProducerReport = async (req, res) => {
   const { id } = req.params;
+  const { email } = req.query;
+  
   try {
     if (!Types.ObjectId.isValid(id)) {
       return res.status(400).json({ status: "error", message: "ID no válido." });
+    }
+
+    // Si no hay email, buscar un usuario administrador por defecto para el audit log
+    let user = null;
+    if (email) {
+      user = await User.findOne({ email });
+      if (!user) {
+        return res.status(404).json({ status: "error", message: "Usuario no encontrado." });
+      }
+    } else {
+      // Buscar cualquier usuario administrador para el audit log
+      user = await User.findOne({ roles: 'Administrador' });
     }
 
     const isPublished = await PublishedProducerReport.findOne({ "report._id": new ObjectId(id) });
@@ -164,6 +214,10 @@ reportController.deleteProducerReport = async (req, res) => {
     }
 
 const report = await ProducerReport.findById(id);
+if (!report) {
+  return res.status(404).json({ status: "error", message: "Informe no encontrado." });
+}
+
 const fileId = report?.report_example?.id;
 
 if (fileId) {
@@ -186,6 +240,14 @@ if (fileId) {
 // - o se eliminó correctamente en Drive
 
 await ProducerReport.findByIdAndDelete(id);
+
+// Audit log (solo si hay usuario)
+if (user) {
+  await auditLogger.logDelete(req, user, 'producerReport', {
+    reportId: id,
+    reportName: report.name
+  });
+}
 
 return res.status(200).json({
   status: "success",

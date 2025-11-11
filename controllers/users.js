@@ -6,6 +6,7 @@ const dependencyController = require('./dependencies.js');
 const { default: mongoose } = require('mongoose');
 const periodController = require('./periods.js');
 const PendingUserChanges = require('../models/pendingUserChanges');
+const auditLogger = require('../services/auditLogger');
 
 const userController = {}
 
@@ -25,6 +26,12 @@ userController.addExternalUser = async (req, res) => {
 }
 
 userController.loadUsers = async (req, res) => {
+    console.log('=== DEBUG loadUsers ===');
+    console.log('Headers:', req.headers);
+    console.log('Query:', req.query);
+    console.log('Body:', req.body);
+    console.log('User from middleware:', req.user);
+    
     try {
         dependencyController.loadDependencies();
 
@@ -268,12 +275,22 @@ userController.getUser = async (req, res) => {
 
 
 userController.getUserToImpersonate = async (req, res) => {
-    const id = req.query.id; 
+    const id = req.query.id;
+    const adminEmail = req.query.adminEmail;
     try {
         const user = await User.findOne({ _id: id });
         if (!user) {
             return res.status(404).json({ error: "User not found in DB" });
         }
+        
+        // Registrar impersonación si se proporciona adminEmail
+        if (adminEmail) {
+            const adminUser = await User.findOne({ email: adminEmail });
+            if (adminUser) {
+                await auditLogger.logImpersonate(req, adminUser, user.email);
+            }
+        }
+        
         res.status(200).json(user);
     } catch (error) {
         res.status(500).json({ error: "Internal Server Error", details: error.message });
@@ -315,10 +332,18 @@ userController.getProducers = async (req, res) => {
   userController.updateUserRoles = async (req, res) => {
     const email = req.body.email;
     const roles = Array.from(req.body.roles);
+    const adminEmail = req.body.adminEmail;
+    
     try {
         if(!validateRoles(roles)) {
             throw new Error("Invalid roles");
         }
+        
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+        
         const user = await User.findOneAndUpdate(
             { email },
             { roles },
@@ -327,6 +352,14 @@ userController.getProducers = async (req, res) => {
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
+        
+        // Audit log
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            userId: user._id,
+            userEmail: email,
+            newRoles: roles
+        });
+        
         res.status(200).json({ user });
     } catch (error){
         res.status(500).json({ error: error.message });
@@ -335,9 +368,17 @@ userController.getProducers = async (req, res) => {
 }
 
 userController.updateUsersToProducer = async (req, res) => {
-    const rolesToUpdate = req.body;
+    const { users, adminEmail } = req.body;
+    console.log('=== DEBUG updateUsersToProducer ===');
+    console.log('users:', users);
+    console.log('adminEmail:', adminEmail);
+    
     try {
-        const updatePromises = rolesToUpdate.map(async ({ email, roles }) => {
+        if (!Array.isArray(users)) {
+            throw new Error('Users must be an array');
+        }
+        
+        const updatePromises = users.map(async ({ email, roles }) => {
         const user = await User.findOne({ email });
 
         if (!user) {
@@ -387,9 +428,14 @@ userController.updateUserActiveRole = async (req, res) => {
 };
 
 userController.updateUserStatus = async (req, res) => {
-    const { userId, isActive } = req.body;
+    const { userId, isActive, adminEmail } = req.body;
 
     try {
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+        
         const user = await User.findByIdAndUpdate(
             userId,
             { isActive },
@@ -398,6 +444,14 @@ userController.updateUserStatus = async (req, res) => {
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
+        
+        // Audit log
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            userId: user._id,
+            userEmail: user.email,
+            statusChange: isActive ? 'activated' : 'deactivated'
+        });
+        
         res.status(200).json({ user });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -447,6 +501,15 @@ userController.migrateUserDependecy = async (req, res) => {
     session.endSession();
   }
 }
+
+// Obtener todos los roles disponibles
+userController.getAvailableRoles = async (req, res) => {
+    try {
+        res.status(200).json({ roles });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
 
 const validateRoles = (userRoles) => {
     return userRoles.every(role => roles.includes(role));

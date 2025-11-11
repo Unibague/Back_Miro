@@ -3,6 +3,7 @@ const User = require('../models/users')
 const Validator = require('../models/validators');
 const Student = require('../models/students');
 const { all } = require('../routes/users');
+const auditLogger = require('../services/auditLogger');
 
 const validatorController = {}
 
@@ -51,6 +52,13 @@ const allowedDataTypes = {
         };
     },
     "Fecha": (value) => {
+        if (value === null || value === undefined) {
+            return {
+                isValid: false,
+                message: "El valor no es una fecha válida."
+            };
+        }
+        
         const isValid = !isNaN(Date.parse(value));
         return {
             isValid,
@@ -83,8 +91,26 @@ validatorController.createValidator = async (req, res) => {
             return res.status(400).json({ status: "Columns name cannot contain '-' character" });
         }
 
+        // Obtener email del body, query o usuario autenticado
+        const email = req.body.email || req.query.email || req.user?.email;
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+
         const validator = new Validator(req.body);
         await validator.save();
+        
+        // Audit log
+        await auditLogger.logCreate(req, user, 'validator', {
+            validatorId: validator._id,
+            validatorName: req.body.name
+        });
+        
         res.status(200).json({ status: "Validator created" });
 
     } catch (error) {
@@ -94,29 +120,59 @@ validatorController.createValidator = async (req, res) => {
 
 validatorController.updateName = async (req, res) => {
     try {
-        const { name } = req.body
-        const { newName } = req.body
-        const validator = await Validator.findOne({name})
+        const { name, newName } = req.body;
+        const email = req.body.email || req.query.email || req.user?.email;
+        
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+        
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
+        const validator = await Validator.findOne({name});
 
         if(name.includes('-') || newName.includes('-')) {
-            return res.status(400).json({ status: "New name cannot contain '-' character" })
+            return res.status(400).json({ status: "New name cannot contain '-' character" });
         }
 
         if (!validator) {
-            return res.status(404).json({ status: "Validator not found" })
+            return res.status(404).json({ status: "Validator not found" });
         }
-        await Validator.updateOne({ name }, { name: newName })        
-        res.status(200).json({ status: "Name updated" })
+        
+        await Validator.updateOne({ name }, { name: newName });
+        res.status(200).json({ status: "Name updated" });
     }
     catch (error) {
-        res.status(500).json({ error: error.message })
+        res.status(500).json({ error: error.message });
     }
 }
 
 validatorController.updateValidator = async (req, res) => {
     try {
-        const { id } = req.body;
-        const validator = await Validator.findById(id);
+        const { id, email, adminEmail } = req.body;
+        const validatorId = id || req.query.id;
+        const userEmail = email || adminEmail || req.query.email || req.body.userEmail;
+        
+        console.log('Update validator - Body:', req.body);
+        console.log('Update validator - Query:', req.query);
+        console.log('Update validator - Extracted userEmail:', userEmail);
+        
+        if (!validatorId) {
+            return res.status(400).json({ status: "Validator ID is required" });
+        }
+        
+        // Usar email por defecto si no se proporciona
+        const finalUserEmail = userEmail;
+        
+        const user = await User.findOne({ email: finalUserEmail });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
+        const validator = await Validator.findById(validatorId);
         if (!validator) {
             return res.status(404).json({ status: "Validator not found" })
         }
@@ -126,7 +182,14 @@ validatorController.updateValidator = async (req, res) => {
             });
         }
         validator.set(req.body)
-        await validator.save()      
+        await validator.save()
+        
+        // Audit log
+        await auditLogger.logUpdate(req, user, 'validator', {
+            validatorId: validatorId,
+            validatorName: validator.name
+        });
+        
         res.status(200).json({ status: "Validator updated" })
     }
     catch (error) {
@@ -218,8 +281,20 @@ validatorController.getValidator = async (req, res) => {
 validatorController.getValidatorById = async (req, res) => {
     const { id } = req.query
     try {
-        const validator = await Validator
-            .findById(id)
+        if (!id || id === 'undefined') {
+            return res.status(400).json({ status: "Valid validator ID is required" })
+        }
+        
+        let validator;
+        
+        // Intentar buscar por ObjectId primero
+        if (id.match(/^[0-9a-fA-F]{24}$/)) {
+            validator = await Validator.findById(id);
+        } else {
+            // Si no es un ObjectId válido, buscar por nombre
+            validator = await Validator.findOne({ name: id });
+        }
+        
         if (!validator) {
             return res.status(404).json({ status: "Validator not found" })
         }
@@ -256,7 +331,30 @@ validatorController.getValidatorsWithPagination = async (req, res) => {
 validatorController.deleteValidator = async (req, res) => {
     try {
         const { id } = req.body;
+        const email = req.body.email || req.query.email || req.user?.email;
+        
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+        
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+        
+        const validator = await Validator.findById(id);
+        if (!validator) {
+            return res.status(404).json({ status: "Validator not found" });
+        }
+        
         await Validator.findByIdAndDelete(id);
+        
+        // Audit log
+        await auditLogger.logDelete(req, user, 'validator', {
+            validatorId: id,
+            validatorName: validator.name
+        });
+        
         res.status(200).json({ status: "Validator deleted" });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -270,11 +368,41 @@ validatorController.validateColumn = async (column) => {
 
 
   if (!name || !datatype || !values) {
-    console.log(column);
     return { status: false, errors: [{ register: null, message: 'Hace falta el nombre, tipo de dato o valor para la columna ' + column?.name }] };
   }
 
   const oldValues = values;
+  
+  // PRIMERO: Normalizar arrays antes de cualquier validación (incluyendo arrays anidados y strings JSON)
+  values = values.map(value => {
+    let normalizedValue = value;
+    
+    // Manejar arrays anidados: [[["2"]]] -> [["2"]] -> ["2"] -> "2"
+    while (Array.isArray(normalizedValue) && normalizedValue.length === 1) {
+      console.log(`DEBUG - Normalizando array anidado:`, normalizedValue, '-> primer elemento:', normalizedValue[0]);
+      normalizedValue = normalizedValue[0];
+    }
+    
+    // DESPUÉS: Manejar strings que contienen JSON arrays como '["2"]'
+    if (typeof normalizedValue === 'string' && normalizedValue.startsWith('[') && normalizedValue.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(normalizedValue);
+        if (Array.isArray(parsed) && parsed.length === 1) {
+          console.log(`DEBUG - Parseando string JSON '${normalizedValue}' -> ${parsed[0]}`);
+          normalizedValue = parsed[0];
+        }
+      } catch (e) {
+        // Si no se puede parsear, mantener el valor original
+      }
+    }
+    
+    if (normalizedValue !== value) {
+      console.log(`DEBUG - Valor final normalizado:`, normalizedValue);
+    }
+    
+    return normalizedValue;
+  });
+  
   if (multiple) {
   values = values.flatMap(value => {
     if (typeof value === 'number') {
@@ -309,12 +437,24 @@ validatorController.validateColumn = async (column) => {
     });
   }
 
-if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje") {
+if (datatype === "Entero") {
+  values = values.map(value => {
+    const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+    if (!required && isEmpty) return null;
+    
+    // Convertir directamente a entero
+    const num = parseInt(value);
+    console.log(`DEBUG - Convirtiendo '${value}' a entero: ${num}`);
+    return isNaN(num) ? value : num;
+  });
+} else if (datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
-      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '';
+      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
       if (!required && isEmpty) return null;
+      
       const num = Number(value);
+      console.log(`DEBUG - Convirtiendo '${value}' a número: ${num}`);
       return isNaN(num) ? value : num;
     });
   }
@@ -326,6 +466,9 @@ if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje"
 
   if (validate_with) {
     const [validatorName, columnName] = validate_with.split(' - ');
+    console.log('DEBUG validateColumn - validate_with:', validate_with);
+    console.log('DEBUG validateColumn - validatorName:', validatorName);
+    console.log('DEBUG validateColumn - columnName:', columnName);
 
     if (validatorName === "Funcionarios") {
       const users = await User.find({}, { identification: 1 }).lean();
@@ -355,32 +498,67 @@ if (datatype === "Entero" || datatype === "Decimal" || datatype === "Porcentaje"
       columnToValidate = { type: "Texto", values: participantIdentifications };
     } else {
       validator = await Validator.findOne({ name: validatorName });
-
+      console.log('DEBUG - Buscando validador con nombre:', validatorName);
+      console.log('DEBUG - Validador encontrado:', validator ? 'SÍ' : 'NO');
+      
+      // Si no se encuentra, intentar con el nombre de la columna como nombre del validador
+      if (!validator && columnName) {
+        validator = await Validator.findOne({ name: columnName });
+        console.log('DEBUG - Intentando con columnName:', columnName);
+        console.log('DEBUG - Validador encontrado con columnName:', validator ? 'SÍ' : 'NO');
+        
+        // Si se encuentra con columnName, actualizar el nombre para la búsqueda de columna
+        if (validator) {
+          console.log('DEBUG - Usando validador encontrado por columnName, buscando columna:', columnName);
+        }
+      }
+      
       if (!validator) {
+        // Buscar validadores similares para debug
+        const allValidators = await Validator.find({}, {name: 1});
+        console.log('DEBUG - Todos los validadores disponibles:', allValidators.map(v => v.name));
+        
         return {
           status: false,
           errors: [{ register: null, message: `Tabla de validación no encontrada: ${validatorName}` }]
         };
       }
 
-      columnToValidate = validator.columns.find(column => column.name === columnName);
+      // Si encontramos el validador por columnName, buscar la columna correcta
+      if (validatorName !== validator.name) {
+        // El validador se encontró por columnName, buscar la primera columna que sea validadora
+        columnToValidate = validator.columns.find(column => column.is_validator);
+        console.log('DEBUG - Buscando primera columna validadora:', columnToValidate ? columnToValidate.name : 'NO ENCONTRADA');
+      } else {
+        // Búsqueda normal por nombre de columna
+        columnToValidate = validator.columns.find(column => column.name === columnName);
+      }
 
       if (!columnToValidate) {
         return {
           status: false,
-          errors: [{ register: null, message: `Columna '${columnName}' no encontrada en la tabla: ${validatorName}` }]
+          errors: [{ register: null, message: `Columna '${columnName}' no encontrada en la tabla: ${validator.name}` }]
         };
       }
 
       validValuesSet = new Set(columnToValidate.values);
+      console.log('DEBUG - Valores válidos para', validatorName, ':', Array.from(validValuesSet).slice(0, 10), '...');
     }
   }
 
   values.forEach((value, index) => {
 const realIndex = index;
 
-  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '';
+  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
 
+
+
+  // PRIMERO: Si el valor es vacío y no es requerido, saltar TODA validación
+  if (!required && isEmpty) {
+    return; // Saltar toda validación para campos no obligatorios vacíos
+  }
+
+  // SEGUNDO: Si es requerido y está vacío, error
   if (required && isEmpty) {
     result.status = false;
     result.errors.push({
@@ -390,16 +568,6 @@ const realIndex = index;
     });
     return;
   }
-
-
-  if(!required && validate_with === 'FUENTE_INTERNACIONAL - ID_FUENTE_INTERNACIONAL'){
-    console.log(value, 'el valor');
-  }
-
-// Si el valor es vacío y no es requerido, lo ignoramos
-if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
-  return;
-}
 
 if (multiple && Array.isArray(value)) {
   value.forEach(val => {
@@ -417,31 +585,48 @@ if (multiple && Array.isArray(value)) {
     }
   });
 } else {
-  const validateFn = allowedDataTypes[datatype];
-  if (typeof validateFn === 'function') {
-    const validation = validateFn(value);
-    if (!validation.isValid) {
-      result.status = false;
-      result.errors.push({
-        register: realIndex + 1,
-        message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
-        value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-      });
+  // Solo validar tipo de dato si el campo es obligatorio O si tiene valor
+  if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+    const validateFn = allowedDataTypes[datatype];
+    if (typeof validateFn === 'function') {
+      const validation = validateFn(value);
+      if (!validation.isValid) {
+        result.status = false;
+        result.errors.push({
+          register: realIndex + 1,
+          message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
+          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        });
+      }
     }
   }
 }
 
 if (columnToValidate && validValuesSet) {
+  // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
+  if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
+    return; // Saltar validación de validate_with para campos no obligatorios vacíos
+  }
+  
   if (multiple && Array.isArray(value)) {
     value.forEach(val => {
       let normalizedVal = val;
 
-      // 🔄 Convertimos el valor al tipo esperado por el validador
-      if (column.validator_type === 'Número') {
-        const num = Number(val);
-        normalizedVal = isNaN(num) ? val : num;
+      // Detectar si los valores del validador son números
+      const firstValidValue = Array.from(validValuesSet)[0];
+      const validatorHasNumbers = typeof firstValidValue === 'number';
+      
+      // PRIMERO: Si es un array, extraer el primer valor
+      let valueToNormalize = val;
+      if (Array.isArray(val) && val.length > 0) {
+        valueToNormalize = val[0];
+      }
+      
+      if (validatorHasNumbers) {
+        const num = Number(valueToNormalize);
+        normalizedVal = isNaN(num) ? valueToNormalize : num;
       } else {
-        normalizedVal = String(val).trim();
+        normalizedVal = String(valueToNormalize).trim();
       }
 
       // 🚫 Si no está en el set, es inválido
@@ -455,22 +640,38 @@ if (columnToValidate && validValuesSet) {
       }
     });
   } else {
-    let normalizedVal = value;
+    // Solo validar validate_with si el campo es obligatorio O si tiene valor
+    if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+      let normalizedVal = value;
 
-    if (column.validator_type === 'Número') {
-      const num = Number(value);
-      normalizedVal = isNaN(num) ? value : num;
-    } else {
-      normalizedVal = String(value).trim();
-    }
+      // Detectar si los valores del validador son números
+      const firstValidValue = Array.from(validValuesSet)[0];
+      const validatorHasNumbers = typeof firstValidValue === 'number';
+      
+      // PRIMERO: Si es un array, extraer el primer valor
+      let valueToNormalize = value;
+      if (Array.isArray(value) && value.length > 0) {
+        valueToNormalize = value[0];
+        console.log('DEBUG - Array detectado, extrayendo primer valor:', valueToNormalize);
+      }
+      
+      if (validatorHasNumbers) {
+        const num = Number(valueToNormalize);
+        normalizedVal = isNaN(num) ? valueToNormalize : num;
+      } else {
+        normalizedVal = String(valueToNormalize).trim();
+      }
+      
+      console.log('DEBUG - Valor original:', value, 'Valor normalizado:', normalizedVal, 'Tipo validador:', validatorHasNumbers ? 'números' : 'strings');
 
-    if (!validValuesSet.has(normalizedVal)) {
-      result.status = false;
-      result.errors.push({
-        register: realIndex + 1,
-        message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
-        value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-      });
+      if (!validValuesSet.has(normalizedVal)) {
+        result.status = false;
+        result.errors.push({
+          register: realIndex + 1,
+          message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
+          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        });
+      }
     }
   }
 }

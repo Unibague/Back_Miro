@@ -8,6 +8,7 @@ const dayjs = require('dayjs');
 const User = require('../models/users');
 const Dependency = require('../models/dependencies');
 const Period = require('../models/periods');
+const auditLogger = require('../services/auditLogger');
 
 const datetime_now = () => {
   const now = new Date();
@@ -64,8 +65,14 @@ pubProdReportController.getPublishedProducerReports = async (req, res) => {
 
 pubProdReportController.deletePublishedProducerReport = async (req, res) => {
   const { id } = req.params;
+  const { email } = req.query;
 
   try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+
     const report = await PubProdReport.findById(id);
     if (!report) {
       return res.status(404).json({ error: "Informe no encontrado" });
@@ -76,6 +83,13 @@ pubProdReportController.deletePublishedProducerReport = async (req, res) => {
     }
 
     await PubProdReport.findByIdAndDelete(id);
+    
+    // Audit log
+    await auditLogger.logDelete(req, user, 'publishedProducerReport', {
+      reportId: id,
+      reportName: report.report?.name
+    });
+    
     return res.status(200).json({ status: "Informe eliminado correctamente" });
   } catch (error) {
     console.error("Error eliminando publishedProducerReport:", error);
@@ -151,10 +165,10 @@ pubProdReportController.getPendingProducerReportsByUser = async (req, res) => {
 
 pubProdReportController.getPublishedProducerReportsProducer = async (req, res) => {
   try {
-    const {email, page, limit, search, periodId} = req.query
+    const {email, page, limit, search, periodId, dimensionId} = req.query
 
     const user = await UserService.findUserByEmailAndRole(email, "Productor");
-    const reports = await PublishedReportService.findPublishedReportsProducer(user, page, limit, search, periodId);
+    const reports = await PublishedReportService.findPublishedReportsProducer(user, page, limit, search, periodId, dimensionId);
     res.status(200).json(reports);
   } catch (error) {
     console.error('Error fetching published producer reports:', error);
@@ -256,14 +270,40 @@ pubProdReportController.sendProducerReport = async (req, res) => {
 
 pubProdReportController.publishProducerReport = async (req, res) => {
   try {
+    console.log('=== DEBUG publishProducerReport ===');
+    console.log('Request body:', req.body);
+    
     const {email, reportId, deadline, period} = req.body;
-    await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
+    console.log('Extracted params:', { email, reportId, deadline, period });
+    
+    const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
+    console.log('User found:', user ? 'YES' : 'NO');
+    
     const report = await ProducerReportsService.getReport(reportId);
+    console.log('Report found:', report ? 'YES' : 'NO');
 
-    await PublishedReportService.publishReport(report, period, deadline)
-    res.status(200).json({ message: 'Report succesfully published' });
+    const publishedReport = await PublishedReportService.publishReport(report, period, deadline);
+    console.log('Report published successfully');
+    console.log('Published report:', publishedReport);
+    
+    // Audit log
+    if (publishedReport && publishedReport._id) {
+      await auditLogger.logCreate(req, user, 'publishedProducerReport', {
+        reportId: publishedReport._id,
+        reportName: report.name
+      });
+    } else {
+      console.warn('Published report is undefined or missing _id, skipping audit log');
+    }
+    
+    res.status(200).json({ 
+      message: 'Report succesfully published',
+      publishedReportId: publishedReport?._id 
+    });
   } catch (error) {
-    console.error('Error publishing producer report:', error);
+    console.error('=== ERROR in publishProducerReport ===');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
     res.status(500).json({ message: error.message });
   }
 }

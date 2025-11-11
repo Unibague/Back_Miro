@@ -13,8 +13,7 @@ const dimensionSchema = new mongoose.Schema({
     responsible: {
       type: Schema.Types.ObjectId,
       ref: 'dependencies',
-      required: true,
-      unique: true
+      required: true
     }
 },
 {

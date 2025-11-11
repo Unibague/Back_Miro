@@ -10,8 +10,103 @@ const Log = require('../models/logs');
 const UserService = require('../services/users.js');
 const Category = require('../models/categories.js');  
 const ExcelJS = require("exceljs");
+const auditLogger = require('../services/auditLogger');
 
 const publTempController = {};
+
+// Función para normalizar nombres de campos para Excel
+const normalizeFieldName = (fieldName) => {
+  return fieldName
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '_') // Reemplazar caracteres especiales con guión bajo
+    .replace(/_+/g, '_') // Reemplazar múltiples guiones bajos con uno solo
+    .replace(/^_|_$/g, ''); // Eliminar guiones bajos al inicio y final
+};
+
+// Función para convertir hipervínculos de Excel a texto
+const convertHyperlinkToText = (value) => {
+  let result;
+  
+  // Manejar valores null, undefined o proxy revocados
+  if (value === null || value === undefined) {
+    return '';
+  }
+  
+  // Detectar proxy revocado
+  try {
+    if (typeof value === 'object' && value.toString() === '[object Object]') {
+      // Intentar acceder a una propiedad para detectar proxy revocado
+      Object.keys(value);
+    }
+  } catch (e) {
+    console.log('   ⚠️ Detected revoked proxy, returning empty string');
+    return '';
+  }
+  
+  if (value && typeof value === 'object') {
+    // Si es un array, manejar arrays anidados
+    if (Array.isArray(value)) {
+      // Si es un array anidado como [['15']], aplanar
+      const flattened = value.flat(Infinity);
+      result = flattened.length > 0 ? String(flattened[0]) : '';
+    }
+    // Si es un hipervínculo de Excel
+    else if (value.hyperlink || value.text) {
+      result = value.text || value.hyperlink || String(value);
+    }
+    // Si es un objeto MongoDB
+    else if ('$numberInt' in value || '$numberDouble' in value) {
+      result = value.$numberInt || value.$numberDouble;
+    }
+    // Si tiene propiedades como richText, formula, etc. (objetos de Excel)
+    else if (value.richText) {
+      result = value.richText.map(rt => rt.text || '').join('');
+    }
+    else if (value.formula) {
+      result = value.result || value.formula;
+    }
+    else if (value.result !== undefined) {
+      result = value.result;
+    }
+    // Si es un objeto con valor directo
+    else if (value.value !== undefined) {
+      result = value.value;
+    }
+    else {
+      // Intentar extraer cualquier propiedad que parezca texto
+      const possibleTextProps = ['text', 'value', 'result', 'displayText', 'content'];
+      for (const prop of possibleTextProps) {
+        if (value[prop] !== undefined) {
+          result = value[prop];
+          break;
+        }
+      }
+      // Si es otro tipo de objeto, convertir a string
+      if (result === undefined) {
+        result = String(value);
+      }
+    }
+  } else {
+    result = value ?? '';
+  }
+  
+  // Limpiar saltos de línea y caracteres especiales que rompen Excel
+  if (typeof result === 'string') {
+    // Eliminar comillas que rodean todo el contenido
+    result = result.replace(/^"(.*)"$/g, '$1');
+    
+    // Reemplazar múltiples saltos de línea con punto y coma para separar URLs/valores
+    result = result.replace(/[\r\n]+/g, '; ')
+                   .replace(/[\t]/g, ' ')
+                   .replace(/""/g, '"') // Desescapar comillas dobles
+                   .replace(/;\s*;/g, ';') // Eliminar punto y coma duplicados
+                   .replace(/^;\s*|\s*;$/g, '') // Eliminar punto y coma al inicio/final
+                   .replace(/\s+/g, ' ') // Reemplazar múltiples espacios con uno solo
+                   .trim();
+  }
+  
+  return result;
+};
 
 datetime_now = () => {
   const now = new Date();
@@ -69,6 +164,8 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
   const periodId = req.query.periodId || null;
+  const filterByUserScope = req.query.filterByUserScope;
+  const userRole = req.query.userRole;
   const skip = (page - 1) * limit;
 
   try {
@@ -77,11 +174,6 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       return res.status(404).json({ status: 'User not found' });
     }
 
-    const dimensions = await Dimension.find().populate({
-      path: 'responsible',
-      match: { responsible: email }
-    }).then(dimensions => dimensions.filter(dim => dim.responsible));
-
     const activeRole = user.activeRole;
 
     let query = {
@@ -89,12 +181,88 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       ...(periodId && { period: periodId }),
     };
     
-    if (activeRole !== 'Administrador') {
-      const dimensionIds = dimensions.map(dim => dim._id);
-      if (dimensionIds.length > 0) {
-        query['template.dimensions'] = { $in: dimensionIds };
+    // Filtrado específico cuando filterByUserScope=true
+    if (filterByUserScope === 'true') {
+      if (userRole === 'Productor') {
+        const userDependency = await Dependency.findOne({
+          members: { $elemMatch: { email: email } }
+        });
+        
+        if (userDependency) {
+          query['template.producers'] = userDependency._id;
+          console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
+        } else {
+          return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
+        }
+      } else if (userRole === 'Responsable') {
+        const orConditions = [];
+        
+        // Dimensiones donde es responsable
+        const userDependencies = await Dependency.find({ responsible: email });
+        const userDependencyIds = userDependencies.map(dep => dep._id);
+        const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+        if (dimensions.length > 0) {
+          const dimensionIds = dimensions.map(dim => dim._id);
+          orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
+        }
+        
+        // Dependencias donde es responsable/visualizador
+        const allUserDependencies = await Dependency.find({
+          $or: [{ responsible: email }, { visualizers: email }]
+        });
+        if (allUserDependencies.length > 0) {
+          const dependencyIds = allUserDependencies.map(dep => dep._id);
+          orConditions.push({ 'template.producers': { $in: dependencyIds } });
+        }
+        
+        if (orConditions.length > 0) {
+          query.$or = orConditions;
+          console.log('Filtro Responsable aplicado');
+        } else {
+          return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
+        }
+      }
+    }
+    // Aplicar filtrado según el rol del usuario (lógica original)
+    else if (activeRole === 'Administrador') {
+      // Los administradores ven todas las plantillas
+      console.log('Usuario Administrador: mostrando todas las plantillas');
+    } else {
+      // Para todos los demás roles, construir filtros combinados
+      const orConditions = [];
+      
+      // 1. Verificar si es responsable de dimensiones
+      const userDependencies = await Dependency.find({ responsible: email });
+      const userDependencyIds = userDependencies.map(dep => dep._id);
+      
+      const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+      if (dimensions.length > 0) {
+        const dimensionIds = dimensions.map(dim => dim._id);
+        orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
+        console.log('Usuario responsable de dimensiones:', dimensions.map(d => d.name));
+      }
+      
+      // 2. Verificar si es responsable o visualizador de dependencias (para plantillas)
+      const allUserDependencies = await Dependency.find({
+        $or: [
+          { responsible: email },
+          { visualizers: email }
+        ]
+      });
+      
+      if (allUserDependencies.length > 0) {
+        const dependencyIds = allUserDependencies.map(dep => dep._id);
+        orConditions.push({ 'template.producers': { $in: dependencyIds } });
+        console.log('Usuario responsable/visualizador de dependencias:', allUserDependencies.map(d => d.name));
+      }
+      
+      // Si tiene alguna relación (dimensiones o dependencias), aplicar filtros
+      if (orConditions.length > 0) {
+        query.$or = orConditions;
+        console.log('Aplicando filtros combinados para', activeRole);
       } else {
-        return res.status(403).json({ status: 'Access denied' });
+        // Si no tiene relaciones específicas, mostrar todas las plantillas
+        console.log('Usuario sin relaciones específicas: mostrando todas las plantillas');
       }
     }
 
@@ -136,6 +304,15 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           'name -_id'
         );
         data.dependency = loadedDependency ? loadedDependency.name : data.dependency;
+        
+        // Aplicar conversión de hipervínculos a los datos cargados
+        if (data.filled_data) {
+          data.filled_data = data.filled_data.map(fieldData => ({
+            ...fieldData,
+            values: fieldData.values.map(value => convertHyperlinkToText(value))
+          }));
+        }
+        
         return data;
       }));
       
@@ -225,7 +402,12 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
             if (!acc[index]) {
               acc[index] = { Dependencia: ld.dependency };
             }
-            acc[index][item.field_name] = value.$numberInt || value;
+            // Fix para datos existentes con '[object Object]'
+            if (typeof value === 'string' && value === '[object Object]') {
+              acc[index][item.field_name] = '';
+            } else {
+              acc[index][item.field_name] = convertHyperlinkToText(value);
+            }
           });
           return acc;
         }, []);
@@ -366,8 +548,13 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(403).json({ status: 'The period is closed' });
     }
 
-    const producer = pubTem.template?.producers.find(p => p.members.includes(user.email));
-    if (!producer) {
+    // Verificar si el usuario puede enviar datos desde alguna de sus dependencias
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+    const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+    
+    const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
+    if (!canSubmit) {
       return res.status(403).json({ status: 'User is not assigned to this published template' });
     }
 
@@ -426,10 +613,51 @@ const result = pubTem.template.fields.map((field) => {
   const values = data.map(row => {
     let val = row[field.name];
     
+    // FIX: Manejar objetos de Excel (hipervínculos, etc.)
+    if (typeof val === 'object' && val !== null) {
+      val = convertHyperlinkToText(val);
+    }
+    
     // FIX TEMPORAL: Detectar [object Object] strings del frontend
     if (typeof val === 'string' && val === '[object Object]') {
       console.warn(`⚠️  Campo ${field.name} contiene '[object Object]' - problema en el frontend`);
       val = null; // Convertir a null para que se maneje como valor vacío
+    }
+    
+    // FIX: Manejar arrays que vienen del frontend (incluyendo arrays anidados)
+    if (Array.isArray(val)) {
+      console.log(`DEBUG - Campo ${field.name}: Array detectado:`, val);
+      
+      // Normalizar arrays anidados
+      let normalizedVal = val;
+      while (Array.isArray(normalizedVal) && normalizedVal.length === 1) {
+        normalizedVal = normalizedVal[0];
+      }
+      
+      // Si después de normalizar es un string JSON, parsearlo
+      if (typeof normalizedVal === 'string' && normalizedVal.startsWith('[') && normalizedVal.endsWith(']')) {
+        try {
+          const parsed = JSON.parse(normalizedVal);
+          if (Array.isArray(parsed) && parsed.length === 1) {
+            normalizedVal = parsed[0];
+          }
+        } catch (e) {
+          // Si no se puede parsear, mantener el valor
+        }
+      }
+      
+      val = normalizedVal;
+      console.log(`DEBUG - Campo ${field.name}: Valor final normalizado:`, val);
+    }
+    
+    // Limpiar valores: convertir string "null" a null real
+    if (typeof val === 'string' && val.trim() === 'null') {
+      val = null;
+    }
+    
+    // Limpiar valores vacíos para campos no obligatorios
+    if (!field.required && (val === null || val === undefined || (typeof val === 'string' && val.trim() === ''))) {
+      val = null;
     }
 
 if (field.multiple) {
@@ -456,7 +684,7 @@ if (field.multiple) {
 });
 
 
-    console.dir(result, { depth: null });
+
 
     // Validación con valores externos si hay validate_with
     const validations = result.map(async field => {
@@ -488,13 +716,7 @@ if (field.multiple) {
     const validationResults = await Promise.all(validations);
     const validationErrors = validationResults.filter(v => v.status === false);
 
-// Debug: mostrar errores de validación
-validationErrors.forEach((err, i) => {
-  console.log(`Campo con error #${i}: ${err.column}`);
-  err.errors.forEach((e, j) => {
-    console.log(`  Error ${j}:`, e.message, '| Valor:', e.value);
-  });
-});
+
 
     if (validationErrors.length > 0) {
       const sanitizedErrors = validationErrors.map(err => ({
@@ -525,14 +747,14 @@ validationErrors.forEach((err, i) => {
       loaded_date: datetime_now()
     };
 
-    if (edit === true) {
-      const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
-      if (existingDataIndex > -1) {
-        pubTem.loaded_data[existingDataIndex] = producersData;
-      } else {
-        pubTem.loaded_data.push(producersData);
-      }
+    // Verificar si ya existe data para esta dependencia
+    const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
+    
+    if (existingDataIndex > -1) {
+      // Si ya existe, actualizar los datos existentes
+      pubTem.loaded_data[existingDataIndex] = producersData;
     } else {
+      // Si no existe, agregar nuevos datos
       pubTem.loaded_data.push(producersData);
     }
 
@@ -607,22 +829,39 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
 
     const pubTem = await PublishedTemplate.findById(pubTem_id)
       .populate({
-        path: 'template.producers',
-        model: 'dependencies',
-        match: { members: user.email }
+        path: 'template',
+        populate: { path: 'producers', model: 'dependencies' }
       })
 
     if (!pubTem) { return res.status(404).json({ status: 'Published template not found' }) }
 
-    if (!pubTem.template.producers.length === 0) {
+    // Verificar si el usuario puede eliminar datos desde alguna de sus dependencias
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+    const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+    
+    const canDelete = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
+    if (!canDelete) {
       return res.status(403).json({ status: 'User is not assigned to this published template' })
     }
 
-    const index = pubTem.loaded_data.findIndex(data => data.dependency === user.dep_code)
+    // Buscar datos de cualquiera de las dependencias del usuario
+    const index = pubTem.loaded_data.findIndex(data => allUserDependencies.includes(data.dependency))
     if (index === -1) { return res.status(404).json({ status: 'Data not found' }) }
   
+    const deletedData = pubTem.loaded_data[index];
     pubTem.loaded_data.splice(index, 1);
     await pubTem.save();
+    
+    // Audit log
+    console.log('🔍 Executing audit log for publishedTemplateData deletion');
+    await auditLogger.logDelete(req, user, 'publishedTemplateData', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: deletedData.dependency
+    });
+    console.log('✅ Audit log completed for publishedTemplateData deletion');
+    
     return res.status(200).json({ status: 'Data deleted successfully' })
   } catch (error) {
     console.log(error.message)
@@ -636,20 +875,24 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   user = await User.findOne({ email })
 
-  if(!user || (!user.roles.includes('Responsable') && !user.roles.includes('Administrador'))) {
+  if(!user) {
     return res.status(404).json({status: 'User not available'})
   }
+  
+  // Permitir acceso a todos los usuarios autenticados
 
   if (!pubTem_id) {
     return res.status(400).json({ status: 'Missing pubTem_id' });
   }
 
   try {
-    const template = await PublishedTemplate.findById(pubTem_id);
+    const template = await PublishedTemplate.findById(pubTem_id).populate('template');
 
     if (!template) {
       return res.status(404).json({ status: 'Published template not found' });
     }
+    
+
 
     const dependencies = await Dependency.find({ dep_code: { $in: template.loaded_data.map(data => data.dependency) } });
 
@@ -668,7 +911,8 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
   // Añadir todas las columnas vacías según template.fields
   template.template.fields.forEach(field => {
-    emptyRow[field.name] = "";
+    const cleanFieldName = normalizeFieldName(field.name);
+    emptyRow[cleanFieldName] = "";
   });
 
   return [emptyRow];
@@ -679,12 +923,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-
-    if (value && typeof value === 'object' && ('$numberInt' in value || '$numberDouble' in value)) {
-      acc[index][item.field_name] = value.$numberInt || value.$numberDouble;
-    } else {
-      acc[index][item.field_name] = value ?? "";
-    }
+    // Aplicar conversión de hipervínculos (ya incluye limpieza de saltos de línea)
+    const cleanValue = convertHyperlinkToText(value);
+    // Limpiar nombre del campo eliminando comillas y caracteres problemáticos
+    const fieldName = normalizeFieldName(item.field_name);
+    acc[index][fieldName] = cleanValue || "";
   });
   return acc;
 }, []);
@@ -709,19 +952,57 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
   const periodId = req.query.periodId;
+  const filterByDependency = req.query.filterByDependency;
   const skip = (page - 1) * limit;
 
   try {
+    console.log('== DEBUG getUploadedTemplatesByProducer ===');
+    console.log('Email:', email);
+    console.log('FilterByDependency:', filterByDependency);
+    console.log('All query params:', req.query);
+    
     const user = await User.findOne({ email });
-    if (!user || !user.roles.includes('Productor')) {
+    console.log('User found:', user ? 'YES' : 'NO');
+    
+    if (!user) {
+      console.log('ERROR: User not found');
       return res.status(404).json({ status: 'User not found' });
     }
 
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    console.log('All user dependencies:', allUserDependencies);
+    
+    // Si hay filtro por dependencia, convertir nombre a dep_code si es necesario
+    let dependenciesToQuery = allUserDependencies;
+    if (filterByDependency) {
+      console.log('FilterByDependency received:', filterByDependency);
+      
+      const dependencyByCode = await Dependency.findOne({ dep_code: filterByDependency });
+      const dependencyByName = await Dependency.findOne({ name: { $regex: new RegExp(`^${filterByDependency}$`, 'i') } });
+      
+      if (dependencyByCode) {
+        dependenciesToQuery = [filterByDependency];
+        console.log('Filtering by dep_code:', filterByDependency);
+      } else if (dependencyByName) {
+        dependenciesToQuery = [dependencyByName.dep_code];
+        console.log('Filtering by name, converted to dep_code:', dependencyByName.dep_code);
+      } else {
+        console.log('Dependency not found, using all user dependencies');
+      }
+    }
+    console.log('Dependencies to query:', dependenciesToQuery);
+    console.log('🔍 CRITICAL: Is filterByDependency being processed?', !!filterByDependency);
+    
+    // Obtener IDs de las dependencias para filtrar por template.producers
+    const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
+    const dependencyIds = dependencies.map(dep => dep._id);
+    console.log('Dependency IDs for producers filter:', dependencyIds);
+    
     const query = {
-      'loaded_data.send_by.dep_code': user.dep_code,
+      'template.producers': { $in: dependencyIds },
       name: { $regex: search, $options: 'i' }
     };
-
+    
     if (periodId) {
       query.period = periodId;
     }
@@ -732,69 +1013,106 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       .populate('period')
       .populate({
         path: 'template',
-        populate: {
-          path: 'dimensions',
-          model: 'dimensions'
-        }
+        populate: [
+          { path: 'dimensions', model: 'dimensions' },
+          { path: 'producers', model: 'dependencies' }
+        ]
       });
 
-      const templatesWithValidators = await Promise.all(
-        templates.map(async (template) => {
-          const validators = await Promise.all(
-            template.template.fields.map(async (field) => {
-              return Validator.giveValidatorToExcel(field.validate_with);
-            })
-          );
-  
-          template = template.toObject();
-          validatorsFiltered = validators.filter(v => v !== undefined)
-          template.validators = validatorsFiltered // Añadir validators al objeto
-  
-          return template;
-        })
+    // Filtrar solo plantillas asignadas que tienen información cargada
+    const templatesWithData = templates.filter(template => {
+      const hasDataForDependencies = template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
       );
+      console.log(`\n🔍 Template '${template.name}':`);
+      console.log('  - loaded_data dependencies:', template.loaded_data.map(ld => ld.dependency));
+      console.log('  - dependenciesToQuery:', dependenciesToQuery);
+      console.log('  - hasDataForDependencies:', hasDataForDependencies);
+      return hasDataForDependencies;
+    });
 
-    const total = await PublishedTemplate.countDocuments(query);
+    const templatesWithValidators = await Promise.all(
+      templatesWithData.map(async (template) => {
+        const validators = await Promise.all(
+          template.template.fields.map(async (field) => {
+            return Validator.giveValidatorToExcel(field.validate_with);
+          })
+        );
+
+        template = template.toObject();
+        template.validators = validators.filter(v => v !== undefined);
+        return template;
+      })
+    );
+
+    // Contar total real después del filtrado
+    const allTemplatesForCount = await PublishedTemplate.find(query);
+    const totalWithData = allTemplatesForCount.filter(template => {
+      return template.loaded_data.some(data => 
+        dependenciesToQuery.includes(data.dependency) && 
+        data.filled_data !== undefined
+      );
+    }).length;
 
     res.status(200).json({
-      "templates": templatesWithValidators,
-      total,
+      templates: templatesWithValidators,
+      total: totalWithData,
       page,
-      pages: Math.ceil(total / limit),
+      pages: Math.ceil(totalWithData / limit),
     });
   } catch (error) {
-    console.error('Error fetching uploaded templates:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error('=== ERROR in getUploadedTemplatesByProducer ===');
+    console.error('Error message:', error.message);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 };
 
 publTempController.getAvailableTemplatesToProductor = async (req, res) => {
-  const { email, periodId, page = 1, limit = 10, search = '' } = req.query;
+  const { email, periodId, page = 1, limit = 10, search = '', filterByDependency = '' } = req.query;
   const skip = (page - 1) * limit;
 
   try {
+    console.log('=== DEBUG getAvailableTemplatesToProductor ===');
+    console.log('Email:', email);
+    
     // Find user productor
     const user = await UserService.findUserByEmailAndRole(email, 'Productor');
     if (!user) {
       return res.status(404).json({ error: 'User not found or not a producer' });
     }
+    
+    console.log('User dep_code:', user.dep_code);
+    console.log('User additional_dependencies:', user.additional_dependencies);
 
-    const dependency = await Dependency.findOne({ dep_code: user.dep_code });
-    if (!dependency) {
-      return res.status(404).json({ error: 'Dependency not found' });
-    }
+    // Obtener todas las dependencias del usuario (principal + adicionales)l + adicionales)
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    console.log('All user dependencies:', allUserDependencies);
+    
+    // Si hay filtro por dependencia, usar solo esa dependencia
+    const dependenciesToQuery = filterByDependency ? [filterByDependency] : allUserDependencies;
+    console.log('Dependencies to query:', dependenciesToQuery);
+    
+    // Obtener IDs de las dependencias a consulta
+    const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
+    console.log('Found dependencies:', dependencies.map(d => ({ code: d.dep_code, name: d.name })));
+    const dependencyIds = dependencies.map(dep => dep._id);
+    console.log('Dependency IDs:', dependencyIds);
 
     // Build query for PublishedTemplates
     const query = { 
       name: { $regex: search, $options: 'i' },
-      'template.producers': dependency._id,
-      'template.active': true // ✅ Nuevo filtro
+      'template.producers': { $in: dependencyIds },
+      'template.active': true
     };
 
     if (periodId) query.period = periodId;
 
+    console.log('Query for templates:', JSON.stringify(query, null, 2));
+    
     // Count total documents without pagination
     const total = await PublishedTemplate.countDocuments(query);
+    console.log('Total templates found:', total);
 
     // Fetch templates with initial population
     const templates = await PublishedTemplate.find(query)
@@ -870,10 +1188,20 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     // Paginate the sorted templates
     const paginatedTemplates = sortedTemplates.slice(skip, skip + limit);
 
-    // Filter templates without loaded data
+    // Filter templates without loaded data for queried dependencies
     const filteredTemplates = paginatedTemplates.filter(
-      (template) => !template.loaded_data?.some((data) => data.dependency === String(dependency.dep_code))
+      (template) => {
+        const hasLoadedData = template.loaded_data?.some((data) => dependenciesToQuery.includes(data.dependency));
+        if (hasLoadedData) {
+          console.log(`Template '${template.name}' filtered out - already has data from dependencies:`, 
+            template.loaded_data.filter(d => dependenciesToQuery.includes(d.dependency)).map(d => d.dependency)
+          );
+        }
+        return !hasLoadedData;
+      }
     );
+    
+    console.log(`Templates after filtering: ${filteredTemplates.length} of ${paginatedTemplates.length}`);
 
     // Get validators for filtered templates
     const templatesWithValidators = await Promise.all(
@@ -974,31 +1302,39 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
 
   try {
     const user = await User.findOne({ email });
-    if (!user || !user.roles.includes('Productor')) {
+    if (!user) {
       return res.status(404).json({ status: 'User not found' });
     }
 
-    // Busca la plantilla publicada donde la dependencia ya haya enviado datos
+    // Obtener todas las dependencias del usuario
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+
+    // Busca la plantilla publicada donde alguna de las dependencias del usuario haya enviado datos
     const template = await PublishedTemplate.findOne({
       _id: id_template,
-      'loaded_data.dependency': user.dep_code,
+      'loaded_data.dependency': { $in: allUserDependencies },
     });
 
     if (!template) {
       return res.status(404).json({ status: 'Template not found' });
     }
 
-    // ✅ Encuentra los datos enviados por la dependencia (sin importar el email)
+    // Encuentra los datos enviados por cualquiera de las dependencias del usuario
     const producerData = template.loaded_data.find(
-      (data) => data.dependency === user.dep_code
+      (data) => allUserDependencies.includes(data.dependency)
     );
 
-        if (!producerData) {
+    if (!producerData) {
       return res.status(404).json({ status: 'No data found for dependency' });
     }
 
-
-    res.status(200).json({ data: producerData.filled_data });
+    // Aplicar conversión de hipervínculos a los datos
+    const processedData = producerData.filled_data.map(item => ({
+      ...item,
+      values: item.values.map(value => convertHyperlinkToText(value))
+    }));
+    
+    res.status(200).json({ data: processedData });
   } catch (error) {
     console.error('Error fetching template data:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -1010,7 +1346,7 @@ publTempController.deletePublishedTemplate = async (req, res) => {
   const { id, email } = req.query;
 
   try {
-    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    const user = await UserService.findUserByEmailAndRole(email, 'Administrador');
 
     const template = await PublishedTemplate.findById(id);
     if (!template) {
@@ -1022,6 +1358,15 @@ publTempController.deletePublishedTemplate = async (req, res) => {
     }
 
     await PublishedTemplate.findByIdAndDelete(id);
+    
+    // Audit log
+    console.log('🔍 Executing audit log for publishedTemplate deletion');
+    await auditLogger.logDelete(req, user, 'publishedTemplate', {
+      templateId: id,
+      templateName: template.name
+    });
+    console.log('✅ Audit log completed for publishedTemplate deletion');
+    
     res.status(200).json({ status: 'Template deleted successfully' });
   } catch (error) {
     console.error('Error deleting template:', error);
@@ -1046,6 +1391,75 @@ publTempController.updateDeadlines = async (req, res) => {
   } catch (error) {
     console.error("Error al actualizar deadlines:", error);
     return res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanObjectObjectData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    const { cleanObjectObjectData } = require('../scripts/cleanObjectObjectData');
+    const result = await cleanObjectObjectData();
+    
+    res.status(200).json(result);
+  } catch (error) {
+    console.error('Error cleaning object data:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+publTempController.cleanHyperlinkData = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    // Verificar que sea administrador
+    await UserService.findUserByEmailAndRole(email, 'Administrador');
+    
+    console.log('🧹 Iniciando limpieza de hipervínculos en todas las plantillas...');
+    
+    const templates = await PublishedTemplate.find({});
+    let totalCleaned = 0;
+    let templatesProcessed = 0;
+    
+    for (const template of templates) {
+      let templateModified = false;
+      
+      for (const loadedData of template.loaded_data) {
+        for (const fieldData of loadedData.filled_data) {
+          for (let i = 0; i < fieldData.values.length; i++) {
+            const originalValue = fieldData.values[i];
+            const cleanedValue = convertHyperlinkToText(originalValue);
+            
+            if (originalValue !== cleanedValue) {
+              fieldData.values[i] = cleanedValue;
+              totalCleaned++;
+              templateModified = true;
+            }
+          }
+        }
+      }
+      
+      if (templateModified) {
+        await template.save();
+        templatesProcessed++;
+        console.log(`✅ Plantilla limpiada: ${template.name}`);
+      }
+    }
+    
+    console.log(`🎉 Limpieza completada: ${totalCleaned} valores limpiados en ${templatesProcessed} plantillas`);
+    
+    res.status(200).json({
+      message: 'Limpieza de hipervínculos completada',
+      totalCleaned,
+      templatesProcessed,
+      totalTemplates: templates.length
+    });
+  } catch (error) {
+    console.error('Error cleaning hyperlink data:', error);
+    res.status(500).json({ error: error.message });
   }
 };
 
