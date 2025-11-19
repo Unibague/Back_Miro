@@ -150,6 +150,14 @@ publTempController.publishTemplate = async (req, res) => {
 
     await newPublTemp.save()
 
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplate', {
+      publishedTemplateId: newPublTemp._id,
+      templateName: newPublTemp.name,
+      templateId: template_id,
+      periodId: req.body.period_id
+    });
+
     return res.status(201).json({ status: 'Template published successfully' })
   } catch (error) {
     console.error('Error in publishTemplate:', error);
@@ -510,6 +518,15 @@ publTempController.exportPendingTemplates = async (req, res) => {
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", "attachment; filename=pendientes_templates.xlsx");
 
+    // Audit log para exportación de pendientes
+    const user = await User.findOne({ email: req.query.email || 'system' });
+    if (user) {
+      await auditLogger.logRead(req, user, 'exportPendingTemplates', {
+        periodId: periodId,
+        totalPending: allPending.length
+      });
+    }
+
     await workbook.xlsx.write(res);
     
 
@@ -760,6 +777,14 @@ if (field.multiple) {
 
     await pubTem.save();
 
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplateData', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: user.dep_code,
+      recordsLoaded: data.length
+    });
+
     return res.status(200).json({ 
       status: 'Data loaded successfully', 
       recordsLoaded: data.length
@@ -813,6 +838,14 @@ publTempController.submitEmptyData = async (req, res) => {
     }
 
     await pubTem.save();
+    
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplateEmptyData', {
+      publishedTemplateId: pubTemId,
+      templateName: pubTem.name,
+      dependency: user.dep_code
+    });
+    
     return res.status(200).json({ status: 'Data loaded successfully' });
   } catch (error) {
     console.log(error.message);
@@ -891,6 +924,12 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!template) {
       return res.status(404).json({ status: 'Published template not found' });
     }
+    
+    // Audit log para descarga de datos combinados
+    await auditLogger.logRead(req, user, 'publishedTemplateMergedData', {
+      publishedTemplateId: pubTem_id,
+      templateName: template.name
+    });
     
 
 
@@ -1383,8 +1422,17 @@ publTempController.updateDeadlines = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
+    const user = await User.findOne({ email });
+    
     for (const id of templateIds) {
-      await PublishedTemplate.findByIdAndUpdate(id, { deadline });
+      const template = await PublishedTemplate.findByIdAndUpdate(id, { deadline });
+      
+      // Audit log para cada plantilla actualizada
+      await auditLogger.logUpdate(req, user, 'publishedTemplateDeadline', {
+        publishedTemplateId: id,
+        templateName: template?.name || 'Unknown',
+        newDeadline: deadline
+      });
     }
 
     return res.status(200).json({ message: "Fechas actualizadas exitosamente." });
@@ -1462,6 +1510,8 @@ publTempController.cleanHyperlinkData = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
 
 
 module.exports = publTempController;
