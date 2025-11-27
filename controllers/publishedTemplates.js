@@ -120,7 +120,7 @@ const enrichBeneficiariosData = async (data) => {
     
   } catch (error) {
     console.error('❌ Error enriqueciendo datos de beneficiarios:', error.message);
-    return data; // Devolver datos originales si hay error
+    return data; // Devolver datos originales si hay erro
   }
 };
 
