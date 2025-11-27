@@ -102,11 +102,7 @@ const enrichBeneficiariosData = async (data) => {
         
         return {
           ...row,
-          NOMBRE_USUARIO: userData.user_name,
-          EMAIL_INSTITUCIONAL: userData.email,
-          USERNAME: userData.username,
-          ROLES_DISPONIBLES: userData.roles.join(', '),
-          TOTAL_ROLES: userData.roles.length
+          ROLES_DISPONIBLES: userData.roles.join(', ')
         };
       } else {
         if (index < 5) {
@@ -114,11 +110,7 @@ const enrichBeneficiariosData = async (data) => {
         }
         return {
           ...row,
-          NOMBRE_USUARIO: 'NO ENCONTRADO',
-          EMAIL_INSTITUCIONAL: 'NO ENCONTRADO',
-          USERNAME: 'NO ENCONTRADO', 
-          ROLES_DISPONIBLES: 'NO ENCONTRADO',
-          TOTAL_ROLES: 0
+          ROLES_DISPONIBLES: 'NO ENCONTRADO'
         };
       }
     });
