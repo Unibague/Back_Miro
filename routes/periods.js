@@ -22,4 +22,6 @@ router.delete("/:id", controller.deletePeriod);
 
 router.get("/allperiods", controller.getAllPeriods)
 
+router.put("/:id/toggle-active", controller.toggleActive)
+
 module.exports = router

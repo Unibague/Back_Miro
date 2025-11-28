@@ -12,7 +12,117 @@ const Category = require('../models/categories.js');
 const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
 
+const axios = require('axios');
+
 const publTempController = {};
+
+// Función para enriquecer datos de beneficiarios desde API externa
+const enrichBeneficiariosData = async (data) => {
+  try {
+    console.log('🔍 Consultando API de roles para enriquecer datos...');
+    
+    // Obtener datos de la API externa
+    const response = await axios.get(process.env.ROLES_ENDPOINT);
+    if (!response.data.success) {
+      console.warn('⚠️ API de roles no disponible, continuando sin enriquecimiento');
+      return data;
+    }
+
+    const rolesData = response.data.roles;
+    console.log(`📊 API devolvió ${rolesData.length} registros de roles`);
+    
+    // Crear mapa de identificación -> datos del usuario
+    const userMap = {};
+    rolesData.forEach(role => {
+      if (!userMap[role.identification]) {
+        userMap[role.identification] = {
+          user_name: role.user_name,
+          email: role.email,
+          username: role.username,
+          roles: []
+        };
+      }
+      userMap[role.identification].roles.push(role.profile_name);
+    });
+
+    console.log(`👥 Procesados ${Object.keys(userMap).length} usuarios únicos`);
+    
+    // DEBUG: Mostrar algunas cédulas de ejemplo de la API
+    const sampleIds = Object.keys(userMap).slice(0, 10);
+    console.log('🔍 Ejemplos de cédulas en la API:', sampleIds);
+
+    // DEBUG: Mostrar estructura de la primera fila para debugging
+    if (data.length > 0) {
+      console.log('🔍 DEBUG - Campos disponibles en la primera fila:');
+      console.log('Campos:', Object.keys(data[0]));
+      console.log('Primera fila completa:', data[0]);
+    }
+
+    // Enriquecer cada fila de datos
+    const enrichedData = data.map((row, index) => {
+      // Buscar identificación en diferentes posibles nombres de campo
+      const possibleIdFields = [
+        'NUM_DOCUMENTO', 'IDENTIFICACION', 'CEDULA', 'ID', 'NUMERO_IDENTIFICACION', 'DOCUMENTO',
+        'num_documento', 'identificacion', 'cedula', 'id', 'numero_identificacion', 'documento',
+        'Num_Documento', 'Identificacion', 'Cedula', 'Id', 'Numero_Identificacion', 'Documento'
+      ];
+      
+      let identification = null;
+      let fieldUsed = null;
+      
+      // Buscar en todos los posibles campos
+      for (const field of possibleIdFields) {
+        if (row[field] && row[field] !== '') {
+          identification = String(row[field]).trim();
+          fieldUsed = field;
+          break;
+        }
+      }
+      
+      // Si no encuentra en campos específicos, buscar en cualquier campo que contenga números
+      if (!identification) {
+        for (const [key, value] of Object.entries(row)) {
+          if (value && typeof value === 'string' && /^\d{6,12}$/.test(value.trim())) {
+            identification = value.trim();
+            fieldUsed = key;
+            break;
+          }
+        }
+      }
+      
+      if (index < 5) { // Solo mostrar debug para las primeras 5 filas
+        console.log(`🔍 Fila ${index + 1}: Campo usado: ${fieldUsed}, Cédula: ${identification}`);
+      }
+      
+      if (identification && userMap[identification]) {
+        const userData = userMap[identification];
+        if (index < 5) {
+          console.log(`✅ Enriqueciendo datos para cédula: ${identification}`);
+        }
+        
+        return {
+          ...row,
+          ROLES_DISPONIBLES: userData.roles.join(', ')
+        };
+      } else {
+        if (index < 5) {
+          console.log(`❌ No se encontraron datos para cédula: ${identification}`);
+        }
+        return {
+          ...row,
+          ROLES_DISPONIBLES: 'Externo' // Valor por defecto si no se encuentra
+        };
+      }
+    });
+
+    console.log(`🎉 Enriquecimiento completado para ${enrichedData.length} filas`);
+    return enrichedData;
+    
+  } catch (error) {
+    console.error('❌ Error enriqueciendo datos de beneficiarios:', error.message);
+    return data; // Devolver datos originales si hay erro
+  }
+};
 
 // Función para normalizar nombres de campos para Excel
 const normalizeFieldName = (fieldName) => {
@@ -149,6 +259,14 @@ publTempController.publishTemplate = async (req, res) => {
     })
 
     await newPublTemp.save()
+
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplate', {
+      publishedTemplateId: newPublTemp._id,
+      templateName: newPublTemp.name,
+      templateId: template_id,
+      periodId: req.body.period_id
+    });
 
     return res.status(201).json({ status: 'Template published successfully' })
   } catch (error) {
@@ -510,6 +628,15 @@ publTempController.exportPendingTemplates = async (req, res) => {
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", "attachment; filename=pendientes_templates.xlsx");
 
+    // Audit log para exportación de pendientes
+    const user = await User.findOne({ email: req.query.email || 'system' });
+    if (user) {
+      await auditLogger.logRead(req, user, 'exportPendingTemplates', {
+        periodId: periodId,
+        totalPending: allPending.length
+      });
+    }
+
     await workbook.xlsx.write(res);
     
 
@@ -760,6 +887,14 @@ if (field.multiple) {
 
     await pubTem.save();
 
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplateData', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: user.dep_code,
+      recordsLoaded: data.length
+    });
+
     return res.status(200).json({ 
       status: 'Data loaded successfully', 
       recordsLoaded: data.length
@@ -813,6 +948,14 @@ publTempController.submitEmptyData = async (req, res) => {
     }
 
     await pubTem.save();
+    
+    // Audit log
+    await auditLogger.logCreate(req, user, 'publishedTemplateEmptyData', {
+      publishedTemplateId: pubTemId,
+      templateName: pubTem.name,
+      dependency: user.dep_code
+    });
+    
     return res.status(200).json({ status: 'Data loaded successfully' });
   } catch (error) {
     console.log(error.message);
@@ -892,6 +1035,12 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
     
+    // Audit log para descarga de datos combinados
+    await auditLogger.logRead(req, user, 'publishedTemplateMergedData', {
+      publishedTemplateId: pubTem_id,
+      templateName: template.name
+    });
+    
 
 
     const dependencies = await Dependency.find({ dep_code: { $in: template.loaded_data.map(data => data.dependency) } });
@@ -901,7 +1050,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       return acc;
     }, {});
 
-    const data = template.loaded_data.map(data => {
+    let data = template.loaded_data.map(data => {
 
       // Detectar si no hay datos cargados
       if (!Array.isArray(data.filled_data) || data.filled_data.length === 0) {
@@ -937,6 +1086,19 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     
       return filledData;
     }).flat();
+
+    // Detectar si es plantilla de beneficiarios y enriquecer datos
+    const templateName = template.name ? template.name.toUpperCase().replace(/\s+/g, '_') : '';
+    const isBeneficiariosTemplate = templateName.includes('BENEFICIARIO_BIENESTAR_CULTURAL');
+    
+    if (isBeneficiariosTemplate) {
+      console.log(`🎆 Detectada plantilla de beneficiarios: "${template.name}"`);
+      console.log('🔄 Iniciando enriquecimiento de datos con API externa...');
+      data = await enrichBeneficiariosData(data);
+      console.log('✅ Datos de beneficiarios enriquecidos exitosamente');
+    } else {
+      console.log(`📄 Plantilla regular: "${template.name}" - sin enriquecimiento`);
+    }
 
     res.status(200).json({ data });
   } catch (error) {
@@ -1383,8 +1545,17 @@ publTempController.updateDeadlines = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
+    const user = await User.findOne({ email });
+    
     for (const id of templateIds) {
-      await PublishedTemplate.findByIdAndUpdate(id, { deadline });
+      const template = await PublishedTemplate.findByIdAndUpdate(id, { deadline });
+      
+      // Audit log para cada plantilla actualizada
+      await auditLogger.logUpdate(req, user, 'publishedTemplateDeadline', {
+        publishedTemplateId: id,
+        templateName: template?.name || 'Unknown',
+        newDeadline: deadline
+      });
     }
 
     return res.status(200).json({ message: "Fechas actualizadas exitosamente." });
@@ -1462,6 +1633,8 @@ publTempController.cleanHyperlinkData = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
 
 
 module.exports = publTempController;

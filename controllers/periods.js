@@ -220,5 +220,26 @@ periodController.getAllPeriods = async (req, res) => {
     }
 };
 
+periodController.toggleActive = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body;
+    
+    const updatedPeriod = await Period.findByIdAndUpdate(
+      id, 
+      { is_active }, 
+      { new: true }
+    );
+    
+    if (!updatedPeriod) {
+      return res.status(404).json({ error: 'Period not found' });
+    }
+    
+    res.json({ success: true, period: updatedPeriod });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 
 module.exports = periodController;
