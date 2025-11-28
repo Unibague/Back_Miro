@@ -110,7 +110,7 @@ const enrichBeneficiariosData = async (data) => {
         }
         return {
           ...row,
-          ROLES_DISPONIBLES: 'NO ENCONTRADO'
+          ROLES_DISPONIBLES: 'Externo' // Valor por defecto si no se encuentra
         };
       }
     });
