@@ -306,28 +306,33 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           members: { $elemMatch: { email: email } }
         });
         
+        const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+        const dependenciesByCode = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+        
         if (userDependency) {
           query['template.producers'] = userDependency._id;
-          console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
+        } else if (dependenciesByCode.length > 0) {
+          const dependencyIds = dependenciesByCode.map(dep => dep._id);
+          query['template.producers'] = { $in: dependencyIds };
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       } else if (userRole === 'Responsable') {
         const orConditions = [];
         
-        // Dimensiones donde es responsable
         const userDependencies = await Dependency.find({ responsible: email });
         const userDependencyIds = userDependencies.map(dep => dep._id);
         const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+        
         if (dimensions.length > 0) {
           const dimensionIds = dimensions.map(dim => dim._id);
           orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
         }
         
-        // Dependencias donde es responsable/visualizador
         const allUserDependencies = await Dependency.find({
           $or: [{ responsible: email }, { visualizers: email }]
         });
+        
         if (allUserDependencies.length > 0) {
           const dependencyIds = allUserDependencies.map(dep => dep._id);
           orConditions.push({ 'template.producers': { $in: dependencyIds } });
@@ -335,21 +340,14 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         
         if (orConditions.length > 0) {
           query.$or = orConditions;
-          console.log('Filtro Responsable aplicado');
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       }
     }
-    // Aplicar filtrado según el rol del usuario (lógica original)
-    else if (activeRole === 'Administrador') {
-      // Los administradores ven todas las plantillas
-      console.log('Usuario Administrador: mostrando todas las plantillas');
-    } else {
-      // Para todos los demás roles, construir filtros combinados
+    else if (activeRole !== 'Administrador') {
       const orConditions = [];
       
-      // 1. Verificar si es responsable de dimensiones
       const userDependencies = await Dependency.find({ responsible: email });
       const userDependencyIds = userDependencies.map(dep => dep._id);
       
@@ -357,30 +355,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       if (dimensions.length > 0) {
         const dimensionIds = dimensions.map(dim => dim._id);
         orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
-        console.log('Usuario responsable de dimensiones:', dimensions.map(d => d.name));
       }
       
-      // 2. Verificar si es responsable o visualizador de dependencias (para plantillas)
       const allUserDependencies = await Dependency.find({
-        $or: [
-          { responsible: email },
-          { visualizers: email }
-        ]
+        $or: [{ responsible: email }, { visualizers: email }]
       });
       
       if (allUserDependencies.length > 0) {
         const dependencyIds = allUserDependencies.map(dep => dep._id);
         orConditions.push({ 'template.producers': { $in: dependencyIds } });
-        console.log('Usuario responsable/visualizador de dependencias:', allUserDependencies.map(d => d.name));
       }
       
-      // Si tiene alguna relación (dimensiones o dependencias), aplicar filtros
       if (orConditions.length > 0) {
         query.$or = orConditions;
-        console.log('Aplicando filtros combinados para', activeRole);
-      } else {
-        // Si no tiene relaciones específicas, mostrar todas las plantillas
-        console.log('Usuario sin relaciones específicas: mostrando todas las plantillas');
       }
     }
 
