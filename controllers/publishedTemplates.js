@@ -16,6 +16,51 @@ const axios = require('axios');
 
 const publTempController = {};
 
+// Mapeo de códigos alfa-2 de países a IDs numéricos
+const countryCodeToId = {
+  'AD': '20', 'AE': '784', 'AF': '4', 'AG': '28', 'AI': '660', 'AL': '8', 'AM': '51', 'AN': '530',
+  'AO': '24', 'AQ': '10', 'AR': '32', 'AS': '16', 'AT': '40', 'AU': '36', 'AW': '533', 'AX': '248',
+  'AZ': '31', 'BA': '70', 'BB': '52', 'BD': '50', 'BE': '56', 'BF': '854', 'BG': '100', 'BH': '48',
+  'BI': '108', 'BJ': '204', 'BL': '652', 'BM': '60', 'BN': '96', 'BO': '68', 'BR': '76', 'BS': '44',
+  'BT': '64', 'BV': '74', 'BW': '72', 'BY': '112', 'BZ': '84', 'CA': '124', 'CC': '166', 'CD': '180',
+  'CF': '140', 'CG': '178', 'CH': '756', 'CI': '384', 'CK': '184', 'CL': '152', 'CM': '120', 'CN': '156',
+  'CO': '170', 'CR': '188', 'CU': '192', 'CV': '132', 'CW': '531', 'CX': '162', 'CY': '196', 'CZ': '203',
+  'DE': '276', 'DJ': '262', 'DK': '208', 'DM': '212', 'DO': '214', 'DZ': '12', 'EC': '218', 'EE': '233',
+  'EG': '818', 'EH': '732', 'ER': '232', 'ES': '724', 'ET': '231', 'FI': '246', 'FJ': '242', 'FK': '238',
+  'FM': '583', 'FO': '234', 'FR': '250', 'GA': '266', 'GB': '826', 'GD': '308', 'GE': '268', 'GF': '254',
+  'GG': '831', 'GH': '288', 'GI': '292', 'GL': '304', 'GM': '270', 'GN': '324', 'GP': '312', 'GQ': '226',
+  'GR': '300', 'GS': '239', 'GT': '320', 'GU': '316', 'GW': '624', 'GY': '328', 'HK': '344', 'HM': '334',
+  'HN': '340', 'HR': '191', 'HT': '332', 'HU': '348', 'ID': '360', 'IE': '372', 'IL': '376', 'IM': '833',
+  'IN': '356', 'IO': '86', 'IQ': '368', 'IR': '364', 'IS': '352', 'IT': '380', 'JE': '832', 'JM': '388',
+  'JO': '400', 'JP': '392', 'KE': '404', 'KG': '417', 'KH': '116', 'KI': '296', 'KM': '174', 'KN': '659',
+  'KP': '408', 'KR': '410', 'KW': '414', 'KY': '136', 'KZ': '398', 'LA': '418', 'LB': '422', 'LC': '662',
+  'LI': '438', 'LK': '144', 'LR': '430', 'LS': '426', 'LT': '440', 'LU': '442', 'LV': '428', 'LY': '434',
+  'MA': '504', 'MC': '492', 'MD': '498', 'ME': '499', 'MF': '663', 'MG': '450', 'MH': '584', 'MK': '807',
+  'ML': '466', 'MM': '104', 'MN': '496', 'MO': '446', 'MP': '580', 'MQ': '474', 'MR': '478', 'MS': '500',
+  'MT': '470', 'MU': '480', 'MV': '462', 'MW': '454', 'MX': '484', 'MY': '458', 'MZ': '508', 'NA': '516',
+  'NC': '540', 'NE': '562', 'NF': '574', 'NG': '566', 'NI': '558', 'NL': '528', 'NO': '578', 'NP': '524',
+  'NR': '520', 'NU': '570', 'NZ': '554', 'OM': '512', 'PA': '591', 'PE': '604', 'PF': '258', 'PG': '598',
+  'PH': '608', 'PK': '586', 'PL': '616', 'PM': '666', 'PN': '612', 'PR': '630', 'PS': '275', 'PT': '620',
+  'PW': '585', 'PY': '600', 'QA': '634', 'RE': '638', 'RO': '642', 'RS': '688', 'RU': '643', 'RW': '646',
+  'SA': '682', 'SB': '90', 'SC': '690', 'SD': '729', 'SE': '752', 'SG': '702', 'SH': '654', 'SI': '705',
+  'SJ': '744', 'SK': '703', 'SL': '694', 'SM': '674', 'SN': '686', 'SO': '706', 'SR': '740', 'SS': '728',
+  'ST': '678', 'SV': '222', 'SX': '534', 'SY': '760', 'SZ': '748', 'TC': '796', 'TD': '148', 'TF': '260',
+  'TG': '768', 'TH': '764', 'TJ': '762', 'TK': '772', 'TL': '626', 'TM': '795', 'TN': '788', 'TO': '776',
+  'TR': '792', 'TT': '780', 'TV': '798', 'TW': '158', 'TZ': '834', 'UA': '804', 'UG': '800', 'UM': '581',
+  'US': '840', 'UY': '858', 'UZ': '860', 'VA': '336', 'VC': '670', 'VE': '862', 'VG': '92', 'VI': '850',
+  'VN': '704', 'VU': '548', 'WF': '876', 'WS': '882', 'YE': '887', 'YT': '175', 'ZA': '710', 'ZM': '894',
+  'ZW': '716', 'NA': '0'
+};
+
+// Función para convertir códigos de país a IDs
+const convertCountryCodeToId = (value) => {
+  if (typeof value === 'string') {
+    const upperValue = value.toUpperCase().trim();
+    return countryCodeToId[upperValue] || value;
+  }
+  return value;
+};
+
 // Función para enriquecer datos de beneficiarios desde API externa
 const enrichBeneficiariosData = async (data) => {
   try {
@@ -306,28 +351,33 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           members: { $elemMatch: { email: email } }
         });
         
+        const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+        const dependenciesByCode = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+        
         if (userDependency) {
           query['template.producers'] = userDependency._id;
-          console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
+        } else if (dependenciesByCode.length > 0) {
+          const dependencyIds = dependenciesByCode.map(dep => dep._id);
+          query['template.producers'] = { $in: dependencyIds };
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       } else if (userRole === 'Responsable') {
         const orConditions = [];
         
-        // Dimensiones donde es responsable
         const userDependencies = await Dependency.find({ responsible: email });
         const userDependencyIds = userDependencies.map(dep => dep._id);
         const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+        
         if (dimensions.length > 0) {
           const dimensionIds = dimensions.map(dim => dim._id);
           orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
         }
         
-        // Dependencias donde es responsable/visualizador
         const allUserDependencies = await Dependency.find({
           $or: [{ responsible: email }, { visualizers: email }]
         });
+        
         if (allUserDependencies.length > 0) {
           const dependencyIds = allUserDependencies.map(dep => dep._id);
           orConditions.push({ 'template.producers': { $in: dependencyIds } });
@@ -335,21 +385,14 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         
         if (orConditions.length > 0) {
           query.$or = orConditions;
-          console.log('Filtro Responsable aplicado');
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       }
     }
-    // Aplicar filtrado según el rol del usuario (lógica original)
-    else if (activeRole === 'Administrador') {
-      // Los administradores ven todas las plantillas
-      console.log('Usuario Administrador: mostrando todas las plantillas');
-    } else {
-      // Para todos los demás roles, construir filtros combinados
+    else if (activeRole !== 'Administrador') {
       const orConditions = [];
       
-      // 1. Verificar si es responsable de dimensiones
       const userDependencies = await Dependency.find({ responsible: email });
       const userDependencyIds = userDependencies.map(dep => dep._id);
       
@@ -357,30 +400,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       if (dimensions.length > 0) {
         const dimensionIds = dimensions.map(dim => dim._id);
         orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
-        console.log('Usuario responsable de dimensiones:', dimensions.map(d => d.name));
       }
       
-      // 2. Verificar si es responsable o visualizador de dependencias (para plantillas)
       const allUserDependencies = await Dependency.find({
-        $or: [
-          { responsible: email },
-          { visualizers: email }
-        ]
+        $or: [{ responsible: email }, { visualizers: email }]
       });
       
       if (allUserDependencies.length > 0) {
         const dependencyIds = allUserDependencies.map(dep => dep._id);
         orConditions.push({ 'template.producers': { $in: dependencyIds } });
-        console.log('Usuario responsable/visualizador de dependencias:', allUserDependencies.map(d => d.name));
       }
       
-      // Si tiene alguna relación (dimensiones o dependencias), aplicar filtros
       if (orConditions.length > 0) {
         query.$or = orConditions;
-        console.log('Aplicando filtros combinados para', activeRole);
-      } else {
-        // Si no tiene relaciones específicas, mostrar todas las plantillas
-        console.log('Usuario sin relaciones específicas: mostrando todas las plantillas');
       }
     }
 
@@ -423,12 +455,26 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         );
         data.dependency = loadedDependency ? loadedDependency.name : data.dependency;
         
-        // Aplicar conversión de hipervínculos a los datos cargados
+        // Aplicar conversión de hipervínculos y códigos de país a los datos cargados
         if (data.filled_data) {
-          data.filled_data = data.filled_data.map(fieldData => ({
-            ...fieldData,
-            values: fieldData.values.map(value => convertHyperlinkToText(value))
-          }));
+          data.filled_data = data.filled_data.map(fieldData => {
+            // Verificar si el campo es de país
+            const isCountryField = fieldData.field_name && 
+              (fieldData.field_name.toLowerCase().includes('pais') || 
+               fieldData.field_name.toLowerCase().includes('país') ||
+               fieldData.field_name.toLowerCase().includes('country'));
+            
+            return {
+              ...fieldData,
+              values: fieldData.values.map(value => {
+                let processedValue = convertHyperlinkToText(value);
+                if (isCountryField) {
+                  processedValue = convertCountryCodeToId(processedValue);
+                }
+                return processedValue;
+              })
+            };
+          });
         }
         
         return data;
@@ -524,7 +570,19 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
             if (typeof value === 'string' && value === '[object Object]') {
               acc[index][item.field_name] = '';
             } else {
-              acc[index][item.field_name] = convertHyperlinkToText(value);
+              let processedValue = convertHyperlinkToText(value);
+              
+              // Verificar si el campo es de país y convertir código a ID
+              const isCountryField = item.field_name && 
+                (item.field_name.toLowerCase().includes('pais') || 
+                 item.field_name.toLowerCase().includes('país') ||
+                 item.field_name.toLowerCase().includes('country'));
+              
+              if (isCountryField) {
+                processedValue = convertCountryCodeToId(processedValue);
+              }
+              
+              acc[index][item.field_name] = processedValue;
             }
           });
           return acc;
@@ -1014,16 +1072,14 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
 
 
 publTempController.getFilledDataMergedForDimension = async (req, res) => {
-  const { pubTem_id, email } = req.query;
+  const { pubTem_id, email, filterByUserDependency, userRole } = req.query;
 
-  user = await User.findOne({ email })
+  const user = await User.findOne({ email });
 
   if(!user) {
-    return res.status(404).json({status: 'User not available'})
+    return res.status(404).json({status: 'User not available'});
   }
   
-  // Permitir acceso a todos los usuarios autenticados
-
   if (!pubTem_id) {
     return res.status(400).json({ status: 'Missing pubTem_id' });
   }
@@ -1040,17 +1096,28 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       publishedTemplateId: pubTem_id,
       templateName: template.name
     });
+
+    // Filtrar datos por dependencia del usuario si se solicita
+    let filteredLoadedData = template.loaded_data;
     
+    if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
+      // Obtener todas las dependencias del usuario
+      const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+      
+      // Filtrar solo los datos de las dependencias del usuario
+      filteredLoadedData = template.loaded_data.filter(data => 
+        allUserDependencies.includes(data.dependency)
+      );
+    }
 
-
-    const dependencies = await Dependency.find({ dep_code: { $in: template.loaded_data.map(data => data.dependency) } });
+    const dependencies = await Dependency.find({ dep_code: { $in: filteredLoadedData.map(data => data.dependency) } });
 
     const depCodeToNameMap = dependencies.reduce((acc, dep) => {
       acc[dep.dep_code] = dep.name;
       return acc;
     }, {});
 
-    let data = template.loaded_data.map(data => {
+    let data = filteredLoadedData.map(data => {
 
       // Detectar si no hay datos cargados
       if (!Array.isArray(data.filled_data) || data.filled_data.length === 0) {
@@ -1072,8 +1139,19 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!acc[index]) {
       acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
     }
-    // Aplicar conversión de hipervínculos (ya incluye limpieza de saltos de línea)
-    const cleanValue = convertHyperlinkToText(value);
+    // Aplicar conversión de hipervínculos
+    let cleanValue = convertHyperlinkToText(value);
+    
+    // Verificar si el campo es de país y convertir código a ID
+    const isCountryField = item.field_name && 
+      (item.field_name.toLowerCase().includes('pais') || 
+       item.field_name.toLowerCase().includes('país') ||
+       item.field_name.toLowerCase().includes('country'));
+    
+    if (isCountryField) {
+      cleanValue = convertCountryCodeToId(cleanValue);
+    }
+    
     // Limpiar nombre del campo eliminando comillas y caracteres problemáticos
     const fieldName = normalizeFieldName(item.field_name);
     acc[index][fieldName] = cleanValue || "";
@@ -1490,11 +1568,25 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
       return res.status(404).json({ status: 'No data found for dependency' });
     }
 
-    // Aplicar conversión de hipervínculos a los datos
-    const processedData = producerData.filled_data.map(item => ({
-      ...item,
-      values: item.values.map(value => convertHyperlinkToText(value))
-    }));
+    // Aplicar conversión de hipervínculos y códigos de país a los datos
+    const processedData = producerData.filled_data.map(item => {
+      // Verificar si el campo es de país
+      const isCountryField = item.field_name && 
+        (item.field_name.toLowerCase().includes('pais') || 
+         item.field_name.toLowerCase().includes('país') ||
+         item.field_name.toLowerCase().includes('country'));
+      
+      return {
+        ...item,
+        values: item.values.map(value => {
+          let processedValue = convertHyperlinkToText(value);
+          if (isCountryField) {
+            processedValue = convertCountryCodeToId(processedValue);
+          }
+          return processedValue;
+        })
+      };
+    });
     
     res.status(200).json({ data: processedData });
   } catch (error) {
