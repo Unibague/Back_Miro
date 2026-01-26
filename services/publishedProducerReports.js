@@ -2,6 +2,8 @@ const { uploadFileToGoogleDrive, uploadFilesToGoogleDrive, deleteDriveFile, dele
 const PubReport = require("../models/publishedProducerReports");
 const Dependency = require("../models/dependencies");
 const UserService = require("./users");
+const ProducerReport = require("../models/producerReports");
+
 
 class PublishedReportService {
   static async findPublishedReportById(id, session) {
@@ -45,8 +47,22 @@ class PublishedReportService {
       throw new Error("Report not found.");
     }
 
-    return pubReport;
+    await this.hydrateReportExample(pubReport);
+return pubReport;
   }
+
+  static async hydrateReportExample(pubReport) {
+  if (!pubReport?.report?._id) return;
+
+  const base = await ProducerReport.findById(pubReport.report._id)
+    .select("report_example")
+    .lean();
+
+  if (base?.report_example) {
+    pubReport.report.report_example = base.report_example;
+  }
+}
+
 
 static async findPublishedReports(user, page = 1, limit = 10, search = "", periodId, session) {
   const skip = (page - 1) * limit;
@@ -109,15 +125,20 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
   });
 
   const totalReports = reports.length;
-  const paginatedReports = reports.slice(skip, skip + limit);
+const paginatedReports = reports.slice(skip, skip + limit);
 
-  return {
-    page,
-    limit,
-    total: totalReports,
-    totalPages: Math.ceil(totalReports / limit),
-    publishedReports: paginatedReports,
-  };
+for (const report of paginatedReports) {
+  await this.hydrateReportExample(report);
+}
+
+return {
+  page,
+  limit,
+  total: totalReports,
+  totalPages: Math.ceil(totalReports / limit),
+  publishedReports: paginatedReports,
+};
+
 }
 
 
@@ -170,6 +191,15 @@ static async findPublishedReportsProducer(user, _, __, search = "", periodId, di
     rep => rep.filled_reports.length && rep.filled_reports[0].status !== "Pendiente"
   );
 
+  for (const report of pending) {
+  await this.hydrateReportExample(report);
+}
+
+for (const report of completed) {
+  await this.hydrateReportExample(report);
+}
+
+
   return {
     pendingReports: pending,
     completedReports: completed,
@@ -178,35 +208,21 @@ static async findPublishedReportsProducer(user, _, __, search = "", periodId, di
 }
 
 
-  static async findPublishedReportProducer(user, id, session) {
-    const report = await PubReport
+static async findPublishedReportProducer(user, id, session) {
+  const report = await PubReport
     .findById(id)
     .populate("period")
-    .populate({
-      path: "report.dimensions",
-      select: "name",
-      model: "dimensions",
-    })
-    .populate({
-      path: "filled_reports.dependency",
-      select: "name responsible",
-      match: { members: user.email }
-    })
-    .populate({
-      path: "report.producers",
-      select: "name",
-      model: "dependencies",
-      match: { members: user.email }
-    })
+    .populate("report.dimensions")
+    .populate("filled_reports.dependency")
+    .populate("report.producers")
 
-    if (report?.filled_reports) {
-      report.filled_reports = report.filled_reports.filter(
-      (filledReport) => filledReport.dependency !== null
-      );
-    }
+if (!report) return null;
 
-    return report;
-  }
+await this.hydrateReportExample(report);
+return report;
+
+}
+
 
   static async findDraft(publishedReport) {
     return publishedReport.filled_reports.find(

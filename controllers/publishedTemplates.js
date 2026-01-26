@@ -4,8 +4,8 @@ const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
 const User = require('../models/users.js')
-const Validator = require('./validators.js');
 const ValidatorModel = require('../models/validators');
+const Validator = require('./validators.js');
 const Log = require('../models/logs');
 const UserService = require('../services/users.js');
 const Category = require('../models/categories.js');  
@@ -58,6 +58,101 @@ const convertCountryCodeToId = (value) => {
     const upperValue = value.toUpperCase().trim();
     return countryCodeToId[upperValue] || value;
   }
+  return value;
+};
+
+// Mapeo de IDs a valores descriptivos
+const idToDescriptiveValue = {
+  // Sexo biológico
+  'sexo_biologico': { '1': 'Masculino', '2': 'Femenino' },
+  'genero': { '1': 'Masculino', '2': 'Femenino', '3': 'Otro', '4': 'Prefiero no decir' },
+  'estado_civil': { '1': 'Soltero', '2': 'Casado', '3': 'Divorciado', '4': 'Viudo', '5': 'Unión libre' },
+  'tipo_documento': { '1': 'Cédula de ciudadanía', '2': 'Tarjeta de identidad', '3': 'Cédula de extranjería', '4': 'Pasaporte' },
+  'nivel_educativo': { '1': 'Primaria', '2': 'Secundaria', '3': 'Técnico', '4': 'Tecnológico', '5': 'Universitario', '6': 'Especialización', '7': 'Maestría', '8': 'Doctorado' },
+  'estrato': { '1': 'Estrato 1', '2': 'Estrato 2', '3': 'Estrato 3', '4': 'Estrato 4', '5': 'Estrato 5', '6': 'Estrato 6' },
+  'tipo_vinculacion': { '1': 'Planta', '2': 'Contrato', '3': 'Cátedra', '4': 'Ocasional' },
+  'modalidad': { '1': 'Presencial', '2': 'Virtual', '3': 'Mixta' },
+  'jornada': { '1': 'Diurna', '2': 'Nocturna', '3': 'Fin de semana' },
+  'semestre': { '1': 'I', '2': 'II', '3': 'III', '4': 'IV', '5': 'V', '6': 'VI', '7': 'VII', '8': 'VIII', '9': 'IX', '10': 'X' },
+  'si_no': { '1': 'Sí', '2': 'No', '0': 'No', 'true': 'Sí', 'false': 'No' },
+  'activo_inactivo': { '1': 'Activo', '2': 'Inactivo', '0': 'Inactivo' },
+  'aprobado_reprobado': { '1': 'Aprobado', '2': 'Reprobado', '0': 'Reprobado' },
+  // Campos específicos con ID_
+  'id_sexo_biologico': { '1': 'Masculino', '2': 'Femenino' },
+  'id_estado_civil': { '1': 'Soltero', '2': 'Casado', '3': 'Divorciado', '4': 'Viudo', '5': 'Unión libre' },
+  'id_tipo_documento': { '1': 'Cédula de ciudadanía', '2': 'Tarjeta de identidad', '3': 'Cédula de extranjería', '4': 'Pasaporte' },
+  'nacional_internacional': { '1': 'Nacional', '2': 'Internacional' },
+  'tipo_movilidad': { '1': 'Entrante', '2': 'Saliente' },
+  'movilidad_por_convenio': { 'S': 'Sí', 'N': 'No' },
+  'id_fuente_nacional_investig': { '1': 'Colciencias', '2': 'Universidad', '3': 'Empresa privada', '4': 'Otro', '20': 'Otra fuente' },
+  'id_fuente_internacional': { '1': 'Gobierno extranjero', '2': 'Organización internacional', '3': 'Universidad extranjera', '4': 'Otro', '9': 'Fundación internacional' },
+  'estrategia': { '1': 'Opción 1', '2': 'Opción 2', '15': 'Estrategia específica' },
+  'enfoques': { '1': 'Enfoque 1', '2': 'Enfoque 2', '4': 'Enfoque interdisciplinario' },
+  'impacto': { '1': 'Alto', '2': 'Medio', '3': 'Bajo', '15': 'Impacto significativo' },
+  'nacional': { '1': 'Nacional', '2': 'Internacional' },
+  'internacional': { '1': 'Nacional', '2': 'Internacional' },
+  'promueve': { 'S': 'Sí', 'N': 'No' },
+  'desarrolla': { 'S': 'Sí', 'N': 'No' }
+};
+
+// Función para convertir IDs a valores descriptivos
+const convertIdToDescriptive = async (fieldName, value, templateField = null) => {
+  if (!fieldName || !value) return value;
+  
+  const fieldNameLower = fieldName.toLowerCase();
+  const stringValue = String(value).trim();
+  
+
+  
+  // 1. PRIMERO buscar en mapeos estáticos (más rápido y confiable)
+  // Solo convertir si el campo es exactamente uno de los campos conocidos o tiene patrón específico
+  for (const [key, mapping] of Object.entries(idToDescriptiveValue)) {
+    // Verificar coincidencia exacta o patrones específicos
+    const isExactMatch = fieldNameLower === key;
+    const isIdPattern = fieldNameLower.startsWith('id_') && fieldNameLower.includes(key.replace('id_', ''));
+    const isSpecificPattern = (
+      (key === 'modalidad' && fieldNameLower === 'modalidad') ||
+      (key === 'tipo_movilidad' && fieldNameLower === 'tipo_movilidad') ||
+      (key === 'nacional_internacional' && fieldNameLower === 'nacional_internacional') ||
+      (key === 'movilidad_por_convenio' && fieldNameLower === 'movilidad_por_convenio') ||
+      (key === 'promueve' && fieldNameLower.startsWith('promueve_')) ||
+      (key === 'desarrolla' && fieldNameLower.startsWith('desarrolla_')) ||
+      (key === 'impacto' && fieldNameLower.includes('impacto_de_la_movilidad'))
+    );
+    
+    if (isExactMatch || isIdPattern || isSpecificPattern) {
+      const result = mapping[stringValue];
+      if (result && result !== value) {
+        return result;
+      }
+    }
+  }
+  
+  // 2. Si no encuentra en mapeos estáticos, verificar validador externo
+  if (templateField && templateField.validate_with) {
+    try {
+      const [validatorName, columnName] = templateField.validate_with.split(' - ');
+      const validator = await ValidatorModel.findOne({ name: validatorName });
+      
+      if (validator) {
+        const column = validator.columns.find(col => col.name === columnName);
+        if (column && column.values) {
+          const foundValue = column.values.find(val => 
+            String(val.id || val.value || val).trim() === stringValue
+          );
+          if (foundValue) {
+            const result = foundValue.name || foundValue.label || foundValue.text || foundValue;
+
+            return result;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error al buscar validador:', error.message);
+    }
+  }
+  
+
   return value;
 };
 
@@ -457,24 +552,28 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         
         // Aplicar conversión de hipervínculos y códigos de país a los datos cargados
         if (data.filled_data) {
-          data.filled_data = data.filled_data.map(fieldData => {
+          data.filled_data = await Promise.all(data.filled_data.map(async fieldData => {
             // Verificar si el campo es de país
             const isCountryField = fieldData.field_name && 
               (fieldData.field_name.toLowerCase().includes('pais') || 
                fieldData.field_name.toLowerCase().includes('país') ||
                fieldData.field_name.toLowerCase().includes('country'));
             
+            const processedValues = await Promise.all(fieldData.values.map(async value => {
+              let processedValue = convertHyperlinkToText(value);
+              if (isCountryField) {
+                processedValue = convertCountryCodeToId(processedValue);
+              }
+              // Convertir IDs a valores descriptivos
+              processedValue = await convertIdToDescriptive(fieldData.field_name, processedValue);
+              return processedValue;
+            }));
+            
             return {
               ...fieldData,
-              values: fieldData.values.map(value => {
-                let processedValue = convertHyperlinkToText(value);
-                if (isCountryField) {
-                  processedValue = convertCountryCodeToId(processedValue);
-                }
-                return processedValue;
-              })
+              values: processedValues
             };
-          });
+          }));
         }
         
         return data;
@@ -581,6 +680,9 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
               if (isCountryField) {
                 processedValue = convertCountryCodeToId(processedValue);
               }
+              
+              // Convertir IDs a valores descriptivos (sin await aquí para mantener compatibilidad)
+              // processedValue = await convertIdToDescriptive(item.field_name, processedValue);
               
               acc[index][item.field_name] = processedValue;
             }
@@ -1117,7 +1219,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       return acc;
     }, {});
 
-    let data = filteredLoadedData.map(data => {
+    let data = await Promise.all(filteredLoadedData.map(async data => {
 
       // Detectar si no hay datos cargados
       if (!Array.isArray(data.filled_data) || data.filled_data.length === 0) {
@@ -1134,36 +1236,55 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
   return [emptyRow];
       }
 
-      const filledData = data.filled_data.reduce((acc, item) => {
-  item.values.forEach((value, index) => {
-    if (!acc[index]) {
-      acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
-    }
-    // Aplicar conversión de hipervínculos
-    let cleanValue = convertHyperlinkToText(value);
-    
-    // Verificar si el campo es de país y convertir código a ID
-    const isCountryField = item.field_name && 
-      (item.field_name.toLowerCase().includes('pais') || 
-       item.field_name.toLowerCase().includes('país') ||
-       item.field_name.toLowerCase().includes('country'));
-    
-    if (isCountryField) {
-      cleanValue = convertCountryCodeToId(cleanValue);
-    }
-    
-    // Limpiar nombre del campo eliminando comillas y caracteres problemáticos
-    const fieldName = normalizeFieldName(item.field_name);
-    acc[index][fieldName] = cleanValue || "";
-  });
-  return acc;
-}, []);
+      const filledData = await Promise.all(
+        data.filled_data.map(async (item) => {
+          const processedValues = await Promise.all(
+            item.values.map(async (value, index) => {
+              // Aplicar conversión de hipervínculos
+              let cleanValue = convertHyperlinkToText(value);
+              
+              // Verificar si el campo es de país y convertir código a ID
+              const isCountryField = item.field_name && 
+                (item.field_name.toLowerCase().includes('pais') || 
+                 item.field_name.toLowerCase().includes('país') ||
+                 item.field_name.toLowerCase().includes('country'));
+              
+              if (isCountryField) {
+                cleanValue = convertCountryCodeToId(cleanValue);
+              }
+              
+              // Convertir IDs a valores descriptivos (buscar campo en template para validadores)
+              const templateField = template.template.fields ? 
+                template.template.fields.find(f => f.name === item.field_name) : null;
+              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField);
+              
+              return { value: cleanValue, index };
+            })
+          );
+          
+          return { item, processedValues };
+        })
+      );
+      
+      // Reconstruir el formato original
+      const finalData = [];
+      filledData.forEach(({ item, processedValues }) => {
+        processedValues.forEach(({ value, index }) => {
+          if (!finalData[index]) {
+            finalData[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
+          }
+          const fieldName = normalizeFieldName(item.field_name);
+          finalData[index][fieldName] = value || "";
+        });
+      });
 
 
-       console.log('INFO CARGADA', filledData);
+       console.log('INFO CARGADA', finalData);
     
-      return filledData;
-    }).flat();
+      return finalData;
+    }));
+    
+    data = data.flat();
 
     // Detectar si es plantilla de beneficiarios y enriquecer datos
     const templateName = template.name ? template.name.toUpperCase().replace(/\s+/g, '_') : '';
@@ -1569,24 +1690,28 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
     }
 
     // Aplicar conversión de hipervínculos y códigos de país a los datos
-    const processedData = producerData.filled_data.map(item => {
+    const processedData = await Promise.all(producerData.filled_data.map(async item => {
       // Verificar si el campo es de país
       const isCountryField = item.field_name && 
         (item.field_name.toLowerCase().includes('pais') || 
          item.field_name.toLowerCase().includes('país') ||
          item.field_name.toLowerCase().includes('country'));
       
+      const processedValues = await Promise.all(item.values.map(async value => {
+        let processedValue = convertHyperlinkToText(value);
+        if (isCountryField) {
+          processedValue = convertCountryCodeToId(processedValue);
+        }
+        // Convertir IDs a valores descriptivos
+        processedValue = await convertIdToDescriptive(item.field_name, processedValue);
+        return processedValue;
+      }));
+      
       return {
         ...item,
-        values: item.values.map(value => {
-          let processedValue = convertHyperlinkToText(value);
-          if (isCountryField) {
-            processedValue = convertCountryCodeToId(processedValue);
-          }
-          return processedValue;
-        })
+        values: processedValues
       };
-    });
+    }));
     
     res.status(200).json({ data: processedData });
   } catch (error) {
