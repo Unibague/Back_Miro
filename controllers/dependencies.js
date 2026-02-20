@@ -75,27 +75,46 @@ dependencyController.getTemplates = async (req, res) => {
 
 
 
-dependencyController.loadDependencies = async () => {
-  await axios
-    .get(DEPENDENCIES_ENDPOINT)
-    .then((response) => {
-      return response.data.map((dependency) => {
-        return {
-          dep_code: dependency.dep_code,
-          name: dependency.dep_name,
-          dep_father: dependency.dep_father,
-        };
-      });
-    })
-    .then(async (dependencies) => {
-      await Dependency.upsertDependencies(dependencies);
-    })
-    .then(() => {
-      console.log("Dependencies loaded/updated successfully");
-    })
-    .catch((error) => {
-      console.error(error);
+dependencyController.loadDependencies = async (req, res) => {
+  try {
+    console.log('Iniciando sincronización de dependencias...');
+    
+    const response = await axios.get(DEPENDENCIES_ENDPOINT, {
+      timeout: 30000 // 30 segundos de timeout
     });
+    
+    const dependencies = response.data.map((dependency) => {
+      return {
+        dep_code: dependency.dep_code,
+        name: dependency.dep_name,
+        dep_father: dependency.dep_father,
+      };
+    });
+    
+    await Dependency.upsertDependencies(dependencies);
+    
+    console.log(`✅ ${dependencies.length} dependencias sincronizadas exitosamente`);
+    
+    return res.status(200).json({ 
+      status: 'success',
+      message: 'Dependencies loaded/updated successfully',
+      count: dependencies.length
+    });
+  } catch (error) {
+    console.error('❌ Error sincronizando dependencias:', error.message);
+    
+    if (error.code === 'ECONNABORTED') {
+      return res.status(504).json({ 
+        status: 'error',
+        message: 'Timeout: El servidor externo tardó demasiado en responder'
+      });
+    }
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: error.message || 'Error loading dependencies'
+    });
+  }
 };
 
 dependencyController.getDependency = async (req, res) => {
