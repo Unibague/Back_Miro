@@ -9,22 +9,15 @@ router.get("/childrenDependencies/templates", controller.getChildrenDependencies
 
 router.get("/responsible", controller.getDependencyByResponsible);
 
-router.get("/:id/templates", controller.getTemplates)
-
-router.get("/:id/reports", controller.getReports)
-
-router.get("/:id", controller.getDependencyById);
-
-router.get("/all/:email", controller.getAllDependencies)
-
 router.get("/", controller.getDependency)
 
+// IMPORTANTE: updateAll debe ir ANTES de /:id para evitar conflictos
 router.post("/updateAll", controller.loadDependencies)
 
 // Rutas de escritura (solo para administradores)
 router.put("/setResponsible", requireAdmin, controller.setResponsible)
-router.put("/:id", requireAdmin, controller.updateDependency)
 router.put("/:id/visualizers", requireAdmin, controller.updateVisualizers)
+router.put("/:id", requireAdmin, controller.updateDependency)
 
 // Rutas de lectura (disponibles para líderes y administradores)
 router.get("/:dep_code/members", controller.getMembers)
@@ -36,6 +29,15 @@ router.post("/names", controller.getDependencyNames);
 router.get("/:email/hierarchy", controller.getDependencyHierarchy)
 
 router.get("/:id/visualizers", controller.getVisualizers);
+
+// Rutas con parámetros dinámicos deben ir AL FINAL
+router.get("/:id/templates", controller.getTemplates)
+
+router.get("/:id/reports", controller.getReports)
+
+router.get("/:id", controller.getDependencyById);
+
+router.get("/all/:email", controller.getAllDependencies)
 
 
 
