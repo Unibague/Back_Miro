@@ -69,6 +69,10 @@ apiRouter.use("/template-filters", require('./routes/templateFilters'));
 apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFiltered'));
 apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 
+// Ruta directa para jerarquía (atajo)
+const dependencyController = require('./controllers/dependencies');
+apiRouter.get("/hierarchy", dependencyController.getHierarchy);
+
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);
 } else {

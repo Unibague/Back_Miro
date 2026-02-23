@@ -3,6 +3,12 @@ const router = express.Router()
 const controller = require('../controllers/dependencies.js')
 const { requireAdmin, requireReadAccess } = require('../middleware/auth')
 
+// Rutas de jerarquía (deben ir primero)
+router.get("/hierarchy", controller.getHierarchy)
+router.post("/create", requireAdmin, controller.createDependency)
+router.put("/update-hierarchy/:id", requireAdmin, controller.updateDependencyHierarchy)
+router.delete("/delete/:id", requireAdmin, controller.deleteDependency)
+
 router.get("/all", controller.getDependencies)
 
 router.get("/childrenDependencies/templates", controller.getChildrenDependenciesPublishedTemplates)
