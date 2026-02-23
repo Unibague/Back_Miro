@@ -152,6 +152,16 @@ periodController.updatePeriod = async (req, res) => {
         if (!updatedPeriod) {
             return res.status(404).json({ error: "Period not found" });
         }
+
+        // Si se actualizó producer_end_date, actualizar deadline de plantillas publicadas
+        if (req.body.producer_end_date) {
+            await PublishedTemplate.updateMany(
+                { period: id },
+                { deadline: req.body.producer_end_date }
+            );
+            console.log(`✅ Actualizado deadline de plantillas para periodo ${id}`);
+        }
+
         res.status(200).json(updatedPeriod);
     } catch (error) {
         res.status(500).json({ error: error.message });

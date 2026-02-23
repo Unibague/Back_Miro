@@ -368,7 +368,7 @@ templateController.updatePlantilla = async (req, res) => {
     
     // Registrar en auditoría (non-blocking)
     try {
-      const userEmail = updatedFields.email || 'practicantes.g3@unibague.edu.co';
+      const userEmail = updatedFields.email || 'user';
       const user = await User.findOne({ email: userEmail });
       if (user) {
         await AuditLogger.logUpdate(req, user, 'template', {
@@ -467,7 +467,7 @@ templateController.deletePlantilla = async (req, res) => {
     
     // Registrar en auditoría (non-blocking)
     try {
-      const userEmail = req.body.userEmail || req.query.email || 'practicantes.g3@unibague.edu.co';
+      const userEmail = req.body.userEmail || req.query.email || 'user';
       const user = await User.findOne({ email: userEmail });
       if (user) {
         await AuditLogger.logDelete(req, user, 'template', {
