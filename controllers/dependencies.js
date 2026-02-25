@@ -111,9 +111,10 @@ dependencyController.syncDependenciesInternal = async () => {
     { priority: 2, keywords: ['VICERRECTOR', 'VICERRECTORA'] },
     { priority: 3, keywords: ['DECANO', 'DECANA'] },
     { priority: 4, keywords: ['DIRECTOR', 'DIRECTORA'] },
-    { priority: 5, keywords: ['JEFE', 'JEFA'] },
-    { priority: 6, keywords: ['COORDINADOR', 'COORDINADORA'] },
-    { priority: 7, keywords: ['BIBLIOTECOLOGA', 'BIBLIOTECÓLOGA'] }
+    { priority: 5, keywords: ['GERENTE', 'GERENTE DE'] },
+    { priority: 6, keywords: ['JEFE', 'JEFA'] },
+    { priority: 7, keywords: ['COORDINADOR', 'COORDINADORA'] },
+    { priority: 8, keywords: ['BIBLIOTECOLOGA', 'BIBLIOTECÓLOGA'] }
   ];
   
   // 5. Clasificar usuarios por prioridad
