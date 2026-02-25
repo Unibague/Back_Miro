@@ -26,7 +26,7 @@ app.use(cors({
     }
     return callback(null, true);
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   credentials: true
 }));
 
@@ -67,6 +67,11 @@ apiRouter.use("/user-dependencies", require('./routes/userDependencies'));
 apiRouter.use("/audit", require('./routes/auditLogs'));
 apiRouter.use("/template-filters", require('./routes/templateFilters'));
 apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFiltered'));
+apiRouter.use("/config-audit", require('./routes/configurationAudit'));
+
+// Ruta directa para jerarquía (atajo)
+const dependencyController = require('./controllers/dependencies');
+apiRouter.get("/hierarchy", dependencyController.getHierarchy);
 
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);

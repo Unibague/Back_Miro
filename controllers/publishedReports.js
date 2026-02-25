@@ -412,7 +412,7 @@ pubReportController.publishReport = async (req, res) => {
     
     // Registrar en auditoría
     try {
-      const userEmail = req.body.email || 'practicantes.g3@unibague.edu.co'; // Temporal
+      const userEmail = req.body.email || 'user'; // Temporal
       const user = await User.findOne({ email: userEmail });
       if (user) {
         const period = await Period.findById(periodId);

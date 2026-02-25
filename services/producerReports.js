@@ -178,7 +178,7 @@ static async getReports(periodId = null) {
 
     const report = await ProducerReport.findByIdAndUpdate(id, updateData, { new: true, session });
     for (const pubReport of pubReportsToUpdate) {
-      pubReport.report = report;
+pubReport.report = report.toObject();
       console.log('pubReport', pubReport.report);
       await pubReport.save({ session });
     }

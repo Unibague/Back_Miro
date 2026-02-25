@@ -75,27 +75,46 @@ dependencyController.getTemplates = async (req, res) => {
 
 
 
-dependencyController.loadDependencies = async () => {
-  await axios
-    .get(DEPENDENCIES_ENDPOINT)
-    .then((response) => {
-      return response.data.map((dependency) => {
-        return {
-          dep_code: dependency.dep_code,
-          name: dependency.dep_name,
-          dep_father: dependency.dep_father,
-        };
-      });
-    })
-    .then(async (dependencies) => {
-      await Dependency.upsertDependencies(dependencies);
-    })
-    .then(() => {
-      console.log("Dependencies loaded/updated successfully");
-    })
-    .catch((error) => {
-      console.error(error);
+dependencyController.loadDependencies = async (req, res) => {
+  try {
+    console.log('Iniciando sincronización de dependencias...');
+    
+    const response = await axios.get(DEPENDENCIES_ENDPOINT, {
+      timeout: 30000 // 30 segundos de timeout
     });
+    
+    const dependencies = response.data.map((dependency) => {
+      return {
+        dep_code: dependency.dep_code,
+        name: dependency.dep_name,
+        dep_father: dependency.dep_father,
+      };
+    });
+    
+    await Dependency.upsertDependencies(dependencies);
+    
+    console.log(`✅ ${dependencies.length} dependencias sincronizadas exitosamente`);
+    
+    return res.status(200).json({ 
+      status: 'success',
+      message: 'Dependencies loaded/updated successfully',
+      count: dependencies.length
+    });
+  } catch (error) {
+    console.error('❌ Error sincronizando dependencias:', error.message);
+    
+    if (error.code === 'ECONNABORTED') {
+      return res.status(504).json({ 
+        status: 'error',
+        message: 'Timeout: El servidor externo tardó demasiado en responder'
+      });
+    }
+    
+    return res.status(500).json({ 
+      status: 'error',
+      message: error.message || 'Error loading dependencies'
+    });
+  }
 };
 
 dependencyController.getDependency = async (req, res) => {
@@ -498,6 +517,143 @@ dependencyController.getDependencyHierarchy = async (req, res) => {
   res.status(500).json({ error: "Error interno del servidor." });
 }
 
+};
+
+// Obtener jerarquía completa de dependencias
+dependencyController.getHierarchy = async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email) {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
+    // Verificar que el usuario existe
+    const user = await UserService.findUserByEmail(email);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const dependencies = await Dependency.find({}, "_id dep_code name dep_father responsible");
+    
+    console.log(`📊 Total dependencias en BD: ${dependencies.length}`);
+    
+    // Crear un Set de todos los dep_codes existentes
+    const existingCodes = new Set(dependencies.map(d => d.dep_code));
+    
+    // Construir jerarquía - si dep_father no existe en BD, tratarlo como raíz
+    const buildHierarchy = (parentCode = null) => {
+      return dependencies
+        .filter(dep => {
+          if (parentCode === null) {
+            // Raíz: dep_father es null/vacío O el padre no existe en la BD
+            return !dep.dep_father || 
+                   dep.dep_father === '' || 
+                   !existingCodes.has(dep.dep_father);
+          }
+          return dep.dep_father === parentCode;
+        })
+        .map(dep => ({
+          _id: dep._id,
+          dep_code: dep.dep_code,
+          name: dep.name,
+          parent_id: dep.dep_father || null,
+          responsible: dep.responsible || null,
+          active: true,
+          children: buildHierarchy(dep.dep_code)
+        }));
+    };
+
+    const hierarchy = buildHierarchy(null);
+    console.log(`✅ Jerarquía construida: ${hierarchy.length} dependencias raíz`);
+    res.status(200).json(hierarchy);
+  } catch (error) {
+    console.error("Error fetching hierarchy:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Crear nueva dependencia
+dependencyController.createDependency = async (req, res) => {
+  try {
+    const { dep_code, name, parent_id, responsible, userEmail } = req.body;
+    await UserService.findUserByEmailAndRole(userEmail, "Administrador");
+
+    const existingDep = await Dependency.findOne({ $or: [{ dep_code }, { name }] });
+    if (existingDep) {
+      return res.status(400).json({ error: "Dependency code or name already exists" });
+    }
+
+    const newDependency = new Dependency({
+      dep_code,
+      name,
+      dep_father: parent_id || null,
+      responsible: responsible || null,
+      members: []
+    });
+
+    await newDependency.save();
+    res.status(201).json(newDependency);
+  } catch (error) {
+    console.error("Error creating dependency:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Actualizar dependencia (incluyendo relación padre)
+dependencyController.updateDependencyHierarchy = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { dep_code, name, parent_id, responsible, userEmail } = req.body;
+    await UserService.findUserByEmailAndRole(userEmail, "Administrador");
+
+    const dependency = await Dependency.findById(id);
+    if (!dependency) {
+      return res.status(404).json({ error: "Dependency not found" });
+    }
+
+    // Validar que no se cree un ciclo
+    if (parent_id && parent_id === dep_code) {
+      return res.status(400).json({ error: "A dependency cannot be its own parent" });
+    }
+
+    dependency.dep_code = dep_code;
+    dependency.name = name;
+    dependency.dep_father = parent_id || null;
+    dependency.responsible = responsible || null;
+
+    await dependency.save();
+    res.status(200).json(dependency);
+  } catch (error) {
+    console.error("Error updating dependency:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Eliminar dependencia
+dependencyController.deleteDependency = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userEmail } = req.query;
+    await UserService.findUserByEmailAndRole(userEmail, "Administrador");
+
+    const dependency = await Dependency.findById(id);
+    if (!dependency) {
+      return res.status(404).json({ error: "Dependency not found" });
+    }
+
+    // Verificar si tiene hijos
+    const hasChildren = await Dependency.findOne({ dep_father: dependency.dep_code });
+    if (hasChildren) {
+      return res.status(400).json({ error: "Cannot delete dependency with children" });
+    }
+
+    await Dependency.findByIdAndDelete(id);
+    res.status(200).json({ message: "Dependency deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting dependency:", error);
+    res.status(500).json({ error: error.message });
+  }
 };
 
 module.exports = dependencyController;

@@ -152,6 +152,16 @@ periodController.updatePeriod = async (req, res) => {
         if (!updatedPeriod) {
             return res.status(404).json({ error: "Period not found" });
         }
+
+        // Si se actualizó producer_end_date, actualizar deadline de plantillas publicadas
+        if (req.body.producer_end_date) {
+            await PublishedTemplate.updateMany(
+                { period: id },
+                { deadline: req.body.producer_end_date }
+            );
+            console.log(`✅ Actualizado deadline de plantillas para periodo ${id}`);
+        }
+
         res.status(200).json(updatedPeriod);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -218,6 +228,27 @@ periodController.getAllPeriods = async (req, res) => {
       console.error('Error fetching all periods:', error);
       res.status(500).json({ error: 'Internal Server Error' });
     }
+};
+
+periodController.toggleActive = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { is_active } = req.body;
+    
+    const updatedPeriod = await Period.findByIdAndUpdate(
+      id, 
+      { is_active }, 
+      { new: true }
+    );
+    
+    if (!updatedPeriod) {
+      return res.status(404).json({ error: 'Period not found' });
+    }
+    
+    res.json({ success: true, period: updatedPeriod });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 };
 
 

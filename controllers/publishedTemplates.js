@@ -4,15 +4,265 @@ const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
 const User = require('../models/users.js')
-const Validator = require('./validators.js');
 const ValidatorModel = require('../models/validators');
+const Validator = require('./validators.js');
 const Log = require('../models/logs');
 const UserService = require('../services/users.js');
 const Category = require('../models/categories.js');  
 const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
 
+const axios = require('axios');
+
 const publTempController = {};
+
+// Mapeo de códigos alfa-2 de países a IDs numéricos
+const countryCodeToId = {
+  'AD': '20', 'AE': '784', 'AF': '4', 'AG': '28', 'AI': '660', 'AL': '8', 'AM': '51', 'AN': '530',
+  'AO': '24', 'AQ': '10', 'AR': '32', 'AS': '16', 'AT': '40', 'AU': '36', 'AW': '533', 'AX': '248',
+  'AZ': '31', 'BA': '70', 'BB': '52', 'BD': '50', 'BE': '56', 'BF': '854', 'BG': '100', 'BH': '48',
+  'BI': '108', 'BJ': '204', 'BL': '652', 'BM': '60', 'BN': '96', 'BO': '68', 'BR': '76', 'BS': '44',
+  'BT': '64', 'BV': '74', 'BW': '72', 'BY': '112', 'BZ': '84', 'CA': '124', 'CC': '166', 'CD': '180',
+  'CF': '140', 'CG': '178', 'CH': '756', 'CI': '384', 'CK': '184', 'CL': '152', 'CM': '120', 'CN': '156',
+  'CO': '170', 'CR': '188', 'CU': '192', 'CV': '132', 'CW': '531', 'CX': '162', 'CY': '196', 'CZ': '203',
+  'DE': '276', 'DJ': '262', 'DK': '208', 'DM': '212', 'DO': '214', 'DZ': '12', 'EC': '218', 'EE': '233',
+  'EG': '818', 'EH': '732', 'ER': '232', 'ES': '724', 'ET': '231', 'FI': '246', 'FJ': '242', 'FK': '238',
+  'FM': '583', 'FO': '234', 'FR': '250', 'GA': '266', 'GB': '826', 'GD': '308', 'GE': '268', 'GF': '254',
+  'GG': '831', 'GH': '288', 'GI': '292', 'GL': '304', 'GM': '270', 'GN': '324', 'GP': '312', 'GQ': '226',
+  'GR': '300', 'GS': '239', 'GT': '320', 'GU': '316', 'GW': '624', 'GY': '328', 'HK': '344', 'HM': '334',
+  'HN': '340', 'HR': '191', 'HT': '332', 'HU': '348', 'ID': '360', 'IE': '372', 'IL': '376', 'IM': '833',
+  'IN': '356', 'IO': '86', 'IQ': '368', 'IR': '364', 'IS': '352', 'IT': '380', 'JE': '832', 'JM': '388',
+  'JO': '400', 'JP': '392', 'KE': '404', 'KG': '417', 'KH': '116', 'KI': '296', 'KM': '174', 'KN': '659',
+  'KP': '408', 'KR': '410', 'KW': '414', 'KY': '136', 'KZ': '398', 'LA': '418', 'LB': '422', 'LC': '662',
+  'LI': '438', 'LK': '144', 'LR': '430', 'LS': '426', 'LT': '440', 'LU': '442', 'LV': '428', 'LY': '434',
+  'MA': '504', 'MC': '492', 'MD': '498', 'ME': '499', 'MF': '663', 'MG': '450', 'MH': '584', 'MK': '807',
+  'ML': '466', 'MM': '104', 'MN': '496', 'MO': '446', 'MP': '580', 'MQ': '474', 'MR': '478', 'MS': '500',
+  'MT': '470', 'MU': '480', 'MV': '462', 'MW': '454', 'MX': '484', 'MY': '458', 'MZ': '508', 'NA': '516',
+  'NC': '540', 'NE': '562', 'NF': '574', 'NG': '566', 'NI': '558', 'NL': '528', 'NO': '578', 'NP': '524',
+  'NR': '520', 'NU': '570', 'NZ': '554', 'OM': '512', 'PA': '591', 'PE': '604', 'PF': '258', 'PG': '598',
+  'PH': '608', 'PK': '586', 'PL': '616', 'PM': '666', 'PN': '612', 'PR': '630', 'PS': '275', 'PT': '620',
+  'PW': '585', 'PY': '600', 'QA': '634', 'RE': '638', 'RO': '642', 'RS': '688', 'RU': '643', 'RW': '646',
+  'SA': '682', 'SB': '90', 'SC': '690', 'SD': '729', 'SE': '752', 'SG': '702', 'SH': '654', 'SI': '705',
+  'SJ': '744', 'SK': '703', 'SL': '694', 'SM': '674', 'SN': '686', 'SO': '706', 'SR': '740', 'SS': '728',
+  'ST': '678', 'SV': '222', 'SX': '534', 'SY': '760', 'SZ': '748', 'TC': '796', 'TD': '148', 'TF': '260',
+  'TG': '768', 'TH': '764', 'TJ': '762', 'TK': '772', 'TL': '626', 'TM': '795', 'TN': '788', 'TO': '776',
+  'TR': '792', 'TT': '780', 'TV': '798', 'TW': '158', 'TZ': '834', 'UA': '804', 'UG': '800', 'UM': '581',
+  'US': '840', 'UY': '858', 'UZ': '860', 'VA': '336', 'VC': '670', 'VE': '862', 'VG': '92', 'VI': '850',
+  'VN': '704', 'VU': '548', 'WF': '876', 'WS': '882', 'YE': '887', 'YT': '175', 'ZA': '710', 'ZM': '894',
+  'ZW': '716', 'NA': '0'
+};
+
+// Función para convertir códigos de país a IDs
+const convertCountryCodeToId = (value) => {
+  if (typeof value === 'string') {
+    const upperValue = value.toUpperCase().trim();
+    return countryCodeToId[upperValue] || value;
+  }
+  return value;
+};
+
+// Mapeo de IDs a valores descriptivos
+const idToDescriptiveValue = {
+  // Sexo biológico
+  'sexo_biologico': { '1': 'Masculino', '2': 'Femenino' },
+  'genero': { '1': 'Masculino', '2': 'Femenino', '3': 'Otro', '4': 'Prefiero no decir' },
+  'estado_civil': { '1': 'Soltero', '2': 'Casado', '3': 'Divorciado', '4': 'Viudo', '5': 'Unión libre' },
+  'tipo_documento': { '1': 'Cédula de ciudadanía', '2': 'Tarjeta de identidad', '3': 'Cédula de extranjería', '4': 'Pasaporte' },
+  'nivel_educativo': { '1': 'Primaria', '2': 'Secundaria', '3': 'Técnico', '4': 'Tecnológico', '5': 'Universitario', '6': 'Especialización', '7': 'Maestría', '8': 'Doctorado' },
+  'estrato': { '1': 'Estrato 1', '2': 'Estrato 2', '3': 'Estrato 3', '4': 'Estrato 4', '5': 'Estrato 5', '6': 'Estrato 6' },
+  'tipo_vinculacion': { '1': 'Planta', '2': 'Contrato', '3': 'Cátedra', '4': 'Ocasional' },
+  'modalidad': { '1': 'Presencial', '2': 'Virtual', '3': 'Mixta' },
+  'jornada': { '1': 'Diurna', '2': 'Nocturna', '3': 'Fin de semana' },
+  'semestre': { '1': 'I', '2': 'II', '3': 'III', '4': 'IV', '5': 'V', '6': 'VI', '7': 'VII', '8': 'VIII', '9': 'IX', '10': 'X' },
+  'si_no': { '1': 'Sí', '2': 'No', '0': 'No', 'true': 'Sí', 'false': 'No' },
+  'activo_inactivo': { '1': 'Activo', '2': 'Inactivo', '0': 'Inactivo' },
+  'aprobado_reprobado': { '1': 'Aprobado', '2': 'Reprobado', '0': 'Reprobado' },
+  // Campos específicos con ID_
+  'id_sexo_biologico': { '1': 'Masculino', '2': 'Femenino' },
+  'id_estado_civil': { '1': 'Soltero', '2': 'Casado', '3': 'Divorciado', '4': 'Viudo', '5': 'Unión libre' },
+  'id_tipo_documento': { '1': 'Cédula de ciudadanía', '2': 'Tarjeta de identidad', '3': 'Cédula de extranjería', '4': 'Pasaporte' },
+  'nacional_internacional': { '1': 'Nacional', '2': 'Internacional' },
+  'tipo_movilidad': { '1': 'Entrante', '2': 'Saliente' },
+  'movilidad_por_convenio': { 'S': 'Sí', 'N': 'No' },
+  'id_fuente_nacional_investig': { '1': 'Colciencias', '2': 'Universidad', '3': 'Empresa privada', '4': 'Otro', '20': 'Otra fuente' },
+  'id_fuente_internacional': { '1': 'Gobierno extranjero', '2': 'Organización internacional', '3': 'Universidad extranjera', '4': 'Otro', '9': 'Fundación internacional' },
+  'estrategia': { '1': 'Opción 1', '2': 'Opción 2', '15': 'Estrategia específica' },
+  'enfoques': { '1': 'Enfoque 1', '2': 'Enfoque 2', '4': 'Enfoque interdisciplinario' },
+  'impacto': { '1': 'Alto', '2': 'Medio', '3': 'Bajo', '15': 'Impacto significativo' },
+  'nacional': { '1': 'Nacional', '2': 'Internacional' },
+  'internacional': { '1': 'Nacional', '2': 'Internacional' },
+  'promueve': { 'S': 'Sí', 'N': 'No' },
+  'desarrolla': { 'S': 'Sí', 'N': 'No' }
+};
+
+// Función para convertir IDs a valores descriptivos
+const convertIdToDescriptive = async (fieldName, value, templateField = null) => {
+  if (!fieldName || !value) return value;
+  
+  const fieldNameLower = fieldName.toLowerCase();
+  const stringValue = String(value).trim();
+  
+
+  
+  // 1. PRIMERO buscar en mapeos estáticos (más rápido y confiable)
+  // Solo convertir si el campo es exactamente uno de los campos conocidos o tiene patrón específico
+  for (const [key, mapping] of Object.entries(idToDescriptiveValue)) {
+    // Verificar coincidencia exacta o patrones específicos
+    const isExactMatch = fieldNameLower === key;
+    const isIdPattern = fieldNameLower.startsWith('id_') && fieldNameLower.includes(key.replace('id_', ''));
+    const isSpecificPattern = (
+      (key === 'modalidad' && fieldNameLower === 'modalidad') ||
+      (key === 'tipo_movilidad' && fieldNameLower === 'tipo_movilidad') ||
+      (key === 'nacional_internacional' && fieldNameLower === 'nacional_internacional') ||
+      (key === 'movilidad_por_convenio' && fieldNameLower === 'movilidad_por_convenio') ||
+      (key === 'promueve' && fieldNameLower.startsWith('promueve_')) ||
+      (key === 'desarrolla' && fieldNameLower.startsWith('desarrolla_')) ||
+      (key === 'impacto' && fieldNameLower.includes('impacto_de_la_movilidad'))
+    );
+    
+    if (isExactMatch || isIdPattern || isSpecificPattern) {
+      const result = mapping[stringValue];
+      if (result && result !== value) {
+        return result;
+      }
+    }
+  }
+  
+  // 2. Si no encuentra en mapeos estáticos, verificar validador externo
+  if (templateField && templateField.validate_with) {
+    try {
+      const [validatorName, columnName] = templateField.validate_with.split(' - ');
+      const validator = await ValidatorModel.findOne({ name: validatorName });
+      
+      if (validator) {
+        const column = validator.columns.find(col => col.name === columnName);
+        if (column && column.values) {
+          const foundValue = column.values.find(val => 
+            String(val.id || val.value || val).trim() === stringValue
+          );
+          if (foundValue) {
+            const result = foundValue.name || foundValue.label || foundValue.text || foundValue;
+
+            return result;
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error al buscar validador:', error.message);
+    }
+  }
+  
+
+  return value;
+};
+
+// Función para enriquecer datos de beneficiarios desde API externa
+const enrichBeneficiariosData = async (data) => {
+  try {
+    console.log('🔍 Consultando API de roles para enriquecer datos...');
+    
+    // Obtener datos de la API externa
+    const response = await axios.get(process.env.ROLES_ENDPOINT);
+    if (!response.data.success) {
+      console.warn('⚠️ API de roles no disponible, continuando sin enriquecimiento');
+      return data;
+    }
+
+    const rolesData = response.data.roles;
+    console.log(`📊 API devolvió ${rolesData.length} registros de roles`);
+    
+    // Crear mapa de identificación -> datos del usuario
+    const userMap = {};
+    rolesData.forEach(role => {
+      if (!userMap[role.identification]) {
+        userMap[role.identification] = {
+          user_name: role.user_name,
+          email: role.email,
+          username: role.username,
+          roles: []
+        };
+      }
+      userMap[role.identification].roles.push(role.profile_name);
+    });
+
+    console.log(`👥 Procesados ${Object.keys(userMap).length} usuarios únicos`);
+    
+    // DEBUG: Mostrar algunas cédulas de ejemplo de la API
+    const sampleIds = Object.keys(userMap).slice(0, 10);
+    console.log('🔍 Ejemplos de cédulas en la API:', sampleIds);
+
+    // DEBUG: Mostrar estructura de la primera fila para debugging
+    if (data.length > 0) {
+      console.log('🔍 DEBUG - Campos disponibles en la primera fila:');
+      console.log('Campos:', Object.keys(data[0]));
+      console.log('Primera fila completa:', data[0]);
+    }
+
+    // Enriquecer cada fila de datos
+    const enrichedData = data.map((row, index) => {
+      // Buscar identificación en diferentes posibles nombres de campo
+      const possibleIdFields = [
+        'NUM_DOCUMENTO', 'IDENTIFICACION', 'CEDULA', 'ID', 'NUMERO_IDENTIFICACION', 'DOCUMENTO',
+        'num_documento', 'identificacion', 'cedula', 'id', 'numero_identificacion', 'documento',
+        'Num_Documento', 'Identificacion', 'Cedula', 'Id', 'Numero_Identificacion', 'Documento'
+      ];
+      
+      let identification = null;
+      let fieldUsed = null;
+      
+      // Buscar en todos los posibles campos
+      for (const field of possibleIdFields) {
+        if (row[field] && row[field] !== '') {
+          identification = String(row[field]).trim();
+          fieldUsed = field;
+          break;
+        }
+      }
+      
+      // Si no encuentra en campos específicos, buscar en cualquier campo que contenga números
+      if (!identification) {
+        for (const [key, value] of Object.entries(row)) {
+          if (value && typeof value === 'string' && /^\d{6,12}$/.test(value.trim())) {
+            identification = value.trim();
+            fieldUsed = key;
+            break;
+          }
+        }
+      }
+      
+      if (index < 5) { // Solo mostrar debug para las primeras 5 filas
+        console.log(`🔍 Fila ${index + 1}: Campo usado: ${fieldUsed}, Cédula: ${identification}`);
+      }
+      
+      if (identification && userMap[identification]) {
+        const userData = userMap[identification];
+        if (index < 5) {
+          console.log(`✅ Enriqueciendo datos para cédula: ${identification}`);
+        }
+        
+        return {
+          ...row,
+          ROLES_DISPONIBLES: userData.roles.join(', ')
+        };
+      } else {
+        if (index < 5) {
+          console.log(`❌ No se encontraron datos para cédula: ${identification}`);
+        }
+        return {
+          ...row,
+          ROLES_DISPONIBLES: 'Externo' // Valor por defecto si no se encuentra
+        };
+      }
+    });
+
+    console.log(`🎉 Enriquecimiento completado para ${enrichedData.length} filas`);
+    return enrichedData;
+    
+  } catch (error) {
+    console.error('❌ Error enriqueciendo datos de beneficiarios:', error.message);
+    return data; // Devolver datos originales si hay erro
+  }
+};
 
 // Función para normalizar nombres de campos para Excel
 const normalizeFieldName = (fieldName) => {
@@ -196,28 +446,33 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           members: { $elemMatch: { email: email } }
         });
         
+        const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+        const dependenciesByCode = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+        
         if (userDependency) {
           query['template.producers'] = userDependency._id;
-          console.log('Filtro Productor aplicado para dependencia:', userDependency.name);
+        } else if (dependenciesByCode.length > 0) {
+          const dependencyIds = dependenciesByCode.map(dep => dep._id);
+          query['template.producers'] = { $in: dependencyIds };
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       } else if (userRole === 'Responsable') {
         const orConditions = [];
         
-        // Dimensiones donde es responsable
         const userDependencies = await Dependency.find({ responsible: email });
         const userDependencyIds = userDependencies.map(dep => dep._id);
         const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
+        
         if (dimensions.length > 0) {
           const dimensionIds = dimensions.map(dim => dim._id);
           orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
         }
         
-        // Dependencias donde es responsable/visualizador
         const allUserDependencies = await Dependency.find({
           $or: [{ responsible: email }, { visualizers: email }]
         });
+        
         if (allUserDependencies.length > 0) {
           const dependencyIds = allUserDependencies.map(dep => dep._id);
           orConditions.push({ 'template.producers': { $in: dependencyIds } });
@@ -225,21 +480,14 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         
         if (orConditions.length > 0) {
           query.$or = orConditions;
-          console.log('Filtro Responsable aplicado');
         } else {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
         }
       }
     }
-    // Aplicar filtrado según el rol del usuario (lógica original)
-    else if (activeRole === 'Administrador') {
-      // Los administradores ven todas las plantillas
-      console.log('Usuario Administrador: mostrando todas las plantillas');
-    } else {
-      // Para todos los demás roles, construir filtros combinados
+    else if (activeRole !== 'Administrador') {
       const orConditions = [];
       
-      // 1. Verificar si es responsable de dimensiones
       const userDependencies = await Dependency.find({ responsible: email });
       const userDependencyIds = userDependencies.map(dep => dep._id);
       
@@ -247,30 +495,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       if (dimensions.length > 0) {
         const dimensionIds = dimensions.map(dim => dim._id);
         orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
-        console.log('Usuario responsable de dimensiones:', dimensions.map(d => d.name));
       }
       
-      // 2. Verificar si es responsable o visualizador de dependencias (para plantillas)
       const allUserDependencies = await Dependency.find({
-        $or: [
-          { responsible: email },
-          { visualizers: email }
-        ]
+        $or: [{ responsible: email }, { visualizers: email }]
       });
       
       if (allUserDependencies.length > 0) {
         const dependencyIds = allUserDependencies.map(dep => dep._id);
         orConditions.push({ 'template.producers': { $in: dependencyIds } });
-        console.log('Usuario responsable/visualizador de dependencias:', allUserDependencies.map(d => d.name));
       }
       
-      // Si tiene alguna relación (dimensiones o dependencias), aplicar filtros
       if (orConditions.length > 0) {
         query.$or = orConditions;
-        console.log('Aplicando filtros combinados para', activeRole);
-      } else {
-        // Si no tiene relaciones específicas, mostrar todas las plantillas
-        console.log('Usuario sin relaciones específicas: mostrando todas las plantillas');
       }
     }
 
@@ -313,11 +550,29 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         );
         data.dependency = loadedDependency ? loadedDependency.name : data.dependency;
         
-        // Aplicar conversión de hipervínculos a los datos cargados
+        // Aplicar conversión de hipervínculos y códigos de país a los datos cargados
         if (data.filled_data) {
-          data.filled_data = data.filled_data.map(fieldData => ({
-            ...fieldData,
-            values: fieldData.values.map(value => convertHyperlinkToText(value))
+          data.filled_data = await Promise.all(data.filled_data.map(async fieldData => {
+            // Verificar si el campo es de país
+            const isCountryField = fieldData.field_name && 
+              (fieldData.field_name.toLowerCase().includes('pais') || 
+               fieldData.field_name.toLowerCase().includes('país') ||
+               fieldData.field_name.toLowerCase().includes('country'));
+            
+            const processedValues = await Promise.all(fieldData.values.map(async value => {
+              let processedValue = convertHyperlinkToText(value);
+              if (isCountryField) {
+                processedValue = convertCountryCodeToId(processedValue);
+              }
+              // Convertir IDs a valores descriptivos
+              processedValue = await convertIdToDescriptive(fieldData.field_name, processedValue);
+              return processedValue;
+            }));
+            
+            return {
+              ...fieldData,
+              values: processedValues
+            };
           }));
         }
         
@@ -414,7 +669,22 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
             if (typeof value === 'string' && value === '[object Object]') {
               acc[index][item.field_name] = '';
             } else {
-              acc[index][item.field_name] = convertHyperlinkToText(value);
+              let processedValue = convertHyperlinkToText(value);
+              
+              // Verificar si el campo es de país y convertir código a ID
+              const isCountryField = item.field_name && 
+                (item.field_name.toLowerCase().includes('pais') || 
+                 item.field_name.toLowerCase().includes('país') ||
+                 item.field_name.toLowerCase().includes('country'));
+              
+              if (isCountryField) {
+                processedValue = convertCountryCodeToId(processedValue);
+              }
+              
+              // Convertir IDs a valores descriptivos (sin await aquí para mantener compatibilidad)
+              // processedValue = await convertIdToDescriptive(item.field_name, processedValue);
+              
+              acc[index][item.field_name] = processedValue;
             }
           });
           return acc;
@@ -904,16 +1174,14 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
 
 
 publTempController.getFilledDataMergedForDimension = async (req, res) => {
-  const { pubTem_id, email } = req.query;
+  const { pubTem_id, email, filterByUserDependency, userRole } = req.query;
 
-  user = await User.findOne({ email })
+  const user = await User.findOne({ email });
 
   if(!user) {
-    return res.status(404).json({status: 'User not available'})
+    return res.status(404).json({status: 'User not available'});
   }
   
-  // Permitir acceso a todos los usuarios autenticados
-
   if (!pubTem_id) {
     return res.status(400).json({ status: 'Missing pubTem_id' });
   }
@@ -930,17 +1198,28 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       publishedTemplateId: pubTem_id,
       templateName: template.name
     });
+
+    // Filtrar datos por dependencia del usuario si se solicita
+    let filteredLoadedData = template.loaded_data;
     
+    if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
+      // Obtener todas las dependencias del usuario
+      const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+      
+      // Filtrar solo los datos de las dependencias del usuario
+      filteredLoadedData = template.loaded_data.filter(data => 
+        allUserDependencies.includes(data.dependency)
+      );
+    }
 
-
-    const dependencies = await Dependency.find({ dep_code: { $in: template.loaded_data.map(data => data.dependency) } });
+    const dependencies = await Dependency.find({ dep_code: { $in: filteredLoadedData.map(data => data.dependency) } });
 
     const depCodeToNameMap = dependencies.reduce((acc, dep) => {
       acc[dep.dep_code] = dep.name;
       return acc;
     }, {});
 
-    const data = template.loaded_data.map(data => {
+    let data = await Promise.all(filteredLoadedData.map(async data => {
 
       // Detectar si no hay datos cargados
       if (!Array.isArray(data.filled_data) || data.filled_data.length === 0) {
@@ -957,25 +1236,68 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
   return [emptyRow];
       }
 
-      const filledData = data.filled_data.reduce((acc, item) => {
-  item.values.forEach((value, index) => {
-    if (!acc[index]) {
-      acc[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
-    }
-    // Aplicar conversión de hipervínculos (ya incluye limpieza de saltos de línea)
-    const cleanValue = convertHyperlinkToText(value);
-    // Limpiar nombre del campo eliminando comillas y caracteres problemáticos
-    const fieldName = normalizeFieldName(item.field_name);
-    acc[index][fieldName] = cleanValue || "";
-  });
-  return acc;
-}, []);
+      const filledData = await Promise.all(
+        data.filled_data.map(async (item) => {
+          const processedValues = await Promise.all(
+            item.values.map(async (value, index) => {
+              // Aplicar conversión de hipervínculos
+              let cleanValue = convertHyperlinkToText(value);
+              
+              // Verificar si el campo es de país y convertir código a ID
+              const isCountryField = item.field_name && 
+                (item.field_name.toLowerCase().includes('pais') || 
+                 item.field_name.toLowerCase().includes('país') ||
+                 item.field_name.toLowerCase().includes('country'));
+              
+              if (isCountryField) {
+                cleanValue = convertCountryCodeToId(cleanValue);
+              }
+              
+              // Convertir IDs a valores descriptivos (buscar campo en template para validadores)
+              const templateField = template.template.fields ? 
+                template.template.fields.find(f => f.name === item.field_name) : null;
+              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField);
+              
+              return { value: cleanValue, index };
+            })
+          );
+          
+          return { item, processedValues };
+        })
+      );
+      
+      // Reconstruir el formato original
+      const finalData = [];
+      filledData.forEach(({ item, processedValues }) => {
+        processedValues.forEach(({ value, index }) => {
+          if (!finalData[index]) {
+            finalData[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
+          }
+          const fieldName = normalizeFieldName(item.field_name);
+          finalData[index][fieldName] = value || "";
+        });
+      });
 
 
-       console.log('INFO CARGADA', filledData);
+       console.log('INFO CARGADA', finalData);
     
-      return filledData;
-    }).flat();
+      return finalData;
+    }));
+    
+    data = data.flat();
+
+    // Detectar si es plantilla de beneficiarios y enriquecer datos
+    const templateName = template.name ? template.name.toUpperCase().replace(/\s+/g, '_') : '';
+    const isBeneficiariosTemplate = templateName.includes('BENEFICIARIO_BIENESTAR_CULTURAL');
+    
+    if (isBeneficiariosTemplate) {
+      console.log(`🎆 Detectada plantilla de beneficiarios: "${template.name}"`);
+      console.log('🔄 Iniciando enriquecimiento de datos con API externa...');
+      data = await enrichBeneficiariosData(data);
+      console.log('✅ Datos de beneficiarios enriquecidos exitosamente');
+    } else {
+      console.log(`📄 Plantilla regular: "${template.name}" - sin enriquecimiento`);
+    }
 
     res.status(200).json({ data });
   } catch (error) {
@@ -1288,6 +1610,8 @@ publTempController.getTemplateById = async (req, res) => {
       return res.status(404).json({ status: 'Template not found' });
     }
 
+    const validatorsMap = new Map();
+
     const fieldsWithValidatorIds = await Promise.all(publishedTemplate.template.fields.map(async (field) => {
       if (field.validate_with) {
         try {
@@ -1296,16 +1620,28 @@ publTempController.getTemplateById = async (req, res) => {
 
           // Buscar en la base de datos por el templateName y luego encontrar la columna correspondiente
           const validator = await ValidatorModel.findOne({ name: templateName });
-          
+
           if (validator) {
             // Encontrar la columna que es validadora
             const column = validator.columns.find(col => col.name === columnName && col.is_validator);
-            
+
             if (column) {
               field.validate_with = {
                 id: validator._id.toString(),
                 name: `${validator.name} - ${column.name}`,
               };
+
+              // Recolectar datos del validator para incluirlos en la respuesta
+              if (!validatorsMap.has(validator.name)) {
+                const values = validator.columns.reduce((acc, col) => {
+                  col.values.forEach((value, index) => {
+                    if (!acc[index]) acc[index] = {};
+                    acc[index][col.name] = value.$numberInt !== undefined ? value.$numberInt : value;
+                  });
+                  return acc;
+                }, []);
+                validatorsMap.set(validator.name, { name: validator.name, values });
+              }
             } else {
               console.error(`Validator column not found for: ${columnName}`);
             }
@@ -1324,6 +1660,7 @@ publTempController.getTemplateById = async (req, res) => {
       template: {
         ...publishedTemplate.template._doc,
         fields: fieldsWithValidatorIds,
+        validators: Array.from(validatorsMap.values()),
       },
       publishedTemplate: publishedTemplate
     };
@@ -1367,10 +1704,28 @@ publTempController.getUploadedTemplateDataByProducer = async (req, res) => {
       return res.status(404).json({ status: 'No data found for dependency' });
     }
 
-    // Aplicar conversión de hipervínculos a los datos
-    const processedData = producerData.filled_data.map(item => ({
-      ...item,
-      values: item.values.map(value => convertHyperlinkToText(value))
+    // Aplicar conversión de hipervínculos y códigos de país a los datos
+    const processedData = await Promise.all(producerData.filled_data.map(async item => {
+      // Verificar si el campo es de país
+      const isCountryField = item.field_name && 
+        (item.field_name.toLowerCase().includes('pais') || 
+         item.field_name.toLowerCase().includes('país') ||
+         item.field_name.toLowerCase().includes('country'));
+      
+      const processedValues = await Promise.all(item.values.map(async value => {
+        let processedValue = convertHyperlinkToText(value);
+        if (isCountryField) {
+          processedValue = convertCountryCodeToId(processedValue);
+        }
+        // Convertir IDs a valores descriptivos
+        processedValue = await convertIdToDescriptive(item.field_name, processedValue);
+        return processedValue;
+      }));
+      
+      return {
+        ...item,
+        values: processedValues
+      };
     }));
     
     res.status(200).json({ data: processedData });
@@ -1513,5 +1868,34 @@ publTempController.cleanHyperlinkData = async (req, res) => {
 
 
 
+
+publTempController.hasData = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.query;
+
+    const pubTem = await PublishedTemplate.findById(id, 'loaded_data');
+    if (!pubTem) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    if (!email) {
+      // Sin email, responder si hay algún dato cargado en la plantilla
+      return res.json({ hasData: pubTem.loaded_data.length > 0 });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'User not found' });
+    }
+
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const hasData = pubTem.loaded_data.some(d => allUserDependencies.includes(d.dependency));
+
+    return res.json({ hasData });
+  } catch (error) {
+    return res.status(500).json({ status: 'Internal server error', message: error.message });
+  }
+};
 
 module.exports = publTempController;

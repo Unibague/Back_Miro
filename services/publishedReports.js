@@ -170,7 +170,6 @@ static async findPublishedReportById(id, email, dimensionId, session) {
 
     await pubRep.save({ session });
   }
-
 }
 
 module.exports = PublishedReportService;

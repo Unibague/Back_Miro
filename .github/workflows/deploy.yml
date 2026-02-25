@@ -32,12 +32,17 @@ jobs:
       run: sudo apt-get install -y sshpass
 
     - name: Connect to VPN
-      run: |
-        echo "${{ secrets.VPN_PASSWORD }}" | sudo openconnect --protocol=gp --user=${{ secrets.VPN_USER }} --passwd-on-stdin ${{ secrets.VPN_HOST }} -b
       env:
         VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
         VPN_USER: ${{ secrets.VPN_USER }}
         VPN_HOST: ${{ secrets.VPN_HOST }}
+      run: |
+        echo "$VPN_PASSWORD" | sudo openconnect \
+          --protocol=gp \
+          --user="$VPN_USER" \
+          --passwd-on-stdin \
+          --servercert pin-sha256:+4XOhCB4GmaXr8/TMWL09EayWRbrz3X8WWAWgu79f9U= \
+          "$VPN_HOST" -b
 
     - name: Verify VPN connection
       run: ip a

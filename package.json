@@ -17,7 +17,7 @@
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dayjs": "^1.11.13",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
     "google-auth-library": "^9.14.0",
