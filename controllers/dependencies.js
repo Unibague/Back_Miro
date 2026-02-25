@@ -14,6 +14,7 @@ const PublishedReportService = require("../services/publishedReports");
 const dependencyController = {};
 
 DEPENDENCIES_ENDPOINT = process.env.DEPENDENCIES_ENDPOINT;
+USERS_ENDPOINT = process.env.USERS_ENDPOINT;
 
 
 dependencyController.getReports = async (req, res) => {
@@ -75,30 +76,114 @@ dependencyController.getTemplates = async (req, res) => {
 
 
 
+// Función interna para sincronizar dependencias (sin req/res)
+dependencyController.syncDependenciesInternal = async () => {
+  console.log('Iniciando sincronización de dependencias...');
+  
+  // 1. Obtener dependencias de Atlante
+  const response = await axios.get(DEPENDENCIES_ENDPOINT, {
+    timeout: 30000
+  });
+  
+  const dependencies = response.data.map((dependency) => {
+    return {
+      dep_code: dependency.dep_code,
+      name: dependency.dep_name,
+      dep_father: dependency.dep_father,
+    };
+  });
+  
+  await Dependency.upsertDependencies(dependencies);
+  console.log(`✅ ${dependencies.length} dependencias sincronizadas`);
+  
+  // 2. Obtener usuarios de Atlante para asignar responsables
+  const usersResponse = await axios.get(USERS_ENDPOINT, {
+    timeout: 30000
+  });
+  
+  // 3. LIMPIAR responsables antiguos primero
+  await Dependency.updateMany({}, { $set: { responsible: null } });
+  console.log('🧹 Responsables antiguos limpiados');
+  
+  // 4. Definir jerarquía de posiciones (de mayor a menor prioridad)
+  const positionHierarchy = [
+    { priority: 1, keywords: ['RECTOR', 'RECTORA'] },
+    { priority: 2, keywords: ['VICERRECTOR', 'VICERRECTORA'] },
+    { priority: 3, keywords: ['DECANO', 'DECANA'] },
+    { priority: 4, keywords: ['DIRECTOR', 'DIRECTORA'] },
+    { priority: 5, keywords: ['JEFE', 'JEFA'] },
+    { priority: 6, keywords: ['COORDINADOR', 'COORDINADORA'] },
+    { priority: 7, keywords: ['BIBLIOTECOLOGA', 'BIBLIOTECÓLOGA'] }
+  ];
+  
+  // 5. Clasificar usuarios por prioridad
+  const usersByDependency = {};
+  
+  for (const user of usersResponse.data) {
+    if (!user.position || !user.dep_code || !user.email) continue;
+    
+    const positionUpper = user.position.toUpperCase().trim();
+    
+    // Buscar la prioridad más alta que coincida (más flexible)
+    let userPriority = null;
+    for (const level of positionHierarchy) {
+      // Buscar si CUALQUIER palabra del cargo coincide con las keywords
+      if (level.keywords.some(keyword => positionUpper.includes(keyword))) {
+        userPriority = level.priority;
+        console.log(`🔍 Detectado: "${user.position}" -> Prioridad ${level.priority}`);
+        break;
+      }
+    }
+    
+    if (userPriority) {
+      if (!usersByDependency[user.dep_code]) {
+        usersByDependency[user.dep_code] = [];
+      }
+      usersByDependency[user.dep_code].push({
+        email: user.email,
+        position: user.position,
+        priority: userPriority
+      });
+    }
+  }
+  
+  console.log(`👔 ${Object.keys(usersByDependency).length} dependencias con líderes`);
+  
+  // 6. Asignar responsable con mayor prioridad por dependencia
+  let assignedCount = 0;
+  for (const [dep_code, users] of Object.entries(usersByDependency)) {
+    // Ordenar por prioridad (menor número = mayor prioridad)
+    users.sort((a, b) => a.priority - b.priority);
+    
+    const topLeader = users[0];
+    const dependency = await Dependency.findOne({ dep_code });
+    
+    if (dependency) {
+      dependency.responsible = topLeader.email;
+      await dependency.save();
+      assignedCount++;
+      console.log(`✅ [P${topLeader.priority}] ${topLeader.position} -> ${topLeader.email} (${dependency.name})`);
+    }
+  }
+  
+  console.log(`✅ ${assignedCount} responsables asignados automáticamente`);
+  
+  return {
+    status: 'success',
+    count: dependencies.length,
+    leadersAssigned: assignedCount
+  };
+};
+
+// Endpoint para sincronizar dependencias
 dependencyController.loadDependencies = async (req, res) => {
   try {
-    console.log('Iniciando sincronización de dependencias...');
-    
-    const response = await axios.get(DEPENDENCIES_ENDPOINT, {
-      timeout: 30000 // 30 segundos de timeout
-    });
-    
-    const dependencies = response.data.map((dependency) => {
-      return {
-        dep_code: dependency.dep_code,
-        name: dependency.dep_name,
-        dep_father: dependency.dep_father,
-      };
-    });
-    
-    await Dependency.upsertDependencies(dependencies);
-    
-    console.log(`✅ ${dependencies.length} dependencias sincronizadas exitosamente`);
-    
+    const result = await dependencyController.syncDependenciesInternal();
     return res.status(200).json({ 
-      status: 'success',
+      status: result.status,
       message: 'Dependencies loaded/updated successfully',
-      count: dependencies.length
+      count: result.count,
+      leadersAssigned: result.leadersAssigned
     });
   } catch (error) {
     console.error('❌ Error sincronizando dependencias:', error.message);
