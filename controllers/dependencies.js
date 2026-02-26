@@ -434,7 +434,24 @@ dependencyController.getMembers = async (req, res) => {
     }
 
     const members = await User.find({ email: { $in: dependency.members } });
-    res.status(200).json(members);
+    
+    // Eliminar duplicados por email (mantener el más reciente)
+    const uniqueMembers = members.reduce((acc, current) => {
+      const existing = acc.find(item => item.email === current.email);
+      if (!existing) {
+        acc.push(current);
+      } else {
+        // Mantener el que tenga más roles o el más reciente
+        if (current.roles.length > existing.roles.length || 
+            new Date(current.updatedAt) > new Date(existing.updatedAt)) {
+          acc = acc.filter(item => item.email !== current.email);
+          acc.push(current);
+        }
+      }
+      return acc;
+    }, []);
+    
+    res.status(200).json(uniqueMembers);
   } catch (error) {
     console.error("Error fetching members:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -444,23 +461,55 @@ dependencyController.getMembers = async (req, res) => {
 dependencyController.getMembersWithFather = async (req, res) => {
   const dep_code = req.query.dep_code;
   try {
-    //const result = await Dependency.getMembersWithFather(dep_code);
-
     const dependency = await Dependency.findOne({ dep_code: dep_code });
+    
+    if (!dependency) {
+      return res.status(404).json({ status: "Dependency not found" });
+    }
 
     const father = await Dependency.findOne({
       dep_code: dependency.dep_father,
     });
 
-    members = User.find({ email: { $in: dependency.members } });
-    fatherMembers = User.find({ email: { $in: father.members } });
-
-    if (!dependency) {
-      return res.status(404).json({ status: "Dependency not found" });
+    // Obtener miembros de la dependencia actual
+    let members = await User.find({ email: { $in: dependency.members } });
+    
+    // Obtener miembros del padre (si existe)
+    let fatherMembers = [];
+    if (father) {
+      fatherMembers = await User.find({ email: { $in: father.members } });
     }
+    
+    // Función para eliminar duplicados por email
+    const removeDuplicates = (users) => {
+      return users.reduce((acc, current) => {
+        const existing = acc.find(item => item.email === current.email);
+        if (!existing) {
+          acc.push(current);
+        } else {
+          // Mantener el que tenga más roles o el más reciente
+          if (current.roles.length > existing.roles.length || 
+              new Date(current.updatedAt) > new Date(existing.updatedAt)) {
+            acc = acc.filter(item => item.email !== current.email);
+            acc.push(current);
+          }
+        }
+        return acc;
+      }, []);
+    };
+    
+    // Eliminar duplicados en ambas listas
+    members = removeDuplicates(members);
+    fatherMembers = removeDuplicates(fatherMembers);
+    
+    // Eliminar usuarios que están en ambas listas
+    const memberEmails = new Set(members.map(m => m.email));
+    const uniqueFatherMembers = fatherMembers.filter(fm => !memberEmails.has(fm.email));
 
-    // const { members, fatherMembers } = result[0];
-    res.status(200).json({ members, fatherMembers });
+    res.status(200).json({ 
+      members, 
+      fatherMembers: uniqueFatherMembers 
+    });
   } catch (error) {
     console.error("Error fetching members:", error);
     res.status(500).json({ error: "Internal Server Error" });
