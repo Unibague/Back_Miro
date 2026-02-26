@@ -39,7 +39,10 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
         }
       : {};
 
-    const templates = await Template.find(query).populate("dimensions").sort({ name: 1 })
+    const templates = await Template.find(query)
+      .collation({ locale: 'es', strength: 1 })
+      .populate("dimensions")
+      .sort({ name: 1 })
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
@@ -88,7 +91,11 @@ templateController.getPlantillas = async (req, res) => {
           ],
         }
       : {};
-    const templates = await Template.find(query).populate('dimensions').skip(skip).limit(limit);
+    const templates = await Template.find(query)
+      .collation({ locale: 'es', strength: 1 })
+      .populate('dimensions')
+      .skip(skip)
+      .limit(limit);
 
     const total = await Template.countDocuments(query);
 
@@ -178,7 +185,10 @@ templateController.getPlantillasByCreator = async (req, res) => {
     };
     console.log('Template query:', JSON.stringify(query, null, 2));
     
-    const templates = await Template.find(query).skip(skip).limit(limit);
+    const templates = await Template.find(query)
+      .collation({ locale: 'es', strength: 1 })
+      .skip(skip)
+      .limit(limit);
     console.log('Found templates count:', templates.length);
     const total = await Template.countDocuments(query);
 
