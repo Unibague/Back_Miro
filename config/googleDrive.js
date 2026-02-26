@@ -197,11 +197,25 @@ const deleteDriveFiles = async (fileIds) => {
   }
 };
 
+const downloadDriveFileBuffer = async (fileId) => {
+  const response = await driveService.files.get(
+    {
+      fileId,
+      alt: "media",
+      supportsAllDrives: true,
+    },
+    { responseType: "arraybuffer" }
+  );
+
+  return Buffer.from(response.data);
+};
+
 module.exports = {
   uploadFileToGoogleDrive,
   uploadFilesToGoogleDrive,
   moveDriveFolder,
   deleteDriveFile,
   deleteDriveFiles,
-  updateFileInGoogleDrive
+  updateFileInGoogleDrive,
+  downloadDriveFileBuffer
 };

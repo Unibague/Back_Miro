@@ -18,6 +18,8 @@ router.delete("/:id", controller.deleteDimension);
 
 router.get("/producers/:id", controller.getProducers);
 
+router.get("/user/:email", controller.getDimensionsByUser);
+
 router.get("/:id", controller.getDimensionById);
 
 module.exports = router;

@@ -57,6 +57,7 @@ apiRouter.use("/templates", require('./routes/templates'));
 apiRouter.use("/pTemplates", require('./routes/publishedTemplates'));
 apiRouter.use("/validators", require('./routes/validators'));
 apiRouter.use("/reports", require('./routes/reports'));
+apiRouter.use("/ambitReports", require('./routes/ambitReports'));
 apiRouter.use("/pReports", require('./routes/publishedReports'));
 apiRouter.use("/producerReports", require('./routes/producerReports'));
 apiRouter.use("/pProducerReports", require('./routes/publishedProducerReports'));
