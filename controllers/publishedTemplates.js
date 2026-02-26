@@ -264,11 +264,11 @@ const enrichBeneficiariosData = async (data) => {
   }
 };
 
-// Función para normalizar nombres de campos para Excel
+// Función para normalizar nombres de campos para Excel (preservando tildes)
 const normalizeFieldName = (fieldName) => {
   return fieldName
     .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '_') // Reemplazar caracteres especiales con guión bajo
+    .replace(/[^A-ZÁÉÍÓÚÑÜ0-9]/g, '_') // Preservar letras con tilde y Ñ
     .replace(/_+/g, '_') // Reemplazar múltiples guiones bajos con uno solo
     .replace(/^_|_$/g, ''); // Eliminar guiones bajos al inicio y final
 };
@@ -512,6 +512,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     }
 
     const published_templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -613,6 +614,7 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
     };
 
     let templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -1369,6 +1371,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     }
 
     const templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -1477,6 +1480,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
 
     // Fetch templates with initial population
     const templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')

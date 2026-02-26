@@ -14,6 +14,7 @@ const PublishedReportService = require("../services/publishedReports");
 const dependencyController = {};
 
 DEPENDENCIES_ENDPOINT = process.env.DEPENDENCIES_ENDPOINT;
+USERS_ENDPOINT = process.env.USERS_ENDPOINT;
 
 
 dependencyController.getReports = async (req, res) => {
@@ -75,30 +76,115 @@ dependencyController.getTemplates = async (req, res) => {
 
 
 
+// Función interna para sincronizar dependencias (sin req/res)
+dependencyController.syncDependenciesInternal = async () => {
+  console.log('Iniciando sincronización de dependencias...');
+  
+  // 1. Obtener dependencias de Atlante
+  const response = await axios.get(DEPENDENCIES_ENDPOINT, {
+    timeout: 30000
+  });
+  
+  const dependencies = response.data.map((dependency) => {
+    return {
+      dep_code: dependency.dep_code,
+      name: dependency.dep_name,
+      dep_father: dependency.dep_father,
+    };
+  });
+  
+  await Dependency.upsertDependencies(dependencies);
+  console.log(`✅ ${dependencies.length} dependencias sincronizadas`);
+  
+  // 2. Obtener usuarios de Atlante para asignar responsables
+  const usersResponse = await axios.get(USERS_ENDPOINT, {
+    timeout: 30000
+  });
+  
+  // 3. LIMPIAR responsables antiguos primero
+  await Dependency.updateMany({}, { $set: { responsible: null } });
+  console.log('🧹 Responsables antiguos limpiados');
+  
+  // 4. Definir jerarquía de posiciones (de mayor a menor prioridad)
+  const positionHierarchy = [
+    { priority: 1, keywords: ['RECTOR', 'RECTORA'] },
+    { priority: 2, keywords: ['VICERRECTOR', 'VICERRECTORA'] },
+    { priority: 3, keywords: ['DECANO', 'DECANA'] },
+    { priority: 4, keywords: ['DIRECTOR', 'DIRECTORA'] },
+    { priority: 5, keywords: ['GERENTE', 'GERENTE DE'] },
+    { priority: 6, keywords: ['JEFE', 'JEFA'] },
+    { priority: 7, keywords: ['COORDINADOR', 'COORDINADORA'] },
+    { priority: 8, keywords: ['BIBLIOTECOLOGA', 'BIBLIOTECÓLOGA'] }
+  ];
+  
+  // 5. Clasificar usuarios por prioridad
+  const usersByDependency = {};
+  
+  for (const user of usersResponse.data) {
+    if (!user.position || !user.dep_code || !user.email) continue;
+    
+    const positionUpper = user.position.toUpperCase().trim();
+    
+    // Buscar la prioridad más alta que coincida (más flexible)
+    let userPriority = null;
+    for (const level of positionHierarchy) {
+      // Buscar si CUALQUIER palabra del cargo coincide con las keywords
+      if (level.keywords.some(keyword => positionUpper.includes(keyword))) {
+        userPriority = level.priority;
+        console.log(`🔍 Detectado: "${user.position}" -> Prioridad ${level.priority}`);
+        break;
+      }
+    }
+    
+    if (userPriority) {
+      if (!usersByDependency[user.dep_code]) {
+        usersByDependency[user.dep_code] = [];
+      }
+      usersByDependency[user.dep_code].push({
+        email: user.email,
+        position: user.position,
+        priority: userPriority
+      });
+    }
+  }
+  
+  console.log(`👔 ${Object.keys(usersByDependency).length} dependencias con líderes`);
+  
+  // 6. Asignar responsable con mayor prioridad por dependencia
+  let assignedCount = 0;
+  for (const [dep_code, users] of Object.entries(usersByDependency)) {
+    // Ordenar por prioridad (menor número = mayor prioridad)
+    users.sort((a, b) => a.priority - b.priority);
+    
+    const topLeader = users[0];
+    const dependency = await Dependency.findOne({ dep_code });
+    
+    if (dependency) {
+      dependency.responsible = topLeader.email;
+      await dependency.save();
+      assignedCount++;
+      console.log(`✅ [P${topLeader.priority}] ${topLeader.position} -> ${topLeader.email} (${dependency.name})`);
+    }
+  }
+  
+  console.log(`✅ ${assignedCount} responsables asignados automáticamente`);
+  
+  return {
+    status: 'success',
+    count: dependencies.length,
+    leadersAssigned: assignedCount
+  };
+};
+
+// Endpoint para sincronizar dependencias
 dependencyController.loadDependencies = async (req, res) => {
   try {
-    console.log('Iniciando sincronización de dependencias...');
-    
-    const response = await axios.get(DEPENDENCIES_ENDPOINT, {
-      timeout: 30000 // 30 segundos de timeout
-    });
-    
-    const dependencies = response.data.map((dependency) => {
-      return {
-        dep_code: dependency.dep_code,
-        name: dependency.dep_name,
-        dep_father: dependency.dep_father,
-      };
-    });
-    
-    await Dependency.upsertDependencies(dependencies);
-    
-    console.log(`✅ ${dependencies.length} dependencias sincronizadas exitosamente`);
-    
+    const result = await dependencyController.syncDependenciesInternal();
     return res.status(200).json({ 
-      status: 'success',
+      status: result.status,
       message: 'Dependencies loaded/updated successfully',
-      count: dependencies.length
+      count: result.count,
+      leadersAssigned: result.leadersAssigned
     });
   } catch (error) {
     console.error('❌ Error sincronizando dependencias:', error.message);
@@ -348,7 +434,24 @@ dependencyController.getMembers = async (req, res) => {
     }
 
     const members = await User.find({ email: { $in: dependency.members } });
-    res.status(200).json(members);
+    
+    // Eliminar duplicados por email (mantener el más reciente)
+    const uniqueMembers = members.reduce((acc, current) => {
+      const existing = acc.find(item => item.email === current.email);
+      if (!existing) {
+        acc.push(current);
+      } else {
+        // Mantener el que tenga más roles o el más reciente
+        if (current.roles.length > existing.roles.length || 
+            new Date(current.updatedAt) > new Date(existing.updatedAt)) {
+          acc = acc.filter(item => item.email !== current.email);
+          acc.push(current);
+        }
+      }
+      return acc;
+    }, []);
+    
+    res.status(200).json(uniqueMembers);
   } catch (error) {
     console.error("Error fetching members:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -358,23 +461,55 @@ dependencyController.getMembers = async (req, res) => {
 dependencyController.getMembersWithFather = async (req, res) => {
   const dep_code = req.query.dep_code;
   try {
-    //const result = await Dependency.getMembersWithFather(dep_code);
-
     const dependency = await Dependency.findOne({ dep_code: dep_code });
+    
+    if (!dependency) {
+      return res.status(404).json({ status: "Dependency not found" });
+    }
 
     const father = await Dependency.findOne({
       dep_code: dependency.dep_father,
     });
 
-    members = User.find({ email: { $in: dependency.members } });
-    fatherMembers = User.find({ email: { $in: father.members } });
-
-    if (!dependency) {
-      return res.status(404).json({ status: "Dependency not found" });
+    // Obtener miembros de la dependencia actual
+    let members = await User.find({ email: { $in: dependency.members } });
+    
+    // Obtener miembros del padre (si existe)
+    let fatherMembers = [];
+    if (father) {
+      fatherMembers = await User.find({ email: { $in: father.members } });
     }
+    
+    // Función para eliminar duplicados por email
+    const removeDuplicates = (users) => {
+      return users.reduce((acc, current) => {
+        const existing = acc.find(item => item.email === current.email);
+        if (!existing) {
+          acc.push(current);
+        } else {
+          // Mantener el que tenga más roles o el más reciente
+          if (current.roles.length > existing.roles.length || 
+              new Date(current.updatedAt) > new Date(existing.updatedAt)) {
+            acc = acc.filter(item => item.email !== current.email);
+            acc.push(current);
+          }
+        }
+        return acc;
+      }, []);
+    };
+    
+    // Eliminar duplicados en ambas listas
+    members = removeDuplicates(members);
+    fatherMembers = removeDuplicates(fatherMembers);
+    
+    // Eliminar usuarios que están en ambas listas
+    const memberEmails = new Set(members.map(m => m.email));
+    const uniqueFatherMembers = fatherMembers.filter(fm => !memberEmails.has(fm.email));
 
-    // const { members, fatherMembers } = result[0];
-    res.status(200).json({ members, fatherMembers });
+    res.status(200).json({ 
+      members, 
+      fatherMembers: uniqueFatherMembers 
+    });
   } catch (error) {
     console.error("Error fetching members:", error);
     res.status(500).json({ error: "Internal Server Error" });
