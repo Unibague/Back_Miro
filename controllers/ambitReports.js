@@ -18,7 +18,7 @@ const buildSafeFileName = (rawName, defaultExtension = ".rtf") => {
     .replace(/[<>:"/\\|?*]+/g, " ")
     .replace(/\s+/g, "_")
     .slice(0, 120);
-
+//cambio
   const normalized = base || `informe_ambito_${Date.now()}`;
   const hasKnownOfficeExt = /\.(rtf|doc|docx)$/i.test(normalized);
   return hasKnownOfficeExt ? normalized : `${normalized}${defaultExtension}`;
