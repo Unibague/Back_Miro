@@ -51,6 +51,11 @@ pubProdReportController.getPublishedProducerReports = async (req, res) => {
   try {
     const {email, page, limit, search, periodId} = req.query
 
+    // Validar que el email esté presente
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
     const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
     const reports = await PublishedReportService.findPublishedReports(user, page, limit, search, periodId);
 
