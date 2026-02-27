@@ -22,8 +22,17 @@ class UserService {
   }
 
   static async findUserByEmailAndRoles(email, roles) {
-    const user = await User.findOne({ email, activeRole: { $in: roles } });
-    if (!user) throw new Error("User not found.");
+    if (!email) {
+      throw new Error("Email is required");
+    }
+    const user = await User.findOne({ 
+      email, 
+      activeRole: { $in: roles },
+      isActive: true 
+    });
+    if (!user) {
+      throw new Error(`User not found or does not have required role (${roles.join(', ')})`);
+    }
     return user;
   }
   static async giveUsersToKeepAndDelete() {
