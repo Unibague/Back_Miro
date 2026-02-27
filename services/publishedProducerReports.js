@@ -71,9 +71,15 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
     ...(periodId && { period: periodId }),
   };
 
+  console.log('=== DEBUG findPublishedReports ===');
+  console.log('User email:', user.email);
+  console.log('User activeRole:', user.activeRole);
+  console.log('Query:', query);
+
   let reports;
 
   if (user.activeRole === "Responsable") {
+    console.log('Filtering for Responsable role');
     // Traemos todos los reportes
     reports = await PubReport.find(query)
       .populate({
@@ -87,20 +93,32 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
       .populate('period')
       .session(session);
 
+    console.log('Total reports before filter:', reports.length);
+    
     // Filtramos por dimensiones donde el usuario es visualizer
     reports = reports.filter(report =>
       report.report.dimensions.some(d => 
         d.responsible && d.responsible.visualizers && d.responsible.visualizers.includes(user.email)
       )
     );
+    
+    console.log('Reports after visualizer filter:', reports.length);
   } else {
-    // Administrador: solo los necesarioss
+    console.log('Loading all reports for Administrador');
+    // Administrador: todos los reportes
     reports = await PubReport.find(query)
       .populate({
         path: 'period',
         select: 'name producer_report_start_date producer_report_end_date producer_end_date'
       })
+      .populate({
+        path: 'report.producers',
+        model: 'dependencies',
+        select: 'name'
+      })
       .session(session);
+    
+    console.log('Total reports for admin:', reports.length);
   }
 
   // Filtrado de filled_reports (en todos los casos)
@@ -125,20 +143,25 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
   });
 
   const totalReports = reports.length;
-const paginatedReports = reports.slice(skip, skip + limit);
+  const paginatedReports = reports.slice(skip, skip + limit);
 
-for (const report of paginatedReports) {
-  await this.hydrateReportExample(report);
-}
+  for (const report of paginatedReports) {
+    await this.hydrateReportExample(report);
+  }
 
-return {
-  page,
-  limit,
-  total: totalReports,
-  totalPages: Math.ceil(totalReports / limit),
-  publishedReports: paginatedReports,
-};
+  console.log('Returning:', {
+    total: totalReports,
+    page,
+    reportsInPage: paginatedReports.length
+  });
 
+  return {
+    page,
+    limit,
+    total: totalReports,
+    totalPages: Math.ceil(totalReports / limit),
+    publishedReports: paginatedReports,
+  };
 }
 
 
