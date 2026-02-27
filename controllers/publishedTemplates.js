@@ -831,9 +831,13 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
-    const now = new Date(datetime_now().toDateString());
-    const endDate = new Date(pubTem.deadline).toDateString();
-    if (endDate < now) {
+    const now = new Date(datetime_now());
+    const deadline = new Date(pubTem.deadline);
+    
+    // Establecer deadline a las 23:59:59 del día
+    deadline.setHours(23, 59, 59, 999);
+    
+    if (deadline < now) {
       return res.status(403).json({ status: 'The period is closed' });
     }
 
