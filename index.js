@@ -67,7 +67,10 @@ apiRouter.use("/user-dependencies", require('./routes/userDependencies'));
 apiRouter.use("/audit", require('./routes/auditLogs'));
 apiRouter.use("/template-filters", require('./routes/templateFilters'));
 apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFiltered'));
-apiRouter.use("/programs", require('./routes/programs'));
+apiRouter.use("/programs",   require('./routes/programs'));
+apiRouter.use("/processes",  require('./routes/processes'));
+apiRouter.use("/phases",     require('./routes/phases'));
+apiRouter.use("/phase-documents", require('./routes/phaseDocuments'));
 
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);

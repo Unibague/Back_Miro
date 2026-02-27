@@ -37,50 +37,51 @@ const programSchema = new mongoose.Schema({
     type: Number,
     default: null,
   },
-  fecha_acreditacion: {
-    type: String,
-    default: null,
-  },
-  fecha_registro_calificado: {
-    type: String,
-    default: null,
-  },
   estado: {
     type: String,
     enum: ['Activo', 'Inactivo'],
     default: 'Activo',
   },
-  estado_acreditacion: {
+
+  /* ── Resolución vigente — Registro Calificado (RC) ── */
+  fecha_resolucion_rc: {
+    type: String,   // YYYY-MM-DD
+    default: null,
+  },
+  codigo_resolucion_rc: {
     type: String,
-    enum: ['Completo', 'Inicio del proceso', 'Documentación de lectura de par', 'Digitación en SACES', 'Fecha Límite'],
     default: null,
   },
-  estado_registro_calificado: {
+  duracion_resolucion_rc: {
+    type: Number,   // en meses (ej: 84 = 7 años)
+    default: null,
+  },
+
+  /* ── Resolución vigente — Acreditación Voluntaria (AV) ── */
+  fecha_resolucion_av: {
+    type: String,   // YYYY-MM-DD
+    default: null,
+  },
+  codigo_resolucion_av: {
     type: String,
-    enum: ['Completo', 'Inicio del proceso', 'Documentación de lectura de par', 'Digitación en SACES', 'Fecha Límite'],
     default: null,
   },
-  estado_plan_mejoramiento: {
+  duracion_resolucion_av: {
+    type: Number,   // en AÑOS (ej: 4 = 4 años)
+    default: null,
+  },
+
+  /* ── Resolución vigente — Plan de Mejoramiento (PM) ── */
+  fecha_resolucion_pm: {
+    type: String,   // YYYY-MM-DD
+    default: null,
+  },
+  codigo_resolucion_pm: {
     type: String,
-    enum: ['Completo', 'Inicio del proceso', 'Documentación de lectura de par', 'Digitación en SACES', 'Fecha Límite'],
     default: null,
   },
-  fase_acreditacion: {
-    type: Number,
-    min: 0,
-    max: 6,
-    default: null,
-  },
-  fase_registro_calificado: {
-    type: Number,
-    min: 0,
-    max: 6,
-    default: null,
-  },
-  fase_plan_mejoramiento: {
-    type: Number,
-    min: 0,
-    max: 6,
+  duracion_resolucion_pm: {
+    type: Number,   // en meses
     default: null,
   },
 },
