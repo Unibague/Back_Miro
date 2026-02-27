@@ -29,7 +29,6 @@ pubProdReportController.getPublishedProducerReport = async (req, res) => {
     const report = await PublishedReportService.findPublishedReportById(id);
     res.status(200).json(report);
   } catch (error) {
-    console.error('Error fetching published producer report:', error);
     res.status(500).json({ message: error.message });
   }
 }
@@ -42,7 +41,6 @@ pubProdReportController.getPublishedProducerReportProducer = async (req, res) =>
     const report = await PublishedReportService.findPublishedReportProducer(user, id)
     res.status(200).json(report);
   } catch (error) {
-    console.error('Error fetching published producer report:', error);
     res.status(500).json({ message: error.message });
   }
 }
@@ -51,19 +49,21 @@ pubProdReportController.getPublishedProducerReports = async (req, res) => {
   try {
     const {email, page, limit, search, periodId} = req.query
 
-    // Validar que el email esté presente
+
+    // Si no hay email, intentar obtenerlo del token/sesión o retornar error claro
     if (!email) {
-      return res.status(400).json({ message: "Email is required" });
+      return res.status(400).json({ 
+        message: "Email is required",
+        hint: "Add ?email=your@email.com to the URL" 
+      });
     }
 
     const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
+    
     const reports = await PublishedReportService.findPublishedReports(user, page, limit, search, periodId);
-
-    console.log(reports.publishedReports[0]);
 
     res.status(200).json(reports);
   } catch (error) {
-    console.error('Error fetching published producer reports:', error);
     res.status(500).json({ message: error.message });
   }
 }
@@ -97,7 +97,6 @@ pubProdReportController.deletePublishedProducerReport = async (req, res) => {
     
     return res.status(200).json({ status: "Informe eliminado correctamente" });
   } catch (error) {
-    console.error("Error eliminando publishedProducerReport:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 };
@@ -130,7 +129,6 @@ pubProdReportController.getPendingProducerReportsByUser = async (req, res) => {
         dep.members?.includes(user.email)
       );
 
-      console.log(userDeps);
 
       const pendingTemplates = [];
 
@@ -162,7 +160,6 @@ pubProdReportController.getPendingProducerReportsByUser = async (req, res) => {
     return res.status(200).json(results);
 
   } catch (error) {
-    console.error("Error al obtener informes pendientes:", error);
     return res.status(500).json({ error: error.message });
   }
 };
@@ -176,7 +173,6 @@ pubProdReportController.getPublishedProducerReportsProducer = async (req, res) =
     const reports = await PublishedReportService.findPublishedReportsProducer(user, page, limit, search, periodId, dimensionId);
     res.status(200).json(reports);
   } catch (error) {
-    console.error('Error fetching published producer reports:', error);
     res.status(500).json({ message: error.message });
   }
 }
@@ -203,17 +199,21 @@ pubProdReportController.loadProducerReportDraft = async (req, res) => {
     });
 
     const nowtime = datetime_now();
-    const nowdate = new Date(nowtime.toDateString());
+    const nowdate = new Date(nowtime);
 
     const user = await UserService.findUserByEmailAndRole(email, "Productor");
 
     const pubRep = await PublishedReportService.findPublishedReportProducer(user, publishedReportId, session);
     
-    console.log("Aquí voy:", pubRep)
 
-    const pubRepDeadlineDate = new Date(pubRep.deadline.toDateString());
-    const pubRepStartDate = new Date(pubRep.period.producer_start_date.toDateString());
-    if(pubRepDeadlineDate < nowdate || pubRepStartDate > nowdate) {
+    // Establecer deadline a las 23:59:59 del día
+    const pubRepDeadline = new Date(pubRep.deadline);
+    pubRepDeadline.setHours(23, 59, 59, 999);
+    
+    const pubRepStartDate = new Date(pubRep.period.producer_start_date);
+    pubRepStartDate.setHours(0, 0, 0, 0);
+    
+    if(pubRepDeadline < nowdate || pubRepStartDate > nowdate) {
       throw new Error("The report period is already closed");
     }
     
@@ -240,7 +240,6 @@ pubProdReportController.loadProducerReportDraft = async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    console.log(error);
     
     res.status(500).json({
       status: "Error loading responsible report draft",
@@ -265,7 +264,6 @@ pubProdReportController.sendProducerReport = async (req, res) => {
   } catch(error) {
     await session.abortTransaction();
     session.endSession();
-    console.log(error);
     res.status(500).json({
       status: "Error sending responsible report draft",
       error: error.message,
@@ -275,21 +273,14 @@ pubProdReportController.sendProducerReport = async (req, res) => {
 
 pubProdReportController.publishProducerReport = async (req, res) => {
   try {
-    console.log('=== DEBUG publishProducerReport ===');
-    console.log('Request body:', req.body);
     
     const {email, reportId, deadline, period} = req.body;
-    console.log('Extracted params:', { email, reportId, deadline, period });
     
     const user = await UserService.findUserByEmailAndRoles(email, ["Responsable", "Administrador"]);
-    console.log('User found:', user ? 'YES' : 'NO');
     
     const report = await ProducerReportsService.getReport(reportId);
-    console.log('Report found:', report ? 'YES' : 'NO');
 
     const publishedReport = await PublishedReportService.publishReport(report, period, deadline);
-    console.log('Report published successfully');
-    console.log('Published report:', publishedReport);
     
     // Audit log
     if (publishedReport && publishedReport._id) {
@@ -298,7 +289,6 @@ pubProdReportController.publishProducerReport = async (req, res) => {
         reportName: report.name
       });
     } else {
-      console.warn('Published report is undefined or missing _id, skipping audit log');
     }
     
     res.status(200).json({ 
@@ -306,9 +296,6 @@ pubProdReportController.publishProducerReport = async (req, res) => {
       publishedReportId: publishedReport?._id 
     });
   } catch (error) {
-    console.error('=== ERROR in publishProducerReport ===');
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
     res.status(500).json({ message: error.message });
   }
 }
@@ -347,7 +334,6 @@ pubProdReportController.setFilledReportStatus = async (req, res) => {
 
     res.status(200).json({ status: "Filled report status set" });
   } catch (error) {
-    console.log(error);
     res.status(500).json({
       status: "Error setting filled report status",
       error: error.message,
@@ -368,7 +354,6 @@ pubProdReportController.updateDeadlines = async (req, res) => {
 
     return res.status(200).json({ message: "Fechas actualizadas exitosamente." });
   } catch (error) {
-    console.error("Error al actualizar deadlines:", error);
     return res.status(500).json({ error: error.message });
   }
 };
