@@ -3,6 +3,7 @@ const PubReport = require("../models/publishedProducerReports");
 const Dependency = require("../models/dependencies");
 const UserService = require("./users");
 const ProducerReport = require("../models/producerReports");
+const { Types } = require("mongoose");
 
 
 class PublishedReportService {
@@ -51,29 +52,68 @@ class PublishedReportService {
 return pubReport;
   }
 
-  static async hydrateReportExample(pubReport) {
+static async hydrateReportExample(pubReport) {
   if (!pubReport?.report?._id) return;
 
   const base = await ProducerReport.findById(pubReport.report._id)
-    .select("report_example")
+    .select("name description requires_attachment report_example")
     .lean();
 
-  if (base?.report_example) {
-    pubReport.report.report_example = base.report_example;
-  }
+  if (!base) return;
+
+  // Mantener el snapshot de publicación sincronizado con el informe base actual
+  // para que nombres renombrados (ej. "Egresados") se reflejen en listados.
+  pubReport.report.name = base.name ?? pubReport.report.name;
+  pubReport.report.description = base.description ?? pubReport.report.description;
+  pubReport.report.requires_attachment =
+    typeof base.requires_attachment === "boolean"
+      ? base.requires_attachment
+      : pubReport.report.requires_attachment;
+  if (base.report_example) pubReport.report.report_example = base.report_example;
 }
 
 
 static async findPublishedReports(user, page = 1, limit = 10, search = "", periodId, session) {
-  const skip = (page - 1) * limit;
+  const parsedPage = Number(page) || 1;
+  const parsedLimit = Number(limit) || 10;
+  const skip = (parsedPage - 1) * parsedLimit;
+  const trimmedSearch = String(search || "").trim();
+  const periodFilter =
+    periodId && Types.ObjectId.isValid(String(periodId))
+      ? { period: new Types.ObjectId(String(periodId)) }
+      : {};
+
+  let searchFilter = {};
+  if (trimmedSearch) {
+    const currentReportMatches = await ProducerReport.find({
+      name: { $regex: trimmedSearch, $options: "i" },
+    })
+      .select("_id")
+      .lean();
+    const matchedIds = currentReportMatches.map((r) => r._id);
+
+    searchFilter = {
+      $or: [
+        { "report.name": { $regex: trimmedSearch, $options: "i" } },
+        ...(matchedIds.length > 0 ? [{ "report._id": { $in: matchedIds } }] : []),
+      ],
+    };
+  }
+
   let query = {
-    ...(search && { "report.name": { $regex: search, $options: "i" } }),
-    ...(periodId && { period: periodId }),
+    ...searchFilter,
+    ...periodFilter,
   };
+
+  console.log('=== DEBUG findPublishedReports ===');
+  console.log('User email:', user.email);
+  console.log('User activeRole:', user.activeRole);
+  console.log('Query:', query);
 
   let reports;
 
   if (user.activeRole === "Responsable") {
+    console.log('Filtering for Responsable role');
     // Traemos todos los reportes
     reports = await PubReport.find(query)
       .populate({
@@ -81,26 +121,44 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
         model: 'dimensions',
         populate: {
           path: 'responsible',
-          model: 'dependencies'
+          model: 'dependencies',
+          select: 'name responsible members visualizers'
         }
       })
       .populate('period')
       .session(session);
 
-    // Filtramos por dimensiones donde el usuario es visualizer
+    console.log('Total reports before filter:', reports.length);
+    
+    // Incluir reportes donde el usuario sea responsable directo,
+    // miembro de la dependencia responsable del ámbito o visualizer.
     reports = reports.filter(report =>
       report.report.dimensions.some(d => 
-        d.responsible && d.responsible.visualizers && d.responsible.visualizers.includes(user.email)
+        d.responsible && (
+          d.responsible.responsible === user.email ||
+          (Array.isArray(d.responsible.members) && d.responsible.members.includes(user.email)) ||
+          (Array.isArray(d.responsible.visualizers) && d.responsible.visualizers.includes(user.email))
+        )
       )
     );
+    
+    console.log('Reports after visualizer filter:', reports.length);
   } else {
-    // Administrador: solo los necesarioss
+    console.log('Loading all reports for Administrador');
+    // Administrador: todos los reportes
     reports = await PubReport.find(query)
       .populate({
         path: 'period',
         select: 'name producer_report_start_date producer_report_end_date producer_end_date'
       })
+      .populate({
+        path: 'report.producers',
+        model: 'dependencies',
+        select: 'name'
+      })
       .session(session);
+    
+    console.log('Total reports for admin:', reports.length);
   }
 
   // Filtrado de filled_reports (en todos los casos)
@@ -125,28 +183,50 @@ static async findPublishedReports(user, page = 1, limit = 10, search = "", perio
   });
 
   const totalReports = reports.length;
-const paginatedReports = reports.slice(skip, skip + limit);
+  const paginatedReports = reports.slice(skip, skip + parsedLimit);
 
-for (const report of paginatedReports) {
-  await this.hydrateReportExample(report);
-}
+  for (const report of paginatedReports) {
+    await this.hydrateReportExample(report);
+  }
 
-return {
-  page,
-  limit,
-  total: totalReports,
-  totalPages: Math.ceil(totalReports / limit),
-  publishedReports: paginatedReports,
-};
+  console.log('Returning:', {
+    total: totalReports,
+    page,
+    reportsInPage: paginatedReports.length
+  });
 
+  return {
+    page,
+    limit: parsedLimit,
+    total: totalReports,
+    totalPages: Math.ceil(totalReports / parsedLimit),
+    publishedReports: paginatedReports,
+  };
 }
 
 
 static async findPublishedReportsProducer(user, _, __, search = "", periodId, dimensionId, session) {
 
-  
+  const trimmedSearch = String(search || "").trim();
+  let producerSearchFilter = {};
+  if (trimmedSearch) {
+    const currentReportMatches = await ProducerReport.find({
+      name: { $regex: trimmedSearch, $options: "i" },
+    })
+      .select("_id")
+      .lean();
+    const matchedIds = currentReportMatches.map((r) => r._id);
+
+    producerSearchFilter = {
+      $or: [
+        { "report.name": { $regex: trimmedSearch, $options: "i" } },
+        ...(matchedIds.length > 0 ? [{ "report._id": { $in: matchedIds } }] : []),
+      ],
+    };
+  }
+
   const query = {
-    ...(search && { "report.name": { $regex: search, $options: "i" } }),
+    ...producerSearchFilter,
     ...(periodId && { period: periodId }),
     ...(dimensionId && { "report.dimensions": dimensionId }),
   };
@@ -232,13 +312,36 @@ return report;
 
   static async publishReport(report, periodId, deadline, session) {
     try {
+      if (!Types.ObjectId.isValid(String(periodId))) {
+        throw new Error("Invalid period id");
+      }
+
+      const normalizedPeriodId = new Types.ObjectId(String(periodId));
+      const normalizedDeadline = new Date(deadline);
+      if (!normalizedDeadline || Number.isNaN(normalizedDeadline.getTime())) {
+        throw new Error("Invalid deadline");
+      }
+
+      const existing = await PubReport.findOne({
+        period: normalizedPeriodId,
+        "report._id": report._id,
+      }).session(session);
+
+      if (existing) {
+        existing.report = report;
+        existing.deadline = normalizedDeadline;
+        await existing.save({ session });
+        return existing;
+      }
+
       const pubReport = new PubReport({
-        period: periodId,
+        period: normalizedPeriodId,
         report,
-        deadline
+        deadline: normalizedDeadline,
       });
 
       await pubReport.save({ session });
+      return pubReport;
     } catch (error) {
       console.error('Error publishing report:', error);
       throw new Error('Internal Server Error');
