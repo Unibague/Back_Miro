@@ -1,9 +1,26 @@
-const escapeRtf = (value) =>
-  String(value ?? "")
-    .replace(/\\/g, "\\\\")
-    .replace(/{/g, "\\{")
-    .replace(/}/g, "\\}")
-    .replace(/\r\n|\r|\n/g, "\\par ");
+const Docxtemplater = require("docxtemplater");
+const PizZip = require("pizzip");
+const fs = require("fs");
+const path = require("path");
+
+const escapeRtf = (value) => {
+  const str = String(value ?? "");
+  let result = "";
+  
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    const code = str.charCodeAt(i);
+    
+    if (char === "\\") result += "\\\\";
+    else if (char === "{") result += "\\{";
+    else if (char === "}") result += "\\}";
+    else if (char === "\n" || char === "\r") result += "\\par ";
+    else if (code > 127) result += `\\u${code}?`;
+    else result += char;
+  }
+  
+  return result;
+};
 
 const textFromArray = (list) => {
   if (!Array.isArray(list) || list.length === 0) return "Sin datos";
@@ -16,28 +33,133 @@ const textFromArray = (list) => {
 };
 
 const sectionsToText = (sections) => {
-  if (!Array.isArray(sections) || sections.length === 0) return "Sin secciones sugeridas";
-  return sections
-    .map((s, i) => {
-      const title = s?.title || s?.id || `Seccion ${i + 1}`;
-      const source = s?.source || "both";
-      const purpose = s?.purpose || "";
-      const notes = s?.notes || "";
-      return `${i + 1}. ${title}\nFuente: ${source}\nObjetivo: ${purpose}\nNotas: ${notes}`;
-    })
-    .join("\n\n");
+  if (!sections || typeof sections !== 'object') return "Sin contenido generado";
+  
+  const parts = [];
+  
+  if (sections.objective) {
+    parts.push(`\n\n1. OBJETIVO DEL INFORME\n\n${sections.objective}`);
+  }
+  
+  if (sections.variables) {
+    parts.push(`\n\n2. VARIABLES A ANALIZAR\n\n${sections.variables}`);
+  }
+  
+  if (sections.methodology) {
+    parts.push(`\n\n3. METODOLOGÍA A EMPLEAR\n\n${sections.methodology}`);
+  }
+  
+  if (Array.isArray(sections.analysis) && sections.analysis.length > 0) {
+    parts.push(`\n\n4. PROCESAMIENTO Y ANÁLISIS\n`);
+    sections.analysis.forEach((dim, i) => {
+      parts.push(`\n4.${i + 1}. ${dim.dimension_name || 'Dimensión'}\n`);
+      if (dim.content) parts.push(`${dim.content}\n`);
+      if (dim.conclusions) parts.push(`\n4.${i + 1}.1. Conclusiones del capítulo\n${dim.conclusions}`);
+    });
+  }
+  
+  if (sections.general_conclusions) {
+    parts.push(`\n\n5. CONCLUSIONES Y RECOMENDACIONES GENERALES\n\n${sections.general_conclusions}`);
+  }
+  
+  if (sections.integral_evaluation) {
+    parts.push(`\n\nEVALUACIÓN INTEGRAL\n\n${sections.integral_evaluation}`);
+  }
+  
+  if (Array.isArray(sections.improvement_actions) && sections.improvement_actions.length > 0) {
+    parts.push(`\n\nACCIONES DE MEJORA:\n`);
+    sections.improvement_actions.forEach((action, i) => {
+      parts.push(`${i + 1}. ${action}`);
+    });
+  }
+  
+  if (Array.isArray(sections.references) && sections.references.length > 0) {
+    parts.push(`\n\n6. REFERENCIAS BIBLIOGRÁFICAS\n`);
+    sections.references.forEach((ref, i) => {
+      parts.push(`[${i + 1}] ${ref}`);
+    });
+  } else {
+    parts.push(`\n\n6. REFERENCIAS BIBLIOGRÁFICAS\n\n[Espacio para agregar referencias bibliográficas]`);
+  }
+  
+  return parts.length > 0 ? parts.join('\n') : "Sin contenido generado";
 };
 
-const fieldGroupsToText = (groups) => {
-  if (!Array.isArray(groups) || groups.length === 0) return "Sin grupos de campos sugeridos";
-  return groups
-    .map((g, i) => {
-      const name = g?.group_name || `Grupo ${i + 1}`;
-      const source = g?.source || "both";
-      const fields = Array.isArray(g?.fields) ? g.fields.join(", ") : "";
-      return `${i + 1}. ${name}\nFuente: ${source}\nCampos: ${fields || "Sin campos listados"}`;
-    })
-    .join("\n\n");
+const tableOfContentsToText = (toc) => {
+  if (!Array.isArray(toc) || toc.length === 0) return "Sin tabla de contenido";
+  return toc
+    .map((item) => `${item.section || ''} ............... Pág. ${item.page || ''}`)  
+    .join('\n');
+};
+
+const buildDocxDocument = ({
+  reportName,
+  producerReport,
+  responsibleReport,
+  aiMergePlan,
+  aiMetadata,
+}) => {
+  const templatePath = path.join(__dirname, "../templates/template-informe-ambito.docx");
+  
+  if (!fs.existsSync(templatePath)) {
+    throw new Error("Template not found");
+  }
+
+  const content = fs.readFileSync(templatePath, "binary");
+  const zip = new PizZip(content);
+  const doc = new Docxtemplater(zip, {
+    paragraphLoop: true,
+    linebreaks: true,
+  });
+
+  const data = {
+    report_title: aiMergePlan?.report_title || reportName,
+    generation_date: new Date().toLocaleDateString("es-CO"),
+    ai_model: aiMetadata?.model || "N/A",
+    producer_source: producerReport?.name || "",
+    responsible_source: responsibleReport?.name || "",
+    
+    table_of_contents: Array.isArray(aiMergePlan?.table_of_contents) 
+      ? aiMergePlan.table_of_contents 
+      : [],
+    
+    objective: aiMergePlan?.sections?.objective || "[Contenido pendiente]",
+    variables: aiMergePlan?.sections?.variables || "[Contenido pendiente]",
+    methodology: aiMergePlan?.sections?.methodology || "[Contenido pendiente]",
+    
+    analysis: Array.isArray(aiMergePlan?.sections?.analysis)
+      ? aiMergePlan.sections.analysis.map((dim, i) => ({
+          number: i + 1,
+          dimension_name: dim.dimension_name || `Dimensión ${i + 1}`,
+          content: dim.content || "[Contenido pendiente]",
+          conclusions: dim.conclusions || "[Conclusiones pendientes]",
+        }))
+      : [],
+    
+    general_conclusions: aiMergePlan?.sections?.general_conclusions || "[Contenido pendiente]",
+    integral_evaluation: aiMergePlan?.sections?.integral_evaluation || "[Contenido pendiente]",
+    
+    improvement_actions: Array.isArray(aiMergePlan?.sections?.improvement_actions)
+      ? aiMergePlan.sections.improvement_actions.map((action, i) => ({
+          number: i + 1,
+          action: action,
+        }))
+      : [],
+    
+    references: Array.isArray(aiMergePlan?.sections?.references)
+      ? aiMergePlan.sections.references.map((ref, i) => ({
+          number: i + 1,
+          reference: ref,
+        }))
+      : [{number: 1, reference: "[Espacio para agregar referencias bibliográficas]"}],
+  };
+
+  doc.render(data);
+
+  return doc.getZip().generate({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+  });
 };
 
 const buildRtfDocument = ({
@@ -48,38 +170,26 @@ const buildRtfDocument = ({
   aiMetadata,
 }) => {
   const bodyLines = [
-    "{\\rtf1\\ansi\\deff0",
-    "{\\fonttbl{\\f0 Arial;}}",
-    "\\fs24",
-    `\\b ${escapeRtf(reportName)} \\b0\\par`,
-    "\\par",
-    "\\b Informe de ambito generado con IA \\b0\\par",
-    `Fecha de generacion: ${escapeRtf(new Date().toISOString())}\\par`,
-    aiMetadata?.model ? `Modelo IA: ${escapeRtf(aiMetadata.model)}\\par` : "",
-    "\\par",
-    "\\b Fuentes usadas \\b0\\par",
-    `Productores: ${escapeRtf(producerReport?.name || "")}\\par`,
-    `Responsables: ${escapeRtf(responsibleReport?.name || "")}\\par`,
-    "\\par",
-    "\\b Descripcion propuesta \\b0\\par",
-    `${escapeRtf(aiMergePlan?.description || "Sin descripcion generada por IA")}\\par`,
-    "\\par",
-    "\\b Secciones sugeridas por IA \\b0\\par",
+    "{\\rtf1\\ansi\\ansicpg1252\\deff0\\deflang1034",
+    "{\\fonttbl{\\f0\\fnil\\fcharset0 Arial;}}",
+    "{\\*\\generator Miro System;}",
+    "\\viewkind4\\uc1\\pard\\f0\\fs24",
+    "\\qc\\b\\fs32 ", // Centrado y tamaño grande para título
+    `${escapeRtf(aiMergePlan?.report_title || reportName)}\\par`,
+    "\\b0\\fs24\\ql\\par\\par", // Volver a normal y alineado izquierda
+    "\\par\\page", // Salto de página
+    "\\b\\fs28 TABLA DE CONTENIDO \\b0\\fs24\\par\\par",
+    `${escapeRtf(tableOfContentsToText(aiMergePlan?.table_of_contents))}\\par`,
+    "\\par\\page", // Salto de página
     `${escapeRtf(sectionsToText(aiMergePlan?.sections))}\\par`,
+    "\\par\\par\\page",
+    "\\b METADATOS DEL DOCUMENTO \\b0\\par",
+    `Fecha de generación: ${escapeRtf(new Date().toISOString())}\\par`,
+    aiMetadata?.model ? `Modelo IA: ${escapeRtf(aiMetadata.model)}\\par` : "",
+    `Fuente productores: ${escapeRtf(producerReport?.name || "")}\\par`,
+    `Fuente responsables: ${escapeRtf(responsibleReport?.name || "")}\\par`,
     "\\par",
-    "\\b Grupos de campos sugeridos \\b0\\par",
-    `${escapeRtf(fieldGroupsToText(aiMergePlan?.field_groups))}\\par`,
-    "\\par",
-    "\\b Reglas de fusion \\b0\\par",
-    `${escapeRtf(textFromArray(aiMergePlan?.merge_rules))}\\par`,
-    "\\par",
-    "\\b Supuestos \\b0\\par",
-    `${escapeRtf(textFromArray(aiMergePlan?.assumptions))}\\par`,
-    "\\par",
-    "\\b Nota tecnica \\b0\\par",
-    escapeRtf(
-      "Este documento es una propuesta inicial generada por IA para unificar informes de productores y responsables. Revise y ajuste el formato final antes de publicarlo."
-    ) + "\\par",
+    "\\i Nota: Este documento fue generado automáticamente. Revise y ajuste antes de publicar. \\i0\\par",
     "}",
   ].filter(Boolean);
 
@@ -93,22 +203,47 @@ const buildMergedAmbitWordDocument = async ({
   aiMergePlan,
   aiMetadata,
 }) => {
-  const buffer = buildRtfDocument({
-    reportName,
-    producerReport,
-    responsibleReport,
-    aiMergePlan,
-    aiMetadata,
-  });
+  // Intentar generar DOCX primero (con diseño profesional)
+  try {
+    const buffer = buildDocxDocument({
+      reportName,
+      producerReport,
+      responsibleReport,
+      aiMergePlan,
+      aiMetadata,
+    });
 
-  return {
-    buffer,
-    stats: {
-      aiSections: Array.isArray(aiMergePlan?.sections) ? aiMergePlan.sections.length : 0,
-      aiFieldGroups: Array.isArray(aiMergePlan?.field_groups) ? aiMergePlan.field_groups.length : 0,
-      format: "rtf",
-    },
-  };
+    return {
+      buffer,
+      stats: {
+        hasSections: Boolean(aiMergePlan?.sections),
+        hasTableOfContents: Array.isArray(aiMergePlan?.table_of_contents) && aiMergePlan.table_of_contents.length > 0,
+        analysisCount: Array.isArray(aiMergePlan?.sections?.analysis) ? aiMergePlan.sections.analysis.length : 0,
+        format: "docx",
+      },
+    };
+  } catch (error) {
+    // Fallback a RTF si no existe plantilla
+    console.warn("[DOCX] Template not found, using RTF fallback:", error.message);
+    
+    const buffer = buildRtfDocument({
+      reportName,
+      producerReport,
+      responsibleReport,
+      aiMergePlan,
+      aiMetadata,
+    });
+
+    return {
+      buffer,
+      stats: {
+        hasSections: Boolean(aiMergePlan?.sections),
+        hasTableOfContents: Array.isArray(aiMergePlan?.table_of_contents) && aiMergePlan.table_of_contents.length > 0,
+        analysisCount: Array.isArray(aiMergePlan?.sections?.analysis) ? aiMergePlan.sections.analysis.length : 0,
+        format: "rtf",
+      },
+    };
+  }
 };
 
 module.exports = {

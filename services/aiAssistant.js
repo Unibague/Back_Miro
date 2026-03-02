@@ -1,67 +1,81 @@
 const axios = require('axios');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+const MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
 
 // Contexto del sistema MIRÓ
-const SYSTEM_CONTEXT = `te llamas ARDI Eres un asistente virtual del Sistema MIRÓ (Mecanismo de Información y Reporte Oficial) de la Universidad de Ibagué.
+const SYSTEM_CONTEXT = `Eres ARDI, asistente del Sistema MIRÓ de la Universidad de Ibagué.
 
-MIRÓ es un sistema de gestión de información para procesos de acreditación universitaria.
+MIRÓ gestiona información para acreditación universitaria con:
+- Plantillas de datos personalizables
+- Reportes consolidados
+- Períodos académicos
+- Roles: Administrador, Productor, Responsable
+- Dependencias jerárquicas
+- Auditoría de cambios
 
-**Funcionalidades principales:**
-1. **Gestión de Plantillas**: Crear y configurar plantillas de datos con campos personalizados
-2. **Gestión de Reportes**: Generar reportes consolidados desde plantillas
-3. **Gestión de Períodos**: Definir períodos académicos con fechas de carga
-4. **Roles de Usuario**:
-   - Administrador: Gestión completa del sistema
-   - Productor: Carga datos en plantillas asignadas
-   - Responsable: Revisa y consolida información
-5. **Dependencias**: Estructura organizacional jerárquica de la universidad
-6. **Sincronización**: Integración con sistema Atlante para usuarios y dependencias
-7. **Auditoría**: Registro de cambios y acciones en el sistema
-
-**Características:**
-- Carga masiva de datos vía Excel
-- Validadores personalizados para campos
-- Notificaciones por correo
-- Gestión de permisos por dependencia
-- Reportes consolidados por dimensión
-
-Responde de forma clara, concisa y en español. Si no sabes algo específico, sugiere contactar al administrador del sistema.`;
+Responde breve y claro en español.`;
 
 class AIAssistantService {
   
+  constructor() {
+    this.keepModelLoaded();
+  }
+
+  async keepModelLoaded() {
+    try {
+      await axios.post(`${OLLAMA_URL}/api/generate`, {
+        model: MODEL,
+        prompt: 'Hola',
+        stream: false,
+        keep_alive: -1
+      });
+    } catch (error) {
+      // Ignorar error inicial
+    }
+  }
+  
   async chat(userMessage, conversationHistory = []) {
     try {
-      // Construir mensajes con contexto
-      const messages = [
-        { role: 'system', content: SYSTEM_CONTEXT },
-        ...conversationHistory,
-        { role: 'user', content: userMessage }
-      ];
+      // Limitar historial a últimos 2 mensajes
+      const recentHistory = conversationHistory.slice(-2);
+      
+      let prompt = SYSTEM_CONTEXT + '\n\n';
+      
+      recentHistory.forEach(msg => {
+        if (msg.role === 'user') {
+          prompt += `Usuario: ${msg.content}\n`;
+        } else if (msg.role === 'assistant') {
+          prompt += `Asistente: ${msg.content}\n`;
+        }
+      });
+      
+      prompt += `Usuario: ${userMessage}\nAsistente:`;
 
-      const response = await axios.post(`${OLLAMA_URL}/api/chat`, {
+      const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
         model: MODEL,
-        messages: messages,
+        prompt: prompt,
         stream: false,
+        keep_alive: -1,
         options: {
           temperature: 0.7,
-          top_p: 0.9,
-          max_tokens: 500
+          num_predict: 200
         }
+      }, {
+        timeout: 45000
       });
 
       return {
         success: true,
-        message: response.data.message.content,
+        message: response.data.response,
         model: MODEL
       };
     } catch (error) {
       console.error('Error en AI Assistant:', error.message);
       return {
         success: false,
-        error: 'No se pudo conectar con el asistente de IA. Verifica que Ollama esté ejecutándose.',
-        details: error.message
+        error: 'No se pudo conectar con el asistente de IA. Verifica que Ollama esté ejecutándose y el modelo descargado.',
+        details: error.response?.data || error.message
       };
     }
   }

@@ -41,6 +41,10 @@ const uniqObjectIds = (...groups) => {
 };
 
 ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
+  // Aumentar timeout para esta operación
+  req.setTimeout(240000); // 4 minutos
+  res.setTimeout(240000);
+  
   try {
     const {
       producerReportId,
@@ -156,17 +160,21 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
 
       const tempFilePath = path.join(
         os.tmpdir(),
-        `ambit-report-${Date.now()}-${Math.random().toString(36).slice(2)}.rtf`
+        `ambit-report-${Date.now()}-${Math.random().toString(36).slice(2)}.${docResult.stats.format}`
       );
       fs.writeFileSync(tempFilePath, docResult.buffer);
+
+      const mimeType = docResult.stats.format === 'docx' 
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/rtf';
 
       const uploaded = await uploadFileToGoogleDrive(
         {
           path: tempFilePath,
-          mimetype: "application/rtf",
+          mimetype: mimeType,
         },
         "Formatos/Informes/Dimensiones",
-        aiSuggestedFileName
+        aiSuggestedFileName.replace(/\.rtf$/i, `.${docResult.stats.format}`)
       );
 
         generatedAttachment = {
