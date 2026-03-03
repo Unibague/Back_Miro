@@ -106,7 +106,7 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
       });
     } catch (error) {
       aiError = error;
-      console.error("Gemini ambit merge generation failed:", error?.message || error);
+      console.error("AI ambit merge generation failed:", error?.message || error);
     }
 
     const aiParsed = aiResult?.parsed || null;
