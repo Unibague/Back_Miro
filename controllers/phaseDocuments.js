@@ -1,16 +1,16 @@
-const PhaseDocument = require('../models/phaseDocuments');
+const ProcessDocument = require('../models/processDocuments');
 const { uploadFileToGoogleDrive, deleteDriveFile } = require('../config/googleDrive');
 
-const phaseDocumentsController = {};
+const processDocumentsController = {};
 
-// GET /phase-documents?phase_id=...
-phaseDocumentsController.getByPhase = async (req, res) => {
+// GET /process-documents?phase_id=...
+processDocumentsController.getByPhase = async (req, res) => {
   try {
     const { phase_id } = req.query;
     if (!phase_id) {
       return res.status(400).json({ error: 'phase_id es requerido' });
     }
-    const docs = await PhaseDocument.find({ phase_id }).sort({ createdAt: -1 });
+    const docs = await ProcessDocument.find({ phase_id }).sort({ createdAt: -1 });
     res.status(200).json(docs);
   } catch (error) {
     console.error('Error obteniendo documentos de fase:', error);
@@ -18,8 +18,23 @@ phaseDocumentsController.getByPhase = async (req, res) => {
   }
 };
 
-// POST /phase-documents/:phaseId  (multipart/form-data con campo "file")
-phaseDocumentsController.create = async (req, res) => {
+// GET /process-documents/by-process?process_id=...
+processDocumentsController.getByProcess = async (req, res) => {
+  try {
+    const { process_id } = req.query;
+    if (!process_id) {
+      return res.status(400).json({ error: 'process_id es requerido' });
+    }
+    const docs = await ProcessDocument.find({ process_id }).sort({ createdAt: -1 });
+    res.status(200).json(docs);
+  } catch (error) {
+    console.error('Error obteniendo documentos de proceso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// POST /process-documents/:phaseId  (multipart/form-data con campo "file")
+processDocumentsController.create = async (req, res) => {
   try {
     const { phaseId } = req.params;
     if (!phaseId) {
@@ -32,7 +47,7 @@ phaseDocumentsController.create = async (req, res) => {
     const destino = 'Fechas/Procesos/Fases';
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
 
-    const doc = await PhaseDocument.create({
+    const doc = await ProcessDocument.create({
       phase_id: phaseId,
       name: fileData.name,
       drive_id: fileData.id,
@@ -49,11 +64,43 @@ phaseDocumentsController.create = async (req, res) => {
   }
 };
 
-// DELETE /phase-documents/:id
-phaseDocumentsController.remove = async (req, res) => {
+// POST /process-documents/process/:processId  (multipart/form-data con campo "file")
+processDocumentsController.createForProcess = async (req, res) => {
+  try {
+    const { processId } = req.params;
+    if (!processId) {
+      return res.status(400).json({ error: 'processId es requerido' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No se adjuntó ningún archivo' });
+    }
+
+    const destino = 'Fechas/Procesos/Resoluciones';
+    const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
+
+    const doc = await ProcessDocument.create({
+      phase_id: null,
+      process_id: processId,
+      name: fileData.name,
+      drive_id: fileData.id,
+      view_link: fileData.webViewLink,
+      download_link: fileData.webContentLink,
+      mime_type: req.file.mimetype,
+      size: req.file.size,
+    });
+
+    res.status(201).json(doc);
+  } catch (error) {
+    console.error('Error creando documento de proceso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+// DELETE /process-documents/:id
+processDocumentsController.remove = async (req, res) => {
   try {
     const { id } = req.params;
-    const doc = await PhaseDocument.findByIdAndDelete(id);
+    const doc = await ProcessDocument.findByIdAndDelete(id);
     if (!doc) {
       return res.status(404).json({ error: 'Documento no encontrado' });
     }
@@ -74,5 +121,5 @@ phaseDocumentsController.remove = async (req, res) => {
   }
 };
 
-module.exports = phaseDocumentsController;
+module.exports = processDocumentsController;
 

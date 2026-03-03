@@ -14,6 +14,17 @@ const processSchema = new mongoose.Schema({
     enum: ['RC', 'AV', 'PM'],
     required: true,
   },
+  // Si es un plan de mejoramiento hijo, referencia al proceso padre (RC o AV)
+  parent_process_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'processes',
+    default: null,
+  },
+  parent_tipo_proceso: {
+    type: String,
+    enum: ['RC', 'AV', null],
+    default: null,
+  },
   fase_actual: {
     type: Number,
     min: 0,
@@ -36,6 +47,24 @@ const processSchema = new mongoose.Schema({
   obs_documento_par:    { type: String, default: '' },
   obs_digitacion_saces: { type: String, default: '' },
   obs_radicado_men:     { type: String, default: '' },
+
+  /* Offsets configurables (en meses antes de la fecha de vencimiento) */
+  meses_inicio_antes_venc: {
+    type: Number,
+    default: null,
+  },
+  meses_doc_par_antes_venc: {
+    type: Number,
+    default: null,
+  },
+  meses_digitacion_antes_venc: {
+    type: Number,
+    default: null,
+  },
+  meses_radicado_antes_venc: {
+    type: Number,
+    default: null,
+  },
 
   /* ── Fechas calculadas a partir de la resolución vigente del programa ──
      fecha_vencimiento = fecha_resolucion + duracion_resolucion (en meses)

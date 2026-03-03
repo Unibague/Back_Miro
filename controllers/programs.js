@@ -5,6 +5,8 @@ const FASES_PREDEFINIDAS = require('../helpers/fasesBase');
 const { calcularFechas } = require('./processes');
 
 async function crearProcesosParaPrograma(program_code, nombre_programa, programData) {
+  // Solo se crean automáticamente RC y AV; el Plan de Mejoramiento (PM)
+  // se activará manualmente desde uno de ellos.
   const tipos = [
     {
       tipo: 'RC', label: 'Registro Calificado',
@@ -16,18 +18,30 @@ async function crearProcesosParaPrograma(program_code, nombre_programa, programD
       fecha_resolucion: programData.fecha_resolucion_av,
       duracion: programData.duracion_resolucion_av,
     },
-    {
-      tipo: 'PM', label: 'Plan de Mejoramiento',
-      fecha_resolucion: programData.fecha_resolucion_pm,
-      duracion: programData.duracion_resolucion_pm,
-    },
   ];
   for (const { tipo, label, fecha_resolucion, duracion } of tipos) {
-    const fechas = calcularFechas(tipo, fecha_resolucion, duracion);
+    const offsets = (() => {
+      if (tipo === 'AV') {
+        return {
+          meses_inicio_antes_venc:    33,
+          meses_doc_par_antes_venc:   16,
+          meses_digitacion_antes_venc:15,
+          meses_radicado_antes_venc:  12,
+        };
+      }
+      return {
+        meses_inicio_antes_venc:    29,
+        meses_doc_par_antes_venc:   17,
+        meses_digitacion_antes_venc:15,
+        meses_radicado_antes_venc:  12,
+      };
+    })();
+    const fechas = calcularFechas(tipo, fecha_resolucion, duracion, offsets);
     const proceso = await Process.create({
       name: `${label} - ${nombre_programa}`,
       program_code,
       tipo_proceso: tipo,
+      ...offsets,
       ...fechas,
     });
     await Phase.insertMany(
@@ -98,16 +112,46 @@ programController.update = async (req, res) => {
     const tocaPM   = camposPM.some(c => req.body[c] !== undefined);
 
     if (tocaRC) {
-      const fechas = calcularFechas('RC', program.fecha_resolucion_rc, program.duracion_resolucion_rc);
-      await Process.findOneAndUpdate({ program_code: program.dep_code_programa, tipo_proceso: 'RC' }, { $set: fechas });
+      const procRC = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'RC' });
+      const offsetsRC = procRC ? {
+        meses_inicio_antes_venc:    procRC.meses_inicio_antes_venc,
+        meses_doc_par_antes_venc:   procRC.meses_doc_par_antes_venc,
+        meses_digitacion_antes_venc:procRC.meses_digitacion_antes_venc,
+        meses_radicado_antes_venc:  procRC.meses_radicado_antes_venc,
+      } : undefined;
+      const fechas = calcularFechas('RC', program.fecha_resolucion_rc, program.duracion_resolucion_rc, offsetsRC);
+      await Process.findOneAndUpdate(
+        { program_code: program.dep_code_programa, tipo_proceso: 'RC' },
+        { $set: fechas }
+      );
     }
     if (tocaAV) {
-      const fechas = calcularFechas('AV', program.fecha_resolucion_av, program.duracion_resolucion_av);
-      await Process.findOneAndUpdate({ program_code: program.dep_code_programa, tipo_proceso: 'AV' }, { $set: fechas });
+      const procAV = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'AV' });
+      const offsetsAV = procAV ? {
+        meses_inicio_antes_venc:    procAV.meses_inicio_antes_venc,
+        meses_doc_par_antes_venc:   procAV.meses_doc_par_antes_venc,
+        meses_digitacion_antes_venc:procAV.meses_digitacion_antes_venc,
+        meses_radicado_antes_venc:  procAV.meses_radicado_antes_venc,
+      } : undefined;
+      const fechas = calcularFechas('AV', program.fecha_resolucion_av, program.duracion_resolucion_av, offsetsAV);
+      await Process.findOneAndUpdate(
+        { program_code: program.dep_code_programa, tipo_proceso: 'AV' },
+        { $set: fechas }
+      );
     }
     if (tocaPM) {
-      const fechas = calcularFechas('PM', program.fecha_resolucion_pm, program.duracion_resolucion_pm);
-      await Process.findOneAndUpdate({ program_code: program.dep_code_programa, tipo_proceso: 'PM' }, { $set: fechas });
+      const procPM = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'PM' });
+      const offsetsPM = procPM ? {
+        meses_inicio_antes_venc:    procPM.meses_inicio_antes_venc,
+        meses_doc_par_antes_venc:   procPM.meses_doc_par_antes_venc,
+        meses_digitacion_antes_venc:procPM.meses_digitacion_antes_venc,
+        meses_radicado_antes_venc:  procPM.meses_radicado_antes_venc,
+      } : undefined;
+      const fechas = calcularFechas('PM', program.fecha_resolucion_pm, program.duracion_resolucion_pm, offsetsPM);
+      await Process.findOneAndUpdate(
+        { program_code: program.dep_code_programa, tipo_proceso: 'PM' },
+        { $set: fechas }
+      );
     }
 
     res.status(200).json(program);

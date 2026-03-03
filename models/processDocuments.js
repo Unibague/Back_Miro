@@ -1,11 +1,11 @@
 const mongoose = require('mongoose');
 
-const phaseDocumentSchema = new mongoose.Schema(
+const processDocumentSchema = new mongoose.Schema(
   {
     phase_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'phases',
-      required: true,
+      required: false,
     },
     process_id: {
       type: mongoose.Schema.Types.ObjectId,
@@ -43,5 +43,5 @@ const phaseDocumentSchema = new mongoose.Schema(
   }
 );
 
-module.exports = mongoose.model('phaseDocuments', phaseDocumentSchema);
+module.exports = mongoose.model('processesdocuments', processDocumentSchema);
 

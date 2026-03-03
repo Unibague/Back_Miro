@@ -14,6 +14,10 @@ const programSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+  codigo_snies: {
+    type: String,
+    default: null,
+  },
   modalidad: {
     type: String,
     enum: ['Presencial', 'Virtual', 'Híbrido'],
@@ -53,7 +57,7 @@ const programSchema = new mongoose.Schema({
     default: null,
   },
   duracion_resolucion_rc: {
-    type: Number,   // en meses (ej: 84 = 7 años)
+    type: Number,   // en años (ej: 7 = 7 años)
     default: null,
   },
 
@@ -67,7 +71,7 @@ const programSchema = new mongoose.Schema({
     default: null,
   },
   duracion_resolucion_av: {
-    type: Number,   // en AÑOS (ej: 4 = 4 años)
+    type: Number,   // en años (ej: 4 = 4 años)
     default: null,
   },
 
@@ -81,7 +85,7 @@ const programSchema = new mongoose.Schema({
     default: null,
   },
   duracion_resolucion_pm: {
-    type: Number,   // en meses
+    type: Number,   // en años (ej: 2 = 2 años)
     default: null,
   },
 },

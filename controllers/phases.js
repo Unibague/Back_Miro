@@ -40,18 +40,24 @@ phaseController.update = async (req, res) => {
   }
 };
 
-/* POST /phases/:id/actividades — agregar actividad a una fase */
+/* POST /phases/:id/actividades — agregar actividad a una fase.
+   body: { nombre, responsables?, position? } — position = índice 0-based (opcional; si no se envía, se agrega al final). */
 phaseController.addActividad = async (req, res) => {
   try {
-    const { nombre, responsables } = req.body;
+    const { nombre, responsables, position } = req.body;
     if (!nombre) return res.status(400).json({ error: 'El nombre de la actividad es requerido' });
-    const phase = await Phase.findByIdAndUpdate(
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+    const pos = typeof position === 'number' && position >= 0 && position <= phase.actividades.length
+      ? position
+      : phase.actividades.length;
+    const newAct = { nombre, responsables: responsables ?? '', completada: false };
+    const phaseUpdated = await Phase.findByIdAndUpdate(
       req.params.id,
-      { $push: { actividades: { nombre, responsables: responsables ?? '', completada: false } } },
+      { $push: { actividades: { $each: [newAct], $position: pos } } },
       { new: true }
     );
-    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
-    res.status(201).json(phase);
+    res.status(201).json(phaseUpdated);
   } catch (error) {
     console.error('Error agregando actividad:', error);
     res.status(500).json({ error: 'Error interno del servidor' });

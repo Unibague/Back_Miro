@@ -70,7 +70,7 @@ apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFilter
 apiRouter.use("/programs",   require('./routes/programs'));
 apiRouter.use("/processes",  require('./routes/processes'));
 apiRouter.use("/phases",     require('./routes/phases'));
-apiRouter.use("/phase-documents", require('./routes/phaseDocuments'));
+apiRouter.use("/process-documents", require('./routes/phaseDocuments'));
 
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);
