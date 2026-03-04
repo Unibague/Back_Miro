@@ -204,7 +204,7 @@ const buildMergedAmbitWordDocument = async ({
   aiMetadata,
 }) => {
   try {
-    const templatePath = path.join(__dirname, "../templates/informeResponsable.docx");
+    const templatePath = path.join(__dirname, "../templates/InformeResponsable.docx");
     
     if (!fs.existsSync(templatePath)) {
       throw new Error("Template not found");
