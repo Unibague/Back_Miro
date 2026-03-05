@@ -14,7 +14,7 @@ const buildMergedAmbitWordDocument = async ({
   try {
     // Rutas de los templates
     const producerTemplatePath = path.join(__dirname, "../templates/templateProduc.docx");
-    const responsibleTemplatePath = path.join(__dirname, "../templates/InformeResponsable .docx");
+    const responsibleTemplatePath = path.join(__dirname, "../templates/InformeResponsable.docx");
 
     // Datos para llenar ambos templates
     const data = {
