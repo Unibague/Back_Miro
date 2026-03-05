@@ -24,15 +24,18 @@
     "exceljs": "^4.4.0",
     "express": "^4.21.0",
     "google-auth-library": "^9.14.0",
+    "mammoth": "^1.11.0",
     "mongodb": "^6.6.0",
     "mongoose": "^8.5.4",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^7.0.3",
+    "pdf-parse": "^2.4.5",
     "pizzip": "^3.2.0",
     "swagger-jsdoc": "^6.2.8",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13.0.0",

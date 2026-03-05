@@ -1,4 +1,5 @@
 const axios = require('axios');
+const documentReader = require('./documentReader');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
@@ -35,12 +36,17 @@ class AIAssistantService {
     }
   }
   
-  async chat(userMessage, conversationHistory = []) {
+  async chat(userMessage, conversationHistory = [], documentContext = null) {
     try {
       // Limitar historial a últimos 2 mensajes
       const recentHistory = conversationHistory.slice(-2);
       
       let prompt = SYSTEM_CONTEXT + '\n\n';
+      
+      // Agregar contexto de documento si existe
+      if (documentContext) {
+        prompt += `DOCUMENTO ADJUNTO:\n${documentContext.substring(0, 3000)}\n\n`;
+      }
       
       recentHistory.forEach(msg => {
         if (msg.role === 'user') {
@@ -77,6 +83,41 @@ class AIAssistantService {
         error: 'No se pudo conectar con el asistente de IA. Verifica que Ollama esté ejecutándose y el modelo descargado.',
         details: error.response?.data || error.message
       };
+    }
+  }
+
+  async analyzeDocument(filePath, mimeType, question = null) {
+    try {
+      const extracted = await documentReader.extractText(filePath, mimeType);
+      
+      if (!extracted.success) {
+        return { success: false, error: extracted.error };
+      }
+      
+      const documentText = extracted.text.substring(0, 4000);
+      const prompt = question 
+        ? `Documento:\n${documentText}\n\nPregunta: ${question}\nRespuesta:`
+        : `Resume este documento:\n${documentText}\n\nResumen:`;
+      
+      const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
+        model: MODEL,
+        prompt: prompt,
+        stream: false,
+        keep_alive: -1,
+        options: {
+          temperature: 0.3,
+          num_predict: 300,
+          num_ctx: 4096
+        }
+      }, { timeout: 120000 });
+      
+      return {
+        success: true,
+        analysis: response.data.response,
+        documentInfo: { pages: extracted.pages || null, length: extracted.text.length }
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   }
 
