@@ -14,6 +14,14 @@ const processSchema = new mongoose.Schema({
     enum: ['RC', 'AV', 'PM'],
     required: true,
   },
+  /* Subtipo del proceso:
+     RC  → Nuevo | Renovación | No renovación | Reforma/actualización curricular
+     AV  → Primera vez | Renovación
+     PM  → Autoevaluación Registro calificado | Autoevaluación Acreditación */
+  subtipo: {
+    type: String,
+    default: null,
+  },
   // Si es un plan de mejoramiento hijo, referencia al proceso padre (RC o AV)
   parent_process_id: {
     type: mongoose.Schema.Types.ObjectId,
@@ -41,12 +49,18 @@ const processSchema = new mongoose.Schema({
     default: null,
   },
 
-  /* Observaciones por fecha */
+  /* Observaciones por fecha (proceso principal RC/AV) */
   obs_vencimiento:      { type: String, default: '' },
   obs_inicio:           { type: String, default: '' },
   obs_documento_par:    { type: String, default: '' },
   obs_digitacion_saces: { type: String, default: '' },
   obs_radicado_men:     { type: String, default: '' },
+
+  /* Observaciones por fecha (Plan de Mejoramiento) */
+  obs_envio_pm_vicerrectoria:    { type: String, default: '' },
+  obs_entrega_pm_cna:            { type: String, default: '' },
+  obs_envio_avance_vicerrectoria:{ type: String, default: '' },
+  obs_radicacion_avance_cna:     { type: String, default: '' },
 
   /* Offsets configurables (en meses antes de la fecha de vencimiento) */
   meses_inicio_antes_venc: {

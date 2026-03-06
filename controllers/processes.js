@@ -212,12 +212,26 @@ processController.activatePM = async (req, res) => {
       return res.status(400).json({ error: 'El proceso padre no tiene resolución vigente con duración configurada' });
     }
 
-    // Buscar si ya existe un PM hijo ligado a este proceso
-    let pm = await Process.findOne({
+    // Verificar si ya existe un PM para el programa (ligado a cualquier proceso)
+    const pmExistenteDelPrograma = await Process.findOne({
       program_code: parent.program_code,
       tipo_proceso: 'PM',
-      parent_process_id: parent._id,
     });
+
+    // Si hay un PM ligado a OTRO proceso (no este), rechazar
+    if (
+      pmExistenteDelPrograma &&
+      String(pmExistenteDelPrograma.parent_process_id) !== String(parent._id)
+    ) {
+      return res.status(409).json({
+        error: 'Este programa ya tiene un Plan de Mejoramiento activo ligado a otro proceso. Solo puede haber uno activo a la vez.',
+      });
+    }
+
+    // Buscar si ya existe un PM hijo ligado a ESTE proceso
+    let pm = pmExistenteDelPrograma && String(pmExistenteDelPrograma.parent_process_id) === String(parent._id)
+      ? pmExistenteDelPrograma
+      : null;
 
     // Meses configurables para el plan (si no se envían, usar defaults 5/6/6/0)
     const {
@@ -245,6 +259,11 @@ processController.activatePM = async (req, res) => {
     const fecha_radicacion_avance_cna =
       siguienteDiaHabil(sumarMeses(fecha_mitad, mRadicAvance));
 
+    // Subtipo automático según el tipo del proceso padre
+    const subtipoAutomatico = parent.tipo_proceso === 'RC'
+      ? 'Autoevaluación Registro calificado'
+      : 'Autoevaluación Acreditación';
+
     const pmData = {
       fecha_envio_pm_vicerrectoria,
       fecha_entrega_pm_cna,
@@ -253,13 +272,14 @@ processController.activatePM = async (req, res) => {
     };
 
     if (!pm) {
-      // Crear nuevo proceso PM hijo
+      // Crear nuevo proceso PM hijo con subtipo automático
       pm = await Process.create({
         name: `Plan de Mejoramiento - ${programa.nombre}`,
         program_code: parent.program_code,
         tipo_proceso: 'PM',
         parent_process_id: parent._id,
         parent_tipo_proceso: parent.tipo_proceso,
+        subtipo: subtipoAutomatico,
         ...pmData,
       });
 
@@ -273,8 +293,12 @@ processController.activatePM = async (req, res) => {
         }))
       );
     } else {
-      // Solo actualizar fechas si ya existía
-      pm = await Process.findByIdAndUpdate(pm._id, { $set: pmData }, { new: true, runValidators: true });
+      // Actualizar fechas y confirmar subtipo si ya existía
+      pm = await Process.findByIdAndUpdate(
+        pm._id,
+        { $set: { ...pmData, subtipo: subtipoAutomatico } },
+        { new: true, runValidators: true }
+      );
     }
 
     res.status(200).json(pm);

@@ -41,6 +41,14 @@ const programSchema = new mongoose.Schema({
     type: Number,
     default: null,
   },
+  admision_estudiantes: {
+    type: String,
+    default: null,
+  },
+  num_estudiantes_saces: {
+    type: Number,
+    default: null,
+  },
   estado: {
     type: String,
     enum: ['Activo', 'Inactivo'],
@@ -75,19 +83,6 @@ const programSchema = new mongoose.Schema({
     default: null,
   },
 
-  /* ── Resolución vigente — Plan de Mejoramiento (PM) ── */
-  fecha_resolucion_pm: {
-    type: String,   // YYYY-MM-DD
-    default: null,
-  },
-  codigo_resolucion_pm: {
-    type: String,
-    default: null,
-  },
-  duracion_resolucion_pm: {
-    type: Number,   // en años (ej: 2 = 2 años)
-    default: null,
-  },
 },
 {
   versionKey: false,

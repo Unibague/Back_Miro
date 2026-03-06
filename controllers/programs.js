@@ -106,10 +106,22 @@ programController.update = async (req, res) => {
 
     const camposRC = ['fecha_resolucion_rc', 'codigo_resolucion_rc', 'duracion_resolucion_rc'];
     const camposAV = ['fecha_resolucion_av', 'codigo_resolucion_av', 'duracion_resolucion_av'];
-    const camposPM = ['fecha_resolucion_pm', 'codigo_resolucion_pm', 'duracion_resolucion_pm'];
     const tocaRC   = camposRC.some(c => req.body[c] !== undefined);
     const tocaAV   = camposAV.some(c => req.body[c] !== undefined);
-    const tocaPM   = camposPM.some(c => req.body[c] !== undefined);
+
+    // Helper: eliminar el PM hijo ligado a un proceso padre y sus fases
+    const eliminarPMDeProceso = async (parentProc) => {
+      if (!parentProc) return;
+      const pm = await Process.findOne({
+        program_code: program.dep_code_programa,
+        tipo_proceso: 'PM',
+        parent_process_id: parentProc._id,
+      });
+      if (pm) {
+        await Phase.deleteMany({ proceso_id: pm._id });
+        await Process.findByIdAndDelete(pm._id);
+      }
+    };
 
     if (tocaRC) {
       const procRC = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'RC' });
@@ -124,6 +136,8 @@ programController.update = async (req, res) => {
         { program_code: program.dep_code_programa, tipo_proceso: 'RC' },
         { $set: fechas }
       );
+      // Al cambiar la resolución del RC, el PM ligado queda obsoleto → eliminarlo
+      await eliminarPMDeProceso(procRC);
     }
     if (tocaAV) {
       const procAV = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'AV' });
@@ -138,20 +152,8 @@ programController.update = async (req, res) => {
         { program_code: program.dep_code_programa, tipo_proceso: 'AV' },
         { $set: fechas }
       );
-    }
-    if (tocaPM) {
-      const procPM = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'PM' });
-      const offsetsPM = procPM ? {
-        meses_inicio_antes_venc:    procPM.meses_inicio_antes_venc,
-        meses_doc_par_antes_venc:   procPM.meses_doc_par_antes_venc,
-        meses_digitacion_antes_venc:procPM.meses_digitacion_antes_venc,
-        meses_radicado_antes_venc:  procPM.meses_radicado_antes_venc,
-      } : undefined;
-      const fechas = calcularFechas('PM', program.fecha_resolucion_pm, program.duracion_resolucion_pm, offsetsPM);
-      await Process.findOneAndUpdate(
-        { program_code: program.dep_code_programa, tipo_proceso: 'PM' },
-        { $set: fechas }
-      );
+      // Al cambiar la resolución del AV, el PM ligado queda obsoleto → eliminarlo
+      await eliminarPMDeProceso(procAV);
     }
 
     res.status(200).json(program);
