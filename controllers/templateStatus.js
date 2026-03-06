@@ -33,82 +33,86 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
     for (const template of publishedTemplates) {
       console.log('[TemplateStatus] Procesando plantilla:', template.name);
       
-      // Si tiene loaded_data, mostrar quién subió
+      // Obtener dependencias asignadas
+      const assignedDependencyIds = template.template?.producers || [];
+      
+      if (assignedDependencyIds.length === 0) continue;
+      
+      // Obtener nombres completos de las dependencias
+      const dependencies = await Dependency.find({
+        _id: { $in: assignedDependencyIds }
+      }).select('dep_code name').lean();
+      
+      // Si tiene loaded_data, mostrar quién subió CON NOMBRE DE DEPENDENCIA
       if (template.loaded_data && template.loaded_data.length > 0) {
         for (const data of template.loaded_data) {
+          const dep = dependencies.find(d => d.dep_code === data.dependency);
           result.push({
             template_id: template._id,
             template_name: template.name,
             period: template.period?.name || 'N/A',
             deadline: template.deadline,
-            user_name: data.send_by?.name || data.send_by?.full_name || 'N/A',
+            user_name: data.send_by?.full_name || data.send_by?.name || 'N/A',
             user_email: data.send_by?.email || 'N/A',
-            dependency: data.dependency,
+            dependency: dep?.name || data.dependency,
             has_submitted: true,
             submitted_date: data.loaded_date
           });
         }
       }
       
-      // Obtener dependencias asignadas que NO han subido
-      const assignedDependencyIds = template.template?.producers || [];
+      const depCodes = dependencies.map(d => d.dep_code);
       
-      if (assignedDependencyIds.length > 0) {
-        // Obtener los dep_code de las dependencias
-        const dependencies = await Dependency.find({
-          _id: { $in: assignedDependencyIds }
-        }).select('dep_code name').lean();
+      // Dependencias que ya subieron
+      const submittedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
+      
+      // Dependencias pendientes
+      const pendingDepCodes = depCodes.filter(code => !submittedDepCodes.includes(code));
+      
+      console.log('[TemplateStatus] Pendientes:', pendingDepCodes);
+      
+      // Para cada dependencia pendiente, buscar usuarios
+      for (const depCode of pendingDepCodes) {
+        console.log('[TemplateStatus] Buscando usuarios para dep_code:', depCode);
         
-        const depCodes = dependencies.map(d => d.dep_code);
+        // Obtener info completa de la dependencia
+        const dep = dependencies.find(d => d.dep_code === depCode);
+        const depName = dep?.name || depCode;
         
-        // Dependencias que ya subieron
-        const submittedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
+        const users = await User.find({
+          dependency: depCode,
+          activeRole: 'Productor',
+          isActive: true
+        }).select('name full_name email dependency').lean();
         
-        // Dependencias pendientes
-        const pendingDepCodes = depCodes.filter(code => !submittedDepCodes.includes(code));
+        console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
         
-        console.log('[TemplateStatus] Pendientes:', pendingDepCodes);
-        
-        // Para cada dependencia pendiente, buscar usuarios
-        for (const depCode of pendingDepCodes) {
-          console.log('[TemplateStatus] Buscando usuarios para dep_code:', depCode);
-          
-          const users = await User.find({
-            dependency: depCode,
-            activeRole: 'Productor',
-            isActive: true
-          }).select('name email dependency').lean();
-          
-          console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
-          
-          if (users.length === 0) {
-            // Si no hay usuarios, al menos mostrar la dependencia pendiente
-            const dep = dependencies.find(d => d.dep_code === depCode);
+        if (users.length === 0) {
+          // Si no hay usuarios, mostrar la dependencia pendiente
+          result.push({
+            template_id: template._id,
+            template_name: template.name,
+            period: template.period?.name || 'N/A',
+            deadline: template.deadline,
+            user_name: 'Sin usuario asignado',
+            user_email: 'N/A',
+            dependency: depName,
+            has_submitted: false,
+            submitted_date: null
+          });
+        } else {
+          for (const user of users) {
             result.push({
               template_id: template._id,
               template_name: template.name,
               period: template.period?.name || 'N/A',
               deadline: template.deadline,
-              user_name: 'Sin usuario asignado',
-              user_email: 'N/A',
-              dependency: dep?.name || depCode,
+              user_name: user.full_name || user.name,
+              user_email: user.email,
+              dependency: depName,
               has_submitted: false,
               submitted_date: null
             });
-          } else {
-            for (const user of users) {
-              result.push({
-                template_id: template._id,
-                template_name: template.name,
-                period: template.period?.name || 'N/A',
-                deadline: template.deadline,
-                user_name: user.name,
-                user_email: user.email,
-                dependency: user.dependency,
-                has_submitted: false,
-                submitted_date: null
-              });
-            }
           }
         }
       }
@@ -137,31 +141,76 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
     const data = [];
     
     for (const template of publishedTemplates) {
-      const assignedDependencies = template.template?.producers || [];
+      const assignedDependencyIds = template.template?.producers || [];
       
-      const users = await User.find({
-        dependency: { $in: assignedDependencies },
-        activeRole: 'Productor',
-        isActive: true
-      }).select('name email dependency').lean();
+      if (assignedDependencyIds.length === 0) continue;
       
-      for (const user of users) {
-        const hasSubmitted = template.loaded_data?.some(
-          data => data.dependency === user.dependency && data.send_by?.email === user.email
-        );
+      // Obtener dependencias con nombre completo
+      const dependencies = await Dependency.find({
+        _id: { $in: assignedDependencyIds }
+      }).select('dep_code name').lean();
+      
+      const depCodes = dependencies.map(d => d.dep_code);
+      
+      // Dependencias que ya subieron
+      const submittedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
+      
+      // Dependencias pendientes
+      const pendingDepCodes = depCodes.filter(code => !submittedDepCodes.includes(code));
+      
+      // Para dependencias que ya subieron
+      if (template.loaded_data && template.loaded_data.length > 0) {
+        for (const loadedData of template.loaded_data) {
+          const dep = dependencies.find(d => d.dep_code === loadedData.dependency);
+          data.push({
+            'Plantilla': template.name,
+            'Período': template.period?.name || 'N/A',
+            'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
+            'Usuario': loadedData.send_by?.full_name || loadedData.send_by?.name || 'N/A',
+            'Email': loadedData.send_by?.email || 'N/A',
+            'Dependencia': dep?.name || loadedData.dependency,
+            'Estado': 'Enviado',
+            'Fecha Envío': loadedData.loaded_date ? new Date(loadedData.loaded_date).toLocaleDateString('es-CO') : 'N/A'
+          });
+        }
+      }
+      
+      // Para dependencias pendientes
+      for (const depCode of pendingDepCodes) {
+        const dep = dependencies.find(d => d.dep_code === depCode);
+        const depName = dep?.name || depCode;
         
-        data.push({
-          'Plantilla': template.name,
-          'Período': template.period?.name || 'N/A',
-          'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
-          'Usuario': user.name,
-          'Email': user.email,
-          'Dependencia': user.dependency,
-          'Estado': hasSubmitted ? 'Enviado' : 'Pendiente',
-          'Fecha Envío': hasSubmitted 
-            ? new Date(template.loaded_data.find(d => d.send_by?.email === user.email)?.loaded_date).toLocaleDateString('es-CO')
-            : 'N/A'
-        });
+        const users = await User.find({
+          dependency: depCode,
+          activeRole: 'Productor',
+          isActive: true
+        }).select('name full_name email').lean();
+        
+        if (users.length === 0) {
+          data.push({
+            'Plantilla': template.name,
+            'Período': template.period?.name || 'N/A',
+            'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
+            'Usuario': 'Sin usuario asignado',
+            'Email': 'N/A',
+            'Dependencia': depName,
+            'Estado': 'Pendiente',
+            'Fecha Envío': 'N/A'
+          });
+        } else {
+          for (const user of users) {
+            data.push({
+              'Plantilla': template.name,
+              'Período': template.period?.name || 'N/A',
+              'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
+              'Usuario': user.full_name || user.name,
+              'Email': user.email,
+              'Dependencia': depName,
+              'Estado': 'Pendiente',
+              'Fecha Envío': 'N/A'
+            });
+          }
+        }
       }
     }
     
