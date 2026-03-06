@@ -449,16 +449,14 @@ return report;
       throw new Error("Draft must have a report file.");
     }
 
-    if (pubRep.report.requires_attachment && 
-      (!draft.attachments || draft.attachments.length === 0)) {
-      throw new Error("Draft must have at least one attachment.");
+    // Validar descripciones de anexos si existen
+    if (draft.attachments && draft.attachments.length > 0) {
+      draft.attachments.forEach((attachment) => {
+        if (!attachment.description || attachment.description.trim() === "") {
+          throw new Error("Each attachment must have a non-empty description.");
+        }
+      });
     }
-
-    draft.attachments.forEach((attachment) => {
-      if (!attachment.description || attachment.description.trim() === "") {
-      throw new Error("Each attachment must have a non-empty description.");
-      }
-    });
 
     draft.status = "En Revisión";
     draft.loaded_date = nowtime;
