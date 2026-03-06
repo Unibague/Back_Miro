@@ -38,15 +38,23 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
       
       if (assignedDependencyIds.length === 0) continue;
       
-      // Obtener nombres completos de las dependencias
+      // Obtener nombres completos de las dependencias asignadas
       const dependencies = await Dependency.find({
         _id: { $in: assignedDependencyIds }
+      }).select('dep_code name').lean();
+      
+      // Si tiene loaded_data, obtener también los nombres de esas dependencias
+      const loadedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
+      const allDepCodes = [...new Set([...dependencies.map(d => d.dep_code), ...loadedDepCodes])];
+      
+      const allDependencies = await Dependency.find({
+        dep_code: { $in: allDepCodes }
       }).select('dep_code name').lean();
       
       // Si tiene loaded_data, mostrar quién subió CON NOMBRE DE DEPENDENCIA
       if (template.loaded_data && template.loaded_data.length > 0) {
         for (const data of template.loaded_data) {
-          const dep = dependencies.find(d => d.dep_code === data.dependency);
+          const dep = allDependencies.find(d => d.dep_code === data.dependency);
           result.push({
             template_id: template._id,
             template_name: template.name,
@@ -71,49 +79,32 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
       
       console.log('[TemplateStatus] Pendientes:', pendingDepCodes);
       
-      // Para cada dependencia pendiente, buscar usuarios
+      // Para cada dependencia pendiente, buscar TODOS los usuarios activos
       for (const depCode of pendingDepCodes) {
         console.log('[TemplateStatus] Buscando usuarios para dep_code:', depCode);
         
-        // Obtener info completa de la dependencia
-        const dep = dependencies.find(d => d.dep_code === depCode);
+        const dep = allDependencies.find(d => d.dep_code === depCode);
         const depName = dep?.name || depCode;
         
         const users = await User.find({
           dependency: depCode,
-          activeRole: 'Productor',
           isActive: true
-        }).select('name full_name email dependency').lean();
+        }).select('name full_name email activeRole').lean();
         
         console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
         
-        if (users.length === 0) {
-          // Si no hay usuarios, mostrar la dependencia pendiente
+        for (const user of users) {
           result.push({
             template_id: template._id,
             template_name: template.name,
             period: template.period?.name || 'N/A',
             deadline: template.deadline,
-            user_name: 'Sin usuario asignado',
-            user_email: 'N/A',
+            user_name: user.full_name || user.name,
+            user_email: user.email,
             dependency: depName,
             has_submitted: false,
             submitted_date: null
           });
-        } else {
-          for (const user of users) {
-            result.push({
-              template_id: template._id,
-              template_name: template.name,
-              period: template.period?.name || 'N/A',
-              deadline: template.deadline,
-              user_name: user.full_name || user.name,
-              user_email: user.email,
-              dependency: depName,
-              has_submitted: false,
-              submitted_date: null
-            });
-          }
         }
       }
     }
@@ -154,6 +145,11 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
       
       // Dependencias que ya subieron
       const submittedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
+      const allDepCodes = [...new Set([...depCodes, ...submittedDepCodes])];
+      
+      const allDependencies = await Dependency.find({
+        dep_code: { $in: allDepCodes }
+      }).select('dep_code name').lean();
       
       // Dependencias pendientes
       const pendingDepCodes = depCodes.filter(code => !submittedDepCodes.includes(code));
@@ -161,7 +157,7 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
       // Para dependencias que ya subieron
       if (template.loaded_data && template.loaded_data.length > 0) {
         for (const loadedData of template.loaded_data) {
-          const dep = dependencies.find(d => d.dep_code === loadedData.dependency);
+          const dep = allDependencies.find(d => d.dep_code === loadedData.dependency);
           data.push({
             'Plantilla': template.name,
             'Período': template.period?.name || 'N/A',
@@ -177,39 +173,25 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
       
       // Para dependencias pendientes
       for (const depCode of pendingDepCodes) {
-        const dep = dependencies.find(d => d.dep_code === depCode);
+        const dep = allDependencies.find(d => d.dep_code === depCode);
         const depName = dep?.name || depCode;
         
         const users = await User.find({
           dependency: depCode,
-          activeRole: 'Productor',
           isActive: true
-        }).select('name full_name email').lean();
+        }).select('name full_name email activeRole').lean();
         
-        if (users.length === 0) {
+        for (const user of users) {
           data.push({
             'Plantilla': template.name,
             'Período': template.period?.name || 'N/A',
             'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
-            'Usuario': 'Sin usuario asignado',
-            'Email': 'N/A',
+            'Usuario': user.full_name || user.name,
+            'Email': user.email,
             'Dependencia': depName,
             'Estado': 'Pendiente',
             'Fecha Envío': 'N/A'
           });
-        } else {
-          for (const user of users) {
-            data.push({
-              'Plantilla': template.name,
-              'Período': template.period?.name || 'N/A',
-              'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
-              'Usuario': user.full_name || user.name,
-              'Email': user.email,
-              'Dependencia': depName,
-              'Estado': 'Pendiente',
-              'Fecha Envío': 'N/A'
-            });
-          }
         }
       }
     }
