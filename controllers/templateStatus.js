@@ -38,10 +38,10 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
       
       if (assignedDependencyIds.length === 0) continue;
       
-      // Obtener nombres completos de las dependencias asignadas
+      // Obtener nombres completos de las dependencias asignadas CON responsible, visualizers y members
       const dependencies = await Dependency.find({
         _id: { $in: assignedDependencyIds }
-      }).select('dep_code name').lean();
+      }).select('dep_code name responsible visualizers members').lean();
       
       // Si tiene loaded_data, obtener también los nombres de esas dependencias
       const loadedDepCodes = template.loaded_data?.map(d => d.dependency) || [];
@@ -79,17 +79,29 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
       
       console.log('[TemplateStatus] Pendientes:', pendingDepCodes);
       
-      // Para cada dependencia pendiente, buscar TODOS los usuarios activos
+      // Para cada dependencia pendiente, buscar usuarios con permiso
       for (const depCode of pendingDepCodes) {
         console.log('[TemplateStatus] Buscando usuarios para dep_code:', depCode);
         
         const dep = allDependencies.find(d => d.dep_code === depCode);
         const depName = dep?.name || depCode;
         
+        // Obtener dependencia completa con responsible, visualizers y members
+        const fullDep = dependencies.find(d => d.dep_code === depCode);
+        
+        if (!fullDep) continue;
+        
+        // Recopilar emails de usuarios con permiso
+        const allowedEmails = new Set();
+        
+        if (fullDep.responsible) allowedEmails.add(fullDep.responsible);
+        if (fullDep.visualizers) fullDep.visualizers.forEach(email => allowedEmails.add(email));
+        if (fullDep.members) fullDep.members.forEach(email => allowedEmails.add(email));
+        
+        // Buscar usuarios activos con esos emails
         const users = await User.find({
-          dependency: depCode,
-          isActive: true,
-          activeRole: 'Productor'
+          email: { $in: Array.from(allowedEmails) },
+          isActive: true
         }).select('name full_name email activeRole').lean();
         
         console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
@@ -151,10 +163,10 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
       
       if (assignedDependencyIds.length === 0) continue;
       
-      // Obtener dependencias con nombre completo
+      // Obtener dependencias con nombre completo, responsible, visualizers y members
       const dependencies = await Dependency.find({
         _id: { $in: assignedDependencyIds }
-      }).select('dep_code name').lean();
+      }).select('dep_code name responsible visualizers members').lean();
       
       const depCodes = dependencies.map(d => d.dep_code);
       
@@ -191,10 +203,19 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
         const dep = allDependencies.find(d => d.dep_code === depCode);
         const depName = dep?.name || depCode;
         
+        const fullDep = dependencies.find(d => d.dep_code === depCode);
+        
+        if (!fullDep) continue;
+        
+        const allowedEmails = new Set();
+        
+        if (fullDep.responsible) allowedEmails.add(fullDep.responsible);
+        if (fullDep.visualizers) fullDep.visualizers.forEach(email => allowedEmails.add(email));
+        if (fullDep.members) fullDep.members.forEach(email => allowedEmails.add(email));
+        
         const users = await User.find({
-          dependency: depCode,
-          isActive: true,
-          activeRole: 'Productor'
+          email: { $in: Array.from(allowedEmails) },
+          isActive: true
         }).select('name full_name email activeRole').lean();
         
         if (users.length === 0) {
