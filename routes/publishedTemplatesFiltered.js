@@ -11,6 +11,7 @@ router.get('/available-fields', requireReadAccess, controller.getAvailableFields
 router.get('/field-values', requireReadAccess, controller.getFieldValues);
 router.get('/available-dependencies', requireReadAccess, controller.getAvailableDependencies);
 
+
 // Ruta principal para plantillas filtradas
 router.get('/filtered', requireReadAccess, controller.getFilteredPublishedTemplates);
 

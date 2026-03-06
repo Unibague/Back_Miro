@@ -76,6 +76,7 @@ apiRouter.use("/template-filters", require('./routes/templateFilters'));
 apiRouter.use("/pTemplates-filtered", require('./routes/publishedTemplatesFiltered'));
 apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
+apiRouter.use("/template-status", require('./routes/templateStatus'));
 
 // Ruta directa para jerarquía (atajo)
 const dependencyController = require('./controllers/dependencies');
