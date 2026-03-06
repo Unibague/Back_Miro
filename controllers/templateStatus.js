@@ -88,23 +88,38 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
         
         const users = await User.find({
           dependency: depCode,
-          isActive: true
+          isActive: true,
+          activeRole: 'Productor'
         }).select('name full_name email activeRole').lean();
         
         console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
         
-        for (const user of users) {
+        if (users.length === 0) {
           result.push({
             template_id: template._id,
             template_name: template.name,
             period: template.period?.name || 'N/A',
             deadline: template.deadline,
-            user_name: user.full_name || user.name,
-            user_email: user.email,
+            user_name: 'Sin permiso en la Dependencia',
+            user_email: 'N/A',
             dependency: depName,
             has_submitted: false,
             submitted_date: null
           });
+        } else {
+          for (const user of users) {
+            result.push({
+              template_id: template._id,
+              template_name: template.name,
+              period: template.period?.name || 'N/A',
+              deadline: template.deadline,
+              user_name: user.full_name || user.name,
+              user_email: user.email,
+              dependency: depName,
+              has_submitted: false,
+              submitted_date: null
+            });
+          }
         }
       }
     }
@@ -178,20 +193,34 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
         
         const users = await User.find({
           dependency: depCode,
-          isActive: true
+          isActive: true,
+          activeRole: 'Productor'
         }).select('name full_name email activeRole').lean();
         
-        for (const user of users) {
+        if (users.length === 0) {
           data.push({
             'Plantilla': template.name,
             'Período': template.period?.name || 'N/A',
             'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
-            'Usuario': user.full_name || user.name,
-            'Email': user.email,
+            'Usuario': 'Sin usuario asignado',
+            'Email': 'N/A',
             'Dependencia': depName,
             'Estado': 'Pendiente',
             'Fecha Envío': 'N/A'
           });
+        } else {
+          for (const user of users) {
+            data.push({
+              'Plantilla': template.name,
+              'Período': template.period?.name || 'N/A',
+              'Fecha Límite': template.deadline ? new Date(template.deadline).toLocaleDateString('es-CO') : 'N/A',
+              'Usuario': user.full_name || user.name,
+              'Email': user.email,
+              'Dependencia': depName,
+              'Estado': 'Pendiente',
+              'Fecha Envío': 'N/A'
+            });
+          }
         }
       }
     }
