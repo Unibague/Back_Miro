@@ -68,7 +68,7 @@ class AIAssistantService {
           num_predict: 200
         }
       }, {
-        timeout: 45000
+        timeout: 85000  // 2 minutos para generación de documentos
       });
 
       return {

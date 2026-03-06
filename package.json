@@ -32,6 +32,7 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^7.0.3",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.17.2",
     "pizzip": "^3.2.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",

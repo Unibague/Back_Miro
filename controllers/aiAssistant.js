@@ -1,4 +1,5 @@
 const aiAssistantService = require('../services/aiAssistant');
+const documentGenerator = require('../services/documentGenerator');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -81,6 +82,54 @@ aiAssistantController.analyzeDocument = async (req, res) => {
   }
 };
 
+// Generar documento Word con IA
+aiAssistantController.generateWord = async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+    
+    const result = await documentGenerator.generateWordFromPrompt(prompt);
+    
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.docx"');
+    res.send(result.buffer);
+  } catch (error) {
+    console.error('Error generating Word:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
+// Generar Excel con IA
+aiAssistantController.generateExcel = async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+    
+    const result = await documentGenerator.generateExcelFromPrompt(prompt);
+    
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="datos-generados.xlsx"');
+    res.send(result.buffer);
+  } catch (error) {
+    console.error('Error generating Excel:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
 aiAssistantController.upload = upload;
 
 // Verificar estado del servicio
@@ -93,5 +142,30 @@ aiAssistantController.health = async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
+
+// Generar PDF con IA
+aiAssistantController.generatePDF = async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+    
+    const result = await documentGenerator.generatePDFFromPrompt(prompt);
+    
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.pdf"');
+    res.send(result.buffer);
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
 
 module.exports = aiAssistantController;
