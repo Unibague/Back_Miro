@@ -12,9 +12,16 @@ const buildMergedAmbitWordDocument = async ({
   aiMetadata,
 }) => {
   try {
+    console.log('[DOCX Merge] Starting document generation...');
+    
     // Rutas de los templates
     const producerTemplatePath = path.join(__dirname, "../templates/templateProduc.docx");
     const responsibleTemplatePath = path.join(__dirname, "../templates/InformeResponsable.docx");
+
+    console.log('[DOCX Merge] Producer template:', producerTemplatePath);
+    console.log('[DOCX Merge] Responsible template:', responsibleTemplatePath);
+    console.log('[DOCX Merge] Producer exists:', fs.existsSync(producerTemplatePath));
+    console.log('[DOCX Merge] Responsible exists:', fs.existsSync(responsibleTemplatePath));
 
     // Datos para llenar ambos templates
     const data = {
@@ -32,23 +39,42 @@ const buildMergedAmbitWordDocument = async ({
       integral_evaluation: aiMergePlan?.sections?.integral_evaluation || "",
     };
 
+    console.log('[DOCX Merge] Data prepared:', Object.keys(data));
+
     // 1. Llenar template PRODUCTOR
+    console.log('[DOCX Merge] Filling producer template...');
     const producerContent = fs.readFileSync(producerTemplatePath, "binary");
     const producerZip = new PizZip(producerContent);
     const producerDoc = new Docxtemplater(producerZip, { paragraphLoop: true, linebreaks: true });
     producerDoc.render(data);
     const producerBuffer = producerDoc.getZip().generate({ type: "nodebuffer" });
+    console.log('[DOCX Merge] Producer template filled, buffer size:', producerBuffer.length);
 
     // 2. Llenar template RESPONSABLE
+    console.log('[DOCX Merge] Filling responsible template...');
     const responsibleContent = fs.readFileSync(responsibleTemplatePath, "binary");
     const responsibleZip = new PizZip(responsibleContent);
     const responsibleDoc = new Docxtemplater(responsibleZip, { paragraphLoop: true, linebreaks: true });
     responsibleDoc.render(data);
     const responsibleBuffer = responsibleDoc.getZip().generate({ type: "nodebuffer" });
+    console.log('[DOCX Merge] Responsible template filled, buffer size:', responsibleBuffer.length);
 
     // 3. FUSIONAR ambos documentos
+    console.log('[DOCX Merge] Merging documents...');
     const merger = new DocxMerger({}, [producerBuffer, responsibleBuffer]);
-    const mergedBuffer = await merger.save("nodebuffer");
+    
+    // docx-merger usa callbacks, no promesas
+    const mergedBuffer = await new Promise((resolve, reject) => {
+      merger.save('nodebuffer', (data) => {
+        if (data) {
+          resolve(data);
+        } else {
+          reject(new Error('Merge returned empty data'));
+        }
+      });
+    });
+    
+    console.log('[DOCX Merge] Documents merged successfully, buffer size:', mergedBuffer.length);
 
     return {
       buffer: mergedBuffer,
@@ -60,6 +86,7 @@ const buildMergedAmbitWordDocument = async ({
     };
   } catch (error) {
     console.error("[DOCX Merge] Error:", error.message);
+    console.error("[DOCX Merge] Stack:", error.stack);
     
     // Fallback: documento simple con info básica
     const fallbackText = `
@@ -83,6 +110,7 @@ ${aiMergePlan?.sections?.general_conclusions || "Sin conclusiones generadas"}
         format: "txt",
         merged: false,
         fallback: true,
+        error: error.message,
       },
     };
   }
