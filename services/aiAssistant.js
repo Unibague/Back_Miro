@@ -36,7 +36,7 @@ class AIAssistantService {
     }
   }
   
-  async chat(userMessage, conversationHistory = [], documentContext = null) {
+  async chat(userMessage, conversationHistory = [], options = {}) {
     try {
       // Limitar historial a últimos 2 mensajes
       const recentHistory = conversationHistory.slice(-2);
@@ -44,8 +44,8 @@ class AIAssistantService {
       let prompt = SYSTEM_CONTEXT + '\n\n';
       
       // Agregar contexto de documento si existe
-      if (documentContext) {
-        prompt += `DOCUMENTO ADJUNTO:\n${documentContext.substring(0, 3000)}\n\n`;
+      if (options.documentContext) {
+        prompt += `DOCUMENTO ADJUNTO:\n${options.documentContext.substring(0, 3000)}\n\n`;
       }
       
       recentHistory.forEach(msg => {
@@ -58,17 +58,21 @@ class AIAssistantService {
       
       prompt += `Usuario: ${userMessage}\nAsistente:`;
 
+      // Timeout dinámico: 100ms por token + 30s base
+      const maxTokens = options.maxTokens || 200;
+      const dynamicTimeout = Math.max(120000, maxTokens * 100 + 30000);
+
       const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
         model: MODEL,
         prompt: prompt,
         stream: false,
         keep_alive: -1,
         options: {
-          temperature: 0.7,
-          num_predict: 200
+          temperature: options.temperature || 0.7,
+          num_predict: maxTokens
         }
       }, {
-        timeout: 85000  // 2 minutos para generación de documentos
+        timeout: dynamicTimeout
       });
 
       return {
