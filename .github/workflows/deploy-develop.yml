@@ -40,6 +40,9 @@ jobs:
           --servercert pin-sha256:+4XOhCB4GmaXr8/TMWL09EayWRbrz3X8WWAWgu79f9U= \
           ${{ secrets.VPN_HOST }} -b
 
+    - name: Wait for VPN tunnel
+      run: sleep 10
+
     - name: Verify VPN connection
       run: ip a
 
@@ -55,10 +58,18 @@ jobs:
         ip route | grep ${{ secrets.INTERNAL_RESOURCE_IP }} || echo "No specific route found"
         ip route | grep "172.19" || echo "No 172.19 network route found"
 
+    - name: Check TCP port 22 on remote host
+      run: |
+        timeout 15 bash -c "</dev/tcp/${{ secrets.INTERNAL_RESOURCE_IP }}/22" && echo "TCP 22 reachable"
+
     - name: Test internal connectivity with SSH
       continue-on-error: true
       run: |
-        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} 'echo "SSH connection successful"' || echo "SSH test failed, but continuing..."
+        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=15 \
+          ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} \
+          'echo "SSH connection successful"' || echo "SSH test failed, but continuing..."
 
     - name: Run Semantic Release
       env:
@@ -67,7 +78,10 @@ jobs:
 
     - name: Update Repository on Remote Server
       run: |
-        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} '
+        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=15 \
+          ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} '
           cd ~/MIRO_TEST/Back_Miro_Test;
           git pull;
           npm install;
@@ -75,7 +89,10 @@ jobs:
 
     - name: Restart PM2 for Development
       run: |
-        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} '
+        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=15 \
+          ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} '
           cd ~/MIRO_TEST/Back_Miro_Test;
           pm2 restart Back_Dev;
           exit;'
