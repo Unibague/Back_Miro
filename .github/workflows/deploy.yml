@@ -50,6 +50,15 @@ jobs:
     - name: Verify VPN connection
       run: ip a
 
+    - name: Detect VPN interface
+      run: |
+        VPN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(tun|ppp|vpn)' | head -n 1 || true)
+        if [ -z "$VPN_IFACE" ]; then
+          echo "No VPN interface detected after openconnect"
+          exit 1
+        fi
+        echo "VPN interface detected: $VPN_IFACE"
+
     - name: List network routes
       run: ip route
 
@@ -60,6 +69,15 @@ jobs:
     - name: Check route to internal host
       run: |
         ip route get ${{ secrets.INTERNAL_RESOURCE_IP }}
+
+    - name: Validate route to internal host
+      run: |
+        if ! ip route get ${{ secrets.INTERNAL_RESOURCE_IP }} >/tmp/route_check.txt 2>&1; then
+          echo "No route to internal host"
+          cat /tmp/route_check.txt
+          exit 1
+        fi
+        cat /tmp/route_check.txt
 
     - name: Check TCP port 22 on remote host
       run: |
