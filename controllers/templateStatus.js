@@ -86,10 +86,24 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
         const dep = allDependencies.find(d => d.dep_code === depCode);
         const depName = dep?.name || depCode;
         
+        
         // Obtener dependencia completa con responsible, visualizers y members
         const fullDep = dependencies.find(d => d.dep_code === depCode);
         
-        if (!fullDep) continue;
+        if (!fullDep) {
+          result.push({
+            template_id: template._id,
+            template_name: template.name,
+            period: template.period?.name || 'N/A',
+            deadline: template.deadline,
+            user_name: 'Dependencia no encontrada',
+            user_email: 'N/A',
+            dependency: depName,
+            has_submitted: false,
+            submitted_date: null
+          });
+          continue;
+        }
         
         // Recopilar emails de usuarios con permiso
         const allowedEmails = new Set();
@@ -97,6 +111,23 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
         if (fullDep.responsible) allowedEmails.add(fullDep.responsible);
         if (fullDep.visualizers) fullDep.visualizers.forEach(email => allowedEmails.add(email));
         if (fullDep.members) fullDep.members.forEach(email => allowedEmails.add(email));
+        
+        
+        if (allowedEmails.size === 0) {
+          console.log('[TemplateStatus] ADVERTENCIA: No hay emails asignados a', depCode);
+          result.push({
+            template_id: template._id,
+            template_name: template.name,
+            period: template.period?.name || 'N/A',
+            deadline: template.deadline,
+            user_name: 'Sin usuarios asignados',
+            user_email: 'N/A',
+            dependency: depName,
+            has_submitted: false,
+            submitted_date: null
+          });
+          continue;
+        }
         
         // Buscar usuarios activos con esos emails
         const users = await User.find({
@@ -106,7 +137,13 @@ templateStatusController.getTemplateSubmissionStatus = async (req, res) => {
         
         console.log('[TemplateStatus] Usuarios encontrados para', depCode, ':', users.length);
         
+        // Verificar si existen usuarios pero están inactivos
         if (users.length === 0) {
+          const inactiveUsers = await User.find({
+            email: { $in: Array.from(allowedEmails) }
+          }).select('name full_name email isActive').lean();
+          
+          
           result.push({
             template_id: template._id,
             template_name: template.name,
