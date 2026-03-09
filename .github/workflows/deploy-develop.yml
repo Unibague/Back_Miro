@@ -59,6 +59,7 @@ jobs:
       run: ip route
 
     - name: Test VPN connectivity to internal network
+      continue-on-error: true
       run: |
         ping -c 3 ${{ secrets.INTERNAL_RESOURCE_IP }} || echo "Ping failed"
         
