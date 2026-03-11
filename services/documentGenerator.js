@@ -26,7 +26,7 @@ IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
 Tema: ${prompt}
 Genera las 6 secciones COMPLETAS.`,
         [],
-        { maxTokens: 4000, temperature: 0.7 }
+        { maxTokens: 2500, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -52,15 +52,25 @@ Genera las 6 secciones COMPLETAS.`,
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         
-        // CRÍTICO: Escapar saltos de línea dentro de strings JSON
-        jsonText = jsonText.replace(/"content"\s*:\s*"([^"]*)"/g, (match, content) => {
+        // NUEVO: Limpiar caracteres problemáticos dentro de strings
+        jsonText = jsonText.replace(/"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/g, (match, content) => {
           const cleanContent = content
-            .replace(/\n/g, ' ')
-            .replace(/\r/g, '')
-            .replace(/\t/g, ' ')
-            .replace(/\s+/g, ' ')
+            .replace(/\\n/g, ' ')   // \n escapado a espacio
+            .replace(/\n/g, ' ')     // \n literal a espacio
+            .replace(/\\r/g, '')    // \r escapado
+            .replace(/\r/g, '')      // \r literal
+            .replace(/\\t/g, ' ')   // \t escapado a espacio
+            .replace(/\t/g, ' ')     // \t literal a espacio
+            .replace(/\\"/g, '"')   // \" a "
+            .replace(/\s+/g, ' ')    // Múltiples espacios a uno
             .trim();
-          return `"content":"${cleanContent}"`;
+          return `"content":"${cleanContent.replace(/"/g, '\\"')}"`; // Re-escapar comillas
+        });
+        
+        // Limpiar heading también
+        jsonText = jsonText.replace(/"heading"\s*:\s*"([^"]*)"/g, (match, heading) => {
+          const cleanHeading = heading.replace(/"/g, '').trim();
+          return `"heading":"${cleanHeading}"`;
         });
         
         // Extraer primer objeto JSON completo
@@ -349,7 +359,7 @@ Prompt del usuario: ${prompt}
 Genera un informe COMPLETO con las 6 secciones. Mantén el contenido conciso pero profesional.
 Responde SOLO con el JSON, nada más.`,
         [],
-        { maxTokens: 4000, temperature: 0.7 }
+        { maxTokens: 2500, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
