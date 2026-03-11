@@ -79,6 +79,17 @@ class DocumentGeneratorService {
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         
+        // CRÍTICO: Convertir arrays en "content" a strings ANTES del parsing
+        jsonText = jsonText.replace(/"content"\s*:\s*\[([^\]]+)\]/g, (match, arrayContent) => {
+          // Extraer elementos del array y convertir a string numerado
+          const items = arrayContent.match(/"([^"]+)"/g) || [];
+          const numberedList = items.map((item, idx) => {
+            const cleanItem = item.replace(/"/g, '');
+            return `${idx + 1}. ${cleanItem}`;
+          }).join('\\n');
+          return `"content":"${numberedList}"`;
+        });
+        
         // NUEVO: Limpiar caracteres problemáticos dentro de strings
         jsonText = jsonText.replace(/"content"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/g, (match, content) => {
           const cleanContent = content
@@ -432,6 +443,17 @@ Responde SOLO con el JSON, nada más.`,
         
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        
+        // CRÍTICO: Convertir arrays en "content" a strings ANTES del parsing
+        jsonText = jsonText.replace(/"content"\s*:\s*\[([^\]]+)\]/g, (match, arrayContent) => {
+          // Extraer elementos del array y convertir a string numerado
+          const items = arrayContent.match(/"([^"]+)"/g) || [];
+          const numberedList = items.map((item, idx) => {
+            const cleanItem = item.replace(/"/g, '');
+            return `${idx + 1}. ${cleanItem}`;
+          }).join('\\n');
+          return `"content":"${numberedList}"`;
+        });
         
         // CRÍTICO: Escapar saltos de línea dentro de strings JSON
         // Reemplazar \n literal por espacio dentro de valores de content
