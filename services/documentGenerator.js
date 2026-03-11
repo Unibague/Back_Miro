@@ -127,6 +127,8 @@ Genera las 6 secciones COMPLETAS.`,
         };
       }
       
+      console.log('[Word] Iniciando generación de Word...');
+      
       // 3. Generar Word con docx library
       const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
       
@@ -152,6 +154,8 @@ Genera las 6 secciones COMPLETAS.`,
       });
       
       const buffer = await Packer.toBuffer(doc);
+      
+      console.log('[Word] Word generado exitosamente. Tamaño:', buffer.length, 'bytes');
       
       return { success: true, buffer, content, format: 'docx' };
     } catch (error) {
@@ -448,6 +452,8 @@ Responde SOLO con el JSON, nada más.`,
         };
       }
       
+      console.log('[PDF] Iniciando generación de PDF...');
+      
       // 3. Crear PDF
       const doc = new PDFDocument({ margin: 50 });
       const chunks = [];
@@ -486,6 +492,8 @@ Responde SOLO con el JSON, nada más.`,
       doc.end();
       
       const buffer = await pdfPromise;
+      
+      console.log('[PDF] PDF generado exitosamente. Tamaño:', buffer.length, 'bytes');
       
       return { success: true, buffer, content, format: 'pdf' };
     } catch (error) {
