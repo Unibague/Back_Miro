@@ -12,15 +12,14 @@ class DocumentGeneratorService {
     try {
       // 1. IA genera contenido estructurado (optimizado para producción)
       const aiResponse = await aiAssistant.chat(
-        `Responde SOLO con JSON válido (sin texto adicional):
-{"title":"Título","sections":[
-{"heading":"Introducción","content":"Texto normal introducción (2-3 párrafos)"},
-{"heading":"Objetivos","content":"Texto con lista de 3-4 objetivos"},
-{"heading":"Desarrollo","content":"Texto de desarrollo (2-3 párrafos)"},
-{"heading":"Análisis","content":"Texto de análisis (3-4 párrafos)"},
-{"heading":"Conclusiones","content":"Texto con 3-4 conclusiones"},
-{"heading":"Bibliografía","content":"Texto con 3-4 referencias APA"}
-]}
+        `Responde SOLO con JSON válido (sin texto adicional):{"title":"Título","sections":[
+        {"heading":"Introducción","content":"Texto normal introducción (3-4 párrafos)"},
+        {"heading":"Objetivos","content":"Texto con lista de 4-5 objetivos"},
+        {"heading":"Desarrollo","content":"Texto de desarrollo (3-4 párrafos)"},
+        {"heading":"Análisis","content":"Texto de análisis (4-5 párrafos)"},
+        {"heading":"Conclusiones","content":"Texto con 4-5 conclusiones"},
+        {"heading":"Bibliografía","content":"Texto con 4-5 referencias APA"}
+      ]}
 
 IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
 Tema: ${prompt}
@@ -48,6 +47,12 @@ Genera las 6 secciones COMPLETAS.`,
           jsonText = jsonText.replace(/&lt;/g, '<');
           jsonText = jsonText.replace(/&gt;/g, '>');
         }
+        
+        // NUEVO: Limpiar Unicode mal formado
+        jsonText = jsonText.replace(/\\u([0-9a-fA-F]{0,3}(?![0-9a-fA-F]))/g, '');
+        jsonText = jsonText.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+          return String.fromCharCode(parseInt(hex, 16));
+        });
         
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
@@ -344,12 +349,12 @@ Responde SOLO con el JSON.`,
   "title": "Título del documento",
   "author": "Autor",
   "sections": [
-    {"heading": "Introducción", "content": "Texto normal de introducción (2-3 párrafos)"},
-    {"heading": "Objetivos", "content": "Texto con lista de 3-4 objetivos"},
-    {"heading": "Desarrollo", "content": "Texto de desarrollo (2-3 párrafos)"},
-    {"heading": "Análisis", "content": "Texto de análisis (2-3 párrafos)"},
-    {"heading": "Conclusiones", "content": "Texto con 3-4 conclusiones"},
-    {"heading": "Bibliografía", "content": "Texto con 3-4 referencias en formato APA"}
+    {"heading": "Introducción", "content": "Texto normal de introducción (3-4 párrafos)"},
+    {"heading": "Objetivos", "content": "Texto con lista de 4-5 objetivos"},
+    {"heading": "Desarrollo", "content": "Texto de desarrollo (3-4 párrafos)"},
+    {"heading": "Análisis", "content": "Texto de análisis (3-4 párrafos)"},
+    {"heading": "Conclusiones", "content": "Texto con 4-5 conclusiones"},
+    {"heading": "Bibliografía", "content": "Texto con 4-5 referencias en formato APA"}
   ]
 }
 
@@ -381,6 +386,12 @@ Responde SOLO con el JSON, nada más.`,
           jsonText = jsonText.replace(/&lt;/g, '<');
           jsonText = jsonText.replace(/&gt;/g, '>');
         }
+        
+        // NUEVO: Limpiar Unicode mal formado
+        jsonText = jsonText.replace(/\\u([0-9a-fA-F]{0,3}(?![0-9a-fA-F]))/g, '');
+        jsonText = jsonText.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
+          return String.fromCharCode(parseInt(hex, 16));
+        });
         
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
