@@ -91,17 +91,24 @@ aiAssistantController.generateWord = async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required' });
     }
     
+    console.log('[Controller] Generando Word para prompt:', prompt.substring(0, 50));
+    
     const result = await documentGenerator.generateWordFromPrompt(prompt);
     
     if (!result.success) {
+      console.log('[Controller] Error en generación:', result.error);
       return res.status(400).json(result);
     }
+    
+    console.log('[Controller] Enviando Word al cliente. Tamaño:', result.buffer.length);
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.docx"');
     res.send(result.buffer);
+    
+    console.log('[Controller] Word enviado exitosamente');
   } catch (error) {
-    console.error('Error generating Word:', error);
+    console.error('[Controller] Error generating Word:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
@@ -152,17 +159,24 @@ aiAssistantController.generatePDF = async (req, res) => {
       return res.status(400).json({ error: 'Prompt is required' });
     }
     
+    console.log('[Controller] Generando PDF para prompt:', prompt.substring(0, 50));
+    
     const result = await documentGenerator.generatePDFFromPrompt(prompt);
     
     if (!result.success) {
+      console.log('[Controller] Error en generación:', result.error);
       return res.status(400).json(result);
     }
+    
+    console.log('[Controller] Enviando PDF al cliente. Tamaño:', result.buffer.length);
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.pdf"');
     res.send(result.buffer);
+    
+    console.log('[Controller] PDF enviado exitosamente');
   } catch (error) {
-    console.error('Error generating PDF:', error);
+    console.error('[Controller] Error generating PDF:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };

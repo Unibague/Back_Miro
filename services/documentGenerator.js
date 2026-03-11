@@ -26,7 +26,7 @@ IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
 Tema: ${prompt}
 Genera las 6 secciones COMPLETAS.`,
         [],
-        { maxTokens: 3500, temperature: 0.7 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -175,7 +175,7 @@ Genera una tabla Excel sobre: ${prompt}
 Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
 Responde SOLO con el JSON.`,
         [],
-        { maxTokens: 1500, temperature: 0.5 }
+        { maxTokens: 2000, temperature: 0.6 }
       );
       
       if (!aiResponse.success) {
@@ -349,7 +349,7 @@ Prompt del usuario: ${prompt}
 Genera un informe COMPLETO con las 6 secciones. Mantén el contenido conciso pero profesional.
 Responde SOLO con el JSON, nada más.`,
         [],
-        { maxTokens: 3500, temperature: 0.7 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
