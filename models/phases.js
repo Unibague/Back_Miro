@@ -1,5 +1,24 @@
 const mongoose = require('mongoose');
 
+const subactividadSchema = new mongoose.Schema({
+  nombre: {
+    type: String,
+    required: true,
+  },
+  completada: {
+    type: Boolean,
+    default: false,
+  },
+  fecha_completado: {
+    type: String,
+    default: null,
+  },
+  observaciones: {
+    type: String,
+    default: '',
+  },
+}, { _id: true });
+
 const actividadSchema = new mongoose.Schema({
   nombre: {
     type: String,
@@ -7,11 +26,23 @@ const actividadSchema = new mongoose.Schema({
   },
   responsables: {
     type: String,
-    default: "",
+    default: '',
   },
   completada: {
     type: Boolean,
     default: false,
+  },
+  fecha_completado: {
+    type: String,
+    default: null,
+  },
+  observaciones: {
+    type: String,
+    default: '',
+  },
+  subactividades: {
+    type: [subactividadSchema],
+    default: [],
   },
 }, { _id: true });
 

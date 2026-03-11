@@ -12,6 +12,14 @@ const processDocumentSchema = new mongoose.Schema(
       ref: 'processes',
       required: false,
     },
+    actividad_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    subactividad_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     name: {
       type: String,
       required: true,
@@ -35,6 +43,11 @@ const processDocumentSchema = new mongoose.Schema(
     size: {
       type: Number,
       default: null,
+    },
+    doc_type: {
+      type: String,
+      enum: ['resolucion', 'proceso'],
+      default: 'proceso',
     },
   },
   {

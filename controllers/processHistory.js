@@ -3,8 +3,6 @@ const Phase          = require('../models/phases');
 const ProcessDoc     = require('../models/processDocuments');
 const Program        = require('../models/programs');
 const ProcessHistory = require('../models/processHistory');
-const FASES_PREDEFINIDAS = require('../helpers/fasesBase');
-const { calcularFechas } = require('./processes');
 
 const processHistoryController = {};
 
@@ -117,28 +115,7 @@ processHistoryController.close = async (req, res) => {
       await Process.findByIdAndDelete(pmHijo._id);
     }
 
-    /* 8 — Reiniciar el proceso (limpiar resolución y fechas, volver a fase 0) */
-    const camposClear = {
-      fase_actual:            0,
-      observaciones:          '',
-      condicion:              null,
-      fecha_vencimiento:      null,
-      fecha_inicio:           null,
-      fecha_documento_par:    null,
-      fecha_digitacion_saces: null,
-      fecha_radicado_men:     null,
-      fecha_envio_pm_vicerrectoria:     null,
-      fecha_entrega_pm_cna:             null,
-      fecha_envio_avance_vicerrectoria: null,
-      fecha_radicacion_avance_cna:      null,
-      meses_inicio_antes_venc:     null,
-      meses_doc_par_antes_venc:    null,
-      meses_digitacion_antes_venc: null,
-      meses_radicado_antes_venc:   null,
-    };
-    await Process.findByIdAndUpdate(proc._id, { $set: camposClear });
-
-    /* 9 — Limpiar los campos de resolución del programa para este tipo */
+    /* 8 — Limpiar los campos de resolución del programa para este tipo */
     const camposResolucion = {
       [`fecha_resolucion_${sufijo}`]:    null,
       [`codigo_resolucion_${sufijo}`]:   null,
@@ -146,18 +123,10 @@ processHistoryController.close = async (req, res) => {
     };
     await Program.findByIdAndUpdate(program._id, { $set: camposResolucion });
 
-    /* 10 — Recrear las 7 fases vacías para el proceso reiniciado */
-    await Phase.insertMany(
-      FASES_PREDEFINIDAS.map(f => ({
-        proceso_id:  proc._id,
-        numero:      f.numero,
-        nombre:      f.nombre,
-        actividades: f.actividades.map(a => ({ ...a, completada: false })),
-      }))
-    );
+    /* 9 — Eliminar el proceso activo (ya fue archivado en el historial) */
+    await Process.findByIdAndDelete(proc._id);
 
-    const procesoActualizado = await Process.findById(proc._id);
-    res.status(200).json({ message: 'Proceso cerrado y archivado correctamente', proceso: procesoActualizado });
+    res.status(200).json({ message: 'Proceso cerrado y archivado correctamente' });
   } catch (error) {
     console.error('Error cerrando proceso:', error);
     res.status(500).json({ error: 'Error interno del servidor' });

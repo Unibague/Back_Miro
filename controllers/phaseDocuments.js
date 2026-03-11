@@ -3,14 +3,17 @@ const { uploadFileToGoogleDrive, deleteDriveFile } = require('../config/googleDr
 
 const processDocumentsController = {};
 
-// GET /process-documents?phase_id=...
+// GET /process-documents?phase_id=...&actividad_id=...&subactividad_id=...
 processDocumentsController.getByPhase = async (req, res) => {
   try {
-    const { phase_id } = req.query;
+    const { phase_id, actividad_id, subactividad_id } = req.query;
     if (!phase_id) {
       return res.status(400).json({ error: 'phase_id es requerido' });
     }
-    const docs = await ProcessDocument.find({ phase_id }).sort({ createdAt: -1 });
+    const query = { phase_id };
+    if (actividad_id)    query.actividad_id    = actividad_id;
+    if (subactividad_id) query.subactividad_id = subactividad_id;
+    const docs = await ProcessDocument.find(query).sort({ createdAt: -1 });
     res.status(200).json(docs);
   } catch (error) {
     console.error('Error obteniendo documentos de fase:', error);
@@ -34,6 +37,7 @@ processDocumentsController.getByProcess = async (req, res) => {
 };
 
 // POST /process-documents/:phaseId  (multipart/form-data con campo "file")
+// Body puede incluir actividad_id y/o subactividad_id para asociar el doc a una actividad/subactividad
 processDocumentsController.create = async (req, res) => {
   try {
     const { phaseId } = req.params;
@@ -44,11 +48,15 @@ processDocumentsController.create = async (req, res) => {
       return res.status(400).json({ error: 'No se adjuntó ningún archivo' });
     }
 
+    const { actividad_id, subactividad_id } = req.body;
+
     const destino = 'Fechas/Procesos/Fases';
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
 
     const doc = await ProcessDocument.create({
       phase_id: phaseId,
+      actividad_id:    actividad_id    || null,
+      subactividad_id: subactividad_id || null,
       name: fileData.name,
       drive_id: fileData.id,
       view_link: fileData.webViewLink,
@@ -78,9 +86,12 @@ processDocumentsController.createForProcess = async (req, res) => {
     const destino = 'Fechas/Procesos/Resoluciones';
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
 
+    const { doc_type } = req.body;
+
     const doc = await ProcessDocument.create({
       phase_id: null,
       process_id: processId,
+      doc_type: doc_type === 'resolucion' ? 'resolucion' : 'proceso',
       name: fileData.name,
       drive_id: fileData.id,
       view_link: fileData.webViewLink,

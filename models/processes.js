@@ -36,7 +36,7 @@ const processSchema = new mongoose.Schema({
   fase_actual: {
     type: Number,
     min: 0,
-    max: 6,
+    max: 7,
     default: 0,
   },
   observaciones: {
@@ -61,6 +61,18 @@ const processSchema = new mongoose.Schema({
   obs_entrega_pm_cna:            { type: String, default: '' },
   obs_envio_avance_vicerrectoria:{ type: String, default: '' },
   obs_radicacion_avance_cna:     { type: String, default: '' },
+
+  /* Etiquetas editables para las fechas del Plan de Mejoramiento (RC) */
+  label_envio_pm_vicerrectoria:    { type: String, default: null },
+  label_entrega_pm_cna:            { type: String, default: null },
+  label_envio_avance_vicerrectoria:{ type: String, default: null },
+  label_radicacion_avance_cna:     { type: String, default: null },
+
+  /* Meses de cálculo configurables para el PM */
+  meses_envio_pm:       { type: Number, default: null },
+  meses_entrega_pm_cna: { type: Number, default: null },
+  meses_envio_avance:   { type: Number, default: null },
+  meses_radicacion_avance: { type: Number, default: null },
 
   /* Offsets configurables (en meses antes de la fecha de vencimiento) */
   meses_inicio_antes_venc: {

@@ -1,7 +1,8 @@
 const Program          = require('../models/programs');
 const Process          = require('../models/processes');
 const Phase            = require('../models/phases');
-const FASES_PREDEFINIDAS = require('../helpers/fasesBase');
+const FASES_BASE_RC    = require('../helpers/fasesBaseRC');
+const FASES_BASE_AV    = require('../helpers/fasesBaseAV');
 const { calcularFechas } = require('./processes');
 
 async function crearProcesosParaPrograma(program_code, nombre_programa, programData) {
@@ -44,8 +45,9 @@ async function crearProcesosParaPrograma(program_code, nombre_programa, programD
       ...offsets,
       ...fechas,
     });
+    const fases = tipo === 'RC' ? FASES_BASE_RC : FASES_BASE_AV;
     await Phase.insertMany(
-      FASES_PREDEFINIDAS.map(f => ({
+      fases.map(f => ({
         proceso_id: proceso._id,
         numero:     f.numero,
         nombre:     f.nombre,
@@ -82,11 +84,10 @@ programController.getById = async (req, res) => {
   }
 };
 
-/* POST /programs — crear un programa nuevo y sus 3 procesos (RC, AV, PM) */
+/* POST /programs — crear un programa nuevo (sin procesos automáticos; los procesos se crean vía "Agregar proceso") */
 programController.create = async (req, res) => {
   try {
     const program = await Program.create(req.body);
-    await crearProcesosParaPrograma(program.dep_code_programa, program.nombre, req.body);
     res.status(201).json(program);
   } catch (error) {
     console.error('Error creando programa:', error);

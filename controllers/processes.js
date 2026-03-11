@@ -1,6 +1,14 @@
 const Process          = require('../models/processes');
 const Phase            = require('../models/phases');
-const FASES_PREDEFINIDAS = require('../helpers/fasesBase');
+const FASES_BASE_RC    = require('../helpers/fasesBaseRC');
+const FASES_BASE_AV    = require('../helpers/fasesBaseAV');
+const { crearPMAutomaticoParaAV } = require('../helpers/pmAutoCreate');
+
+function getFasesParaTipo(tipo_proceso) {
+  if (tipo_proceso === 'RC') return FASES_BASE_RC;
+  if (tipo_proceso === 'AV') return FASES_BASE_AV;
+  return []; // PM no tiene fases
+}
 
 /* Suma N meses a una fecha YYYY-MM-DD y devuelve YYYY-MM-DD */
 function sumarMeses(fechaStr, meses) {
@@ -111,19 +119,125 @@ processController.getById = async (req, res) => {
   }
 };
 
-/* POST /processes — crear proceso y sus 7 fases vacías automáticamente */
+/* POST /processes — crear proceso según tipo y subtipo
+   Body esperado:
+   - tipo_proceso:      'RC' | 'AV'
+   - subtipo:           'Nuevo'|'Renovación'|'No renovación'|'Renovación + reforma'|'Reforma curricular'  (RC)
+                        'Primera vez'|'Renovación'                                                         (AV)
+   - program_code:      código del programa existente (todos excepto RC Nuevo)
+   - program_data:      datos del programa a crear  (solo RC Nuevo)
+   - fecha_resolucion:  YYYY-MM-DD  (subtipos con resolución)
+   - codigo_resolucion: string      (subtipos con resolución)
+   - duracion_resolucion: number en años (subtipos con resolución)
+*/
 processController.create = async (req, res) => {
   try {
-    const process = await Process.create(req.body);
-    await Phase.insertMany(
-      FASES_PREDEFINIDAS.map(f => ({
-        proceso_id:  process._id,
-        numero:      f.numero,
-        nombre:      f.nombre,
-        actividades: f.actividades.map(a => ({ ...a, completada: false })),
-      }))
-    );
-    res.status(201).json(process);
+    const {
+      tipo_proceso,
+      subtipo,
+      program_code: existingProgramCode,
+      program_data,
+      fecha_resolucion,
+      codigo_resolucion,
+      duracion_resolucion,
+    } = req.body;
+
+    const Program = require('../models/programs');
+    let program;
+    let program_code = existingProgramCode;
+
+    /* ── 1. Obtener o crear el programa ── */
+    if (subtipo === 'Nuevo' && program_data) {
+      // RC Nuevo: crear el programa nuevo sin resolución
+      program = await Program.create({
+        ...program_data,
+        dep_code_programa: program_data.dep_code_programa || `PROG_${Date.now()}`,
+      });
+      program_code = program.dep_code_programa;
+    } else if (program_code) {
+      program = await Program.findOne({ dep_code_programa: program_code });
+    }
+
+    if (!program_code) {
+      return res.status(400).json({ error: 'Se requiere program_code o program_data (para RC Nuevo)' });
+    }
+
+    /* ── 2. Guardar resolución en el programa si se proporcionó ── */
+    const tieneResolucion = !!(fecha_resolucion && codigo_resolucion && duracion_resolucion);
+    if (tieneResolucion && program) {
+      const sufijo = tipo_proceso.toLowerCase(); // 'rc' | 'av'
+      program = await Program.findByIdAndUpdate(
+        program._id,
+        {
+          [`fecha_resolucion_${sufijo}`]:    fecha_resolucion,
+          [`codigo_resolucion_${sufijo}`]:   codigo_resolucion,
+          [`duracion_resolucion_${sufijo}`]: Number(duracion_resolucion),
+        },
+        { new: true }
+      );
+    }
+
+    /* ── 3. Calcular fechas según subtipo ── */
+    const defaultOffsets = tipo_proceso === 'AV'
+      ? { meses_inicio_antes_venc: 33, meses_doc_par_antes_venc: 16, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 }
+      : { meses_inicio_antes_venc: 29, meses_doc_par_antes_venc: 17, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 };
+
+    let fechasCalculadas = {};
+    let fase_actual_inicial = 0;
+
+    if ((subtipo === 'Renovación' || subtipo === 'Renovación + reforma') && tieneResolucion) {
+      // Auto-calcula todas las fechas
+      fechasCalculadas = {
+        ...calcularFechas(tipo_proceso, fecha_resolucion, duracion_resolucion, defaultOffsets),
+        ...defaultOffsets,
+      };
+    } else if (subtipo === 'No renovación' && tieneResolucion) {
+      // Solo fecha_vencimiento; proceso en Fase 7 permanente
+      const vencimiento = sumarMeses(fecha_resolucion, Number(duracion_resolucion) * 12);
+      fechasCalculadas = { fecha_vencimiento: vencimiento };
+      fase_actual_inicial = 7;
+    } else if (subtipo === 'Reforma curricular' && tieneResolucion) {
+      // Solo fecha_vencimiento; el resto de fechas vacías y editables
+      const vencimiento = sumarMeses(fecha_resolucion, Number(duracion_resolucion) * 12);
+      fechasCalculadas = { fecha_vencimiento: vencimiento };
+      // fase_actual queda en 0
+    }
+    // Para 'Nuevo', 'Primera vez': sin resolución ni fechas
+
+    /* ── 4. Nombre del proceso ── */
+    if (!program) program = await Program.findOne({ dep_code_programa: program_code });
+    const nombrePrograma = program?.nombre ?? program_code;
+    const subtipoBracket = subtipo ? ` (${subtipo})` : '';
+    const labelTipo = tipo_proceso === 'RC' ? 'Registro Calificado'
+                    : tipo_proceso === 'AV' ? 'Acreditación Voluntaria' : 'PM';
+    const name = `${labelTipo}${subtipoBracket} - ${nombrePrograma}`;
+
+    /* ── 5. Crear el proceso ── */
+    const newProcess = await Process.create({
+      name,
+      program_code,
+      tipo_proceso,
+      subtipo: subtipo || null,
+      fase_actual: fase_actual_inicial,
+      ...fechasCalculadas,
+    });
+
+    /* ── 6. Crear fases (excepto Fase 7 — No renovación) ── */
+    if (fase_actual_inicial !== 7) {
+      const fases = getFasesParaTipo(tipo_proceso);
+      if (fases.length > 0) {
+        await Phase.insertMany(
+          fases.map(f => ({
+            proceso_id:  newProcess._id,
+            numero:      f.numero,
+            nombre:      f.nombre,
+            actividades: f.actividades.map(a => ({ ...a, completada: false })),
+          }))
+        );
+      }
+    }
+
+    res.status(201).json({ process: newProcess, program });
   } catch (error) {
     console.error('Error creando proceso:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -172,6 +286,12 @@ processController.update = async (req, res) => {
 
     const updated = await Process.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
     if (!updated) return res.status(404).json({ error: 'Proceso no encontrado' });
+
+    // Auto-crear PM para AV al llegar a Fase 6 (cuando se avanza manualmente actividad a actividad)
+    if (updateData.fase_actual === 6 && process.tipo_proceso === 'AV') {
+      await crearPMAutomaticoParaAV(updated);
+    }
+
     res.status(200).json(updated);
   } catch (error) {
     console.error('Error actualizando proceso:', error);
@@ -212,26 +332,12 @@ processController.activatePM = async (req, res) => {
       return res.status(400).json({ error: 'El proceso padre no tiene resolución vigente con duración configurada' });
     }
 
-    // Verificar si ya existe un PM para el programa (ligado a cualquier proceso)
-    const pmExistenteDelPrograma = await Process.findOne({
+    // Buscar si ya existe un PM hijo ligado a ESTE proceso específico
+    let pm = await Process.findOne({
       program_code: parent.program_code,
       tipo_proceso: 'PM',
+      parent_process_id: parent._id,
     });
-
-    // Si hay un PM ligado a OTRO proceso (no este), rechazar
-    if (
-      pmExistenteDelPrograma &&
-      String(pmExistenteDelPrograma.parent_process_id) !== String(parent._id)
-    ) {
-      return res.status(409).json({
-        error: 'Este programa ya tiene un Plan de Mejoramiento activo ligado a otro proceso. Solo puede haber uno activo a la vez.',
-      });
-    }
-
-    // Buscar si ya existe un PM hijo ligado a ESTE proceso
-    let pm = pmExistenteDelPrograma && String(pmExistenteDelPrograma.parent_process_id) === String(parent._id)
-      ? pmExistenteDelPrograma
-      : null;
 
     // Meses configurables para el plan (si no se envían, usar defaults 5/6/6/0)
     const {
@@ -239,6 +345,11 @@ processController.activatePM = async (req, res) => {
       meses_entrega_cna,
       meses_envio_avance,
       meses_radicacion_avance,
+      // Etiquetas editables para los nombres de las fechas del PM (RC)
+      label_envio_pm_vicerrectoria,
+      label_entrega_pm_cna,
+      label_envio_avance_vicerrectoria,
+      label_radicacion_avance_cna,
     } = req.body;
 
     const duracion_meses = Number(duracion_res) * 12;
@@ -269,6 +380,16 @@ processController.activatePM = async (req, res) => {
       fecha_entrega_pm_cna,
       fecha_envio_avance_vicerrectoria,
       fecha_radicacion_avance_cna,
+      // Guardar los meses de cálculo usados
+      meses_envio_pm:          mEnvioPlan,
+      meses_entrega_pm_cna:    mEntregaCNA,
+      meses_envio_avance:      mEnvioAvance,
+      meses_radicacion_avance: mRadicAvance,
+      // Etiquetas personalizadas (null = usa el default del frontend)
+      ...(label_envio_pm_vicerrectoria    !== undefined && { label_envio_pm_vicerrectoria }),
+      ...(label_entrega_pm_cna            !== undefined && { label_entrega_pm_cna }),
+      ...(label_envio_avance_vicerrectoria !== undefined && { label_envio_avance_vicerrectoria }),
+      ...(label_radicacion_avance_cna     !== undefined && { label_radicacion_avance_cna }),
     };
 
     if (!pm) {
@@ -283,17 +404,9 @@ processController.activatePM = async (req, res) => {
         ...pmData,
       });
 
-      // Crear fases base para el PM
-      await Phase.insertMany(
-        FASES_PREDEFINIDAS.map(f => ({
-          proceso_id: pm._id,
-          numero:     f.numero,
-          nombre:     f.nombre,
-          actividades: f.actividades.map(a => ({ ...a, completada: false })),
-        }))
-      );
+      // El PM no tiene fases — solo fechas
     } else {
-      // Actualizar fechas y confirmar subtipo si ya existía
+      // Actualizar fechas, meses y etiquetas si ya existía
       pm = await Process.findByIdAndUpdate(
         pm._id,
         { $set: { ...pmData, subtipo: subtipoAutomatico } },
