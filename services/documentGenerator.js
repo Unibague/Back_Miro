@@ -10,24 +10,22 @@ class DocumentGeneratorService {
   
   async generateWordFromPrompt(prompt, templatePath = null) {
     try {
-      // 1. IA genera contenido estructurado con MÁS tokens y secciones
+      // 1. IA genera contenido estructurado (optimizado para producción)
       const aiResponse = await aiAssistant.chat(
         `Responde SOLO con JSON válido (sin texto adicional):
 {"title":"Título","sections":[
-{"heading":"Introducción","content":"Texto extenso introducción (3-4 párrafos)"},
-{"heading":"Objetivos","content":"Lista de objetivos (4-5 objetivos)"},
-{"heading":"Marco Teórico","content":"Texto extenso marco teórico (3-4 párrafos)"},
-{"heading":"Desarrollo","content":"Texto extenso desarrollo (4-5 párrafos)"},
-{"heading":"Análisis","content":"Texto extenso análisis (3-4 párrafos)"},
-{"heading":"Conclusiones","content":"Conclusiones detalladas (4-5 puntos)"},
-{"heading":"Recomendaciones","content":"Recomendaciones (3-4 puntos)"},
-{"heading":"Bibliografía","content":"Referencias APA (4-5 referencias)"}
+{"heading":"Introducción","content":"Texto normal introducción (2-3 párrafos)"},
+{"heading":"Objetivos","content":"Lista de 3-4 objetivos"},
+{"heading":"Desarrollo","content":"Texto de desarrollo (2-3 párrafos)"},
+{"heading":"Análisis","content":"Texto de análisis (3-4 párrafos)"},
+{"heading":"Conclusiones","content":"3-4 conclusiones"},
+{"heading":"Bibliografía","content":"3-4 referencias APA"}
 ]}
 
 Tema: ${prompt}
-Genera las 8 secciones COMPLETAS y EXTENSAS.`,
+Genera las 6 secciones COMPLETAS.`,
         [],
-        { maxTokens: 4000, temperature: 0.7 }
+        { maxTokens: 3500, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -278,30 +276,28 @@ Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
 
   async generatePDFFromPrompt(prompt) {
     try {
-      // 1. IA genera contenido estructurado MÁS EXTENSO
+      // 1. IA genera contenido estructurado (optimizado para producción)
       const aiResponse = await aiAssistant.chat(
         `Genera SOLO un objeto JSON válido (sin texto adicional, sin markdown, sin explicaciones) con esta estructura exacta:
 {
   "title": "Título del documento",
   "author": "Autor",
   "sections": [
-    {"heading": "Introducción", "content": "Texto extenso de introducción (3-4 párrafos)"},
-    {"heading": "Objetivos", "content": "Lista de objetivos específicos (4-5 objetivos)"},
-    {"heading": "Marco Teórico", "content": "Texto extenso del marco teórico (3-4 párrafos)"},
-    {"heading": "Desarrollo", "content": "Texto extenso de desarrollo (4-5 párrafos)"},
-    {"heading": "Análisis", "content": "Texto extenso de análisis (3-4 párrafos)"},
-    {"heading": "Conclusiones", "content": "Conclusiones detalladas (4-5 puntos)"},
-    {"heading": "Recomendaciones", "content": "Recomendaciones específicas (3-4 puntos)"},
-    {"heading": "Bibliografía", "content": "Referencias bibliográficas (4-5 referencias en formato APA)"}
+    {"heading": "Introducción", "content": "Texto normal de introducción (2-3 párrafos)"},
+    {"heading": "Objetivos", "content": "Lista de 3-4 objetivos"},
+    {"heading": "Desarrollo", "content": "Texto de desarrollo (2-3 párrafos)"},
+    {"heading": "Análisis", "content": "Texto de análisis (2-3 párrafos)"},
+    {"heading": "Conclusiones", "content": "3-4 conclusiones"},
+    {"heading": "Bibliografía", "content": "3-4 referencias en formato APA"}
   ]
 }
 
 Prompt del usuario: ${prompt}
 
-Genera un informe COMPLETO y EXTENSO con todas las 8 secciones. Cada sección debe tener contenido sustancial.
+Genera un informe COMPLETO con las 6 secciones. Mantén el contenido conciso pero profesional.
 Responde SOLO con el JSON, nada más.`,
         [],
-        { maxTokens: 4000, temperature: 0.7 }
+        { maxTokens: 3500, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {

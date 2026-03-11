@@ -90,7 +90,7 @@ class AIAssistantService {
         options: {
           temperature: options.temperature || 0.7,
           num_predict: maxTokens,
-          num_ctx: 8192  // Aumentado para respuestas largas
+          num_ctx: 4096  // Reducido para mejor rendimiento en producción
         }
       }, {
         timeout: dynamicTimeout
