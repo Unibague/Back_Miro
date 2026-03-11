@@ -8,8 +8,30 @@ const PDFDocument = require('pdfkit');
 
 class DocumentGeneratorService {
   
+  // Validar si el prompt menciona MIRÓ o Universidad de Ibagué
+  isRelatedToMiro(prompt) {
+    const lowerPrompt = prompt.toLowerCase();
+    const miroKeywords = [
+      'miró', 'miro',
+      'universidad de ibagué', 'universidad de ibague', 'unibague', 'ibagué', 'ibague',
+      'informe', 'reporte', 'plantilla', 'documento académico', 'documento academico',
+      'dependencia', 'programa académico', 'programa academico'
+    ];
+    
+    return miroKeywords.some(keyword => lowerPrompt.includes(keyword));
+  }
+  
   async generateWordFromPrompt(prompt, templatePath = null) {
     try {
+      // Validar si el prompt está relacionado con MIRÓ
+      if (!this.isRelatedToMiro(prompt)) {
+        console.log('[Word] Prompt no relacionado con MIRÓ, rechazando generación');
+        return { 
+          success: false, 
+          error: 'El contenido solicitado no está relacionado con el sistema MIRÓ. Por favor, solicita documentos relacionados con acreditación, informes académicos o la Universidad de Ibagué.' 
+        };
+      }
+      
       // 1. IA genera contenido estructurado (optimizado para producción)
       const aiResponse = await aiAssistant.chat(
         `Responde SOLO con JSON válido (sin texto adicional):{"title":"Título","sections":[
@@ -21,9 +43,9 @@ class DocumentGeneratorService {
         {"heading":"Bibliografía","content":"Texto con 4-5 referencias APA"}
       ]}
 
-IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
-Tema: ${prompt}
-Genera las 6 secciones COMPLETAS.`,
+      IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
+      Tema: ${prompt}
+      Genera las 6 secciones COMPLETAS.`,
         [],
         { maxTokens: 2500, temperature: 0.7 }
       );
@@ -180,15 +202,22 @@ Genera las 6 secciones COMPLETAS.`,
   
   async generateExcelFromPrompt(prompt) {
     try {
+      // Validar si el prompt está relacionado con MIRÓ
+      if (!this.isRelatedToMiro(prompt)) {
+        console.log('[Excel] Prompt no relacionado con MIRÓ, rechazando generación');
+        return { 
+          success: false, 
+          error: 'El contenido solicitado no está relacionado con el sistema MIRÓ. Por favor, solicita documentos relacionados con acreditación, informes académicos o la Universidad de Ibagué.' 
+        };
+      }
+      
       // 1. IA genera datos tabulares con prompt MUY específico
       const aiResponse = await aiAssistant.chat(
         `Responde SOLO con JSON válido (sin texto adicional, sin markdown):
-{"sheetName":"Datos","headers":["Columna1","Columna2","Columna3"],"rows":[["valor1","valor2","valor3"],["valor4","valor5","valor6"]]}
-
-Genera una tabla Excel sobre: ${prompt}
-
-Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
-Responde SOLO con el JSON.`,
+          {"sheetName":"Datos","headers":["Columna1","Columna2","Columna3"],"rows":[["valor1","valor2","valor3"],["valor4","valor5","valor6"]]} 
+          Genera una tabla Excel sobre: ${prompt}
+          Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
+          Responde SOLO con el JSON.`,
         [],
         { maxTokens: 2000, temperature: 0.6 }
       );
@@ -342,6 +371,15 @@ Responde SOLO con el JSON.`,
 
   async generatePDFFromPrompt(prompt) {
     try {
+      // Validar si el prompt está relacionado con MIRÓ
+      if (!this.isRelatedToMiro(prompt)) {
+        console.log('[PDF] Prompt no relacionado con MIRÓ, rechazando generación');
+        return { 
+          success: false, 
+          error: 'El contenido solicitado no está relacionado con el sistema MIRÓ. Por favor, solicita documentos relacionados con acreditación, informes académicos o la Universidad de Ibagué.' 
+        };
+      }
+      
       // 1. IA genera contenido estructurado (optimizado para producción)
       const aiResponse = await aiAssistant.chat(
         `Genera SOLO un objeto JSON válido (sin texto adicional, sin markdown, sin explicaciones) con esta estructura exacta:
