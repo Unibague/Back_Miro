@@ -85,7 +85,7 @@ aiAssistantController.analyzeDocument = async (req, res) => {
 // Generar documento Word con IA
 aiAssistantController.generateWord = async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, returnBase64 } = req.body;
     
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
@@ -100,10 +100,23 @@ aiAssistantController.generateWord = async (req, res) => {
       return res.status(400).json(result);
     }
     
+    // Si el frontend pide base64, devolver JSON
+    if (returnBase64) {
+      console.log('[Controller] Enviando Word como base64');
+      return res.status(200).json({
+        success: true,
+        filename: 'documento-generado.docx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        data: result.buffer.toString('base64'),
+        size: result.buffer.length
+      });
+    }
+    
     console.log('[Controller] Enviando Word al cliente. Tamaño:', result.buffer.length);
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.docx"');
+    res.setHeader('Content-Length', result.buffer.length);
     res.send(result.buffer);
     
     console.log('[Controller] Word enviado exitosamente');
@@ -116,7 +129,7 @@ aiAssistantController.generateWord = async (req, res) => {
 // Generar Excel con IA
 aiAssistantController.generateExcel = async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, returnBase64 } = req.body;
     
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
@@ -128,8 +141,20 @@ aiAssistantController.generateExcel = async (req, res) => {
       return res.status(400).json(result);
     }
     
+    // Si el frontend pide base64, devolver JSON
+    if (returnBase64) {
+      return res.status(200).json({
+        success: true,
+        filename: 'datos-generados.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        data: result.buffer.toString('base64'),
+        size: result.buffer.length
+      });
+    }
+    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="datos-generados.xlsx"');
+    res.setHeader('Content-Length', result.buffer.length);
     res.send(result.buffer);
   } catch (error) {
     console.error('Error generating Excel:', error);
@@ -153,7 +178,7 @@ aiAssistantController.health = async (req, res) => {
 // Generar PDF con IA
 aiAssistantController.generatePDF = async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, returnBase64 } = req.body;
     
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
@@ -168,10 +193,23 @@ aiAssistantController.generatePDF = async (req, res) => {
       return res.status(400).json(result);
     }
     
+    // Si el frontend pide base64, devolver JSON
+    if (returnBase64) {
+      console.log('[Controller] Enviando PDF como base64');
+      return res.status(200).json({
+        success: true,
+        filename: 'documento-generado.pdf',
+        mimeType: 'application/pdf',
+        data: result.buffer.toString('base64'),
+        size: result.buffer.length
+      });
+    }
+    
     console.log('[Controller] Enviando PDF al cliente. Tamaño:', result.buffer.length);
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.pdf"');
+    res.setHeader('Content-Length', result.buffer.length);
     res.send(result.buffer);
     
     console.log('[Controller] PDF enviado exitosamente');
