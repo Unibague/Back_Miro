@@ -78,9 +78,9 @@ class AIAssistantService {
       
       prompt += `Usuario: ${userMessage}\nAsistente:`;
 
-      // Timeout dinámico: 100ms por token + 30s base
+      // Timeout dinámico: 150ms por token + 30s base (más tiempo para respuestas largas)
       const maxTokens = options.maxTokens || 200;
-      const dynamicTimeout = Math.max(120000, maxTokens * 100 + 30000);
+      const dynamicTimeout = Math.max(120000, maxTokens * 150 + 30000);
 
       const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
         model: MODEL,
@@ -89,7 +89,8 @@ class AIAssistantService {
         keep_alive: -1,
         options: {
           temperature: options.temperature || 0.7,
-          num_predict: maxTokens
+          num_predict: maxTokens,
+          num_ctx: 8192  // Aumentado para respuestas largas
         }
       }, {
         timeout: dynamicTimeout

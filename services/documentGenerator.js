@@ -10,20 +10,24 @@ class DocumentGeneratorService {
   
   async generateWordFromPrompt(prompt, templatePath = null) {
     try {
-      // 1. IA genera contenido estructurado con MÁS tokens
+      // 1. IA genera contenido estructurado con MÁS tokens y secciones
       const aiResponse = await aiAssistant.chat(
         `Responde SOLO con JSON válido (sin texto adicional):
 {"title":"Título","sections":[
-{"heading":"Introducción","content":"Texto largo introducción"},
-{"heading":"Desarrollo","content":"Texto largo desarrollo"},
-{"heading":"Conclusiones","content":"Texto conclusiones"},
-{"heading":"Bibliografía","content":"Referencias"}
+{"heading":"Introducción","content":"Texto extenso introducción (3-4 párrafos)"},
+{"heading":"Objetivos","content":"Lista de objetivos (4-5 objetivos)"},
+{"heading":"Marco Teórico","content":"Texto extenso marco teórico (3-4 párrafos)"},
+{"heading":"Desarrollo","content":"Texto extenso desarrollo (4-5 párrafos)"},
+{"heading":"Análisis","content":"Texto extenso análisis (3-4 párrafos)"},
+{"heading":"Conclusiones","content":"Conclusiones detalladas (4-5 puntos)"},
+{"heading":"Recomendaciones","content":"Recomendaciones (3-4 puntos)"},
+{"heading":"Bibliografía","content":"Referencias APA (4-5 referencias)"}
 ]}
 
 Tema: ${prompt}
-Genera las 4 secciones completas.`,
+Genera las 8 secciones COMPLETAS y EXTENSAS.`,
         [],
-        { maxTokens: 3500, temperature: 0.7 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -48,6 +52,17 @@ Genera las 4 secciones completas.`,
         
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        
+        // CRÍTICO: Escapar saltos de línea dentro de strings JSON
+        jsonText = jsonText.replace(/"content"\s*:\s*"([^"]*)"/g, (match, content) => {
+          const cleanContent = content
+            .replace(/\n/g, ' ')
+            .replace(/\r/g, '')
+            .replace(/\t/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          return `"content":"${cleanContent}"`;
+        });
         
         // Extraer primer objeto JSON completo
         const firstBrace = jsonText.indexOf('{');
@@ -263,68 +278,115 @@ Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
 
   async generatePDFFromPrompt(prompt) {
     try {
-      // 1. IA genera contenido estructurado
+      // 1. IA genera contenido estructurado MÁS EXTENSO
       const aiResponse = await aiAssistant.chat(
         `Genera SOLO un objeto JSON válido (sin texto adicional, sin markdown, sin explicaciones) con esta estructura exacta:
 {
   "title": "Título del documento",
   "author": "Autor",
   "sections": [
-    {"heading": "Introducción", "content": "Texto de introducción"},
-    {"heading": "Desarrollo", "content": "Texto de desarrollo"},
-    {"heading": "Conclusiones", "content": "Texto de conclusiones"}
+    {"heading": "Introducción", "content": "Texto extenso de introducción (3-4 párrafos)"},
+    {"heading": "Objetivos", "content": "Lista de objetivos específicos (4-5 objetivos)"},
+    {"heading": "Marco Teórico", "content": "Texto extenso del marco teórico (3-4 párrafos)"},
+    {"heading": "Desarrollo", "content": "Texto extenso de desarrollo (4-5 párrafos)"},
+    {"heading": "Análisis", "content": "Texto extenso de análisis (3-4 párrafos)"},
+    {"heading": "Conclusiones", "content": "Conclusiones detalladas (4-5 puntos)"},
+    {"heading": "Recomendaciones", "content": "Recomendaciones específicas (3-4 puntos)"},
+    {"heading": "Bibliografía", "content": "Referencias bibliográficas (4-5 referencias en formato APA)"}
   ]
 }
 
 Prompt del usuario: ${prompt}
 
+Genera un informe COMPLETO y EXTENSO con todas las 8 secciones. Cada sección debe tener contenido sustancial.
 Responde SOLO con el JSON, nada más.`,
-        []
+        [],
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
         return { success: false, error: 'IA no disponible' };
       }
       
-      // 2. Parsear respuesta IA (limpiar markdown y extraer JSON)
+      // 2. Parsear respuesta IA con limpieza AGRESIVA (igual que Word)
       let content;
       try {
         let jsonText = aiResponse.message.trim();
         
-        console.log('[PDF] Respuesta IA:', jsonText.substring(0, 200));
+        console.log('[PDF] Respuesta IA original:', jsonText.substring(0, 300));
         
-        // Eliminar texto antes del primer {
+        // Limpiar HTML entities PRIMERO Y MÚLTIPLES VECES
+        for (let i = 0; i < 3; i++) {
+          jsonText = jsonText.replace(/&quot;/g, '"');
+          jsonText = jsonText.replace(/&amp;/g, '&');
+          jsonText = jsonText.replace(/&#39;/g, "'");
+          jsonText = jsonText.replace(/&lt;/g, '<');
+          jsonText = jsonText.replace(/&gt;/g, '>');
+        }
+        
+        // Remover markdown
+        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        
+        // CRÍTICO: Escapar saltos de línea dentro de strings JSON
+        // Reemplazar \n literal por espacio dentro de valores de content
+        jsonText = jsonText.replace(/"content"\s*:\s*"([^"]*)"/g, (match, content) => {
+          const cleanContent = content
+            .replace(/\n/g, ' ')  // Saltos de línea a espacios
+            .replace(/\r/g, '')   // Remover retornos de carro
+            .replace(/\t/g, ' ')  // Tabs a espacios
+            .replace(/\s+/g, ' ') // Múltiples espacios a uno
+            .trim();
+          return `"content":"${cleanContent}"`;
+        });
+        
+        // Extraer primer objeto JSON completo
         const firstBrace = jsonText.indexOf('{');
         if (firstBrace > 0) {
           jsonText = jsonText.substring(firstBrace);
         }
         
-        // Remover markdown
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        jsonText = jsonText.replace(/&quot;/g, '"');
-        
-        // Extraer JSON completo
-        const jsonMatch = jsonText.match(/\{[\s\S]*\}/s);
-        if (jsonMatch) {
-          jsonText = jsonMatch[0];
+        // Contar llaves para extraer JSON completo
+        let braceCount = 0;
+        let endIndex = -1;
+        for (let i = 0; i < jsonText.length; i++) {
+          if (jsonText[i] === '{') braceCount++;
+          if (jsonText[i] === '}') {
+            braceCount--;
+            if (braceCount === 0) {
+              endIndex = i + 1;
+              break;
+            }
+          }
         }
         
-        console.log('[PDF] JSON extraído:', jsonText.substring(0, 200));
+        if (endIndex > 0) {
+          jsonText = jsonText.substring(0, endIndex);
+        }
+        
+        console.log('[PDF] JSON limpio:', jsonText.substring(0, 300));
         
         content = JSON.parse(jsonText);
         
-        console.log('[PDF] Parseado exitoso:', content.title);
+        console.log('[PDF] Parseado exitoso:', content.title, 'Secciones:', content.sections?.length);
       } catch (parseError) {
         console.error('[PDF] Error parsing JSON:', parseError.message);
-        console.error('[PDF] Texto recibido:', aiResponse.message);
+        console.error('[PDF] Texto recibido:', aiResponse.message.substring(0, 500));
         
-        // Fallback: usar respuesta como texto plano
+        // Fallback: usar respuesta como texto plano limpio
+        const cleanText = aiResponse.message
+          .replace(/```json|```/g, '')
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, '&')
+          .replace(/&#39;/g, "'")
+          .replace(/\{[\s\S]*\}/g, '') // Remover JSON fallido
+          .trim();
+        
         content = {
           title: 'Documento Generado',
           author: 'Sistema MIRÓ',
           sections: [{ 
             heading: 'Contenido', 
-            content: aiResponse.message.replace(/```json|```|&quot;/g, '').trim()
+            content: cleanText || `Documento sobre: ${prompt}` 
           }]
         };
       }
