@@ -15,13 +15,14 @@ class DocumentGeneratorService {
         `Responde SOLO con JSON válido (sin texto adicional):
 {"title":"Título","sections":[
 {"heading":"Introducción","content":"Texto normal introducción (2-3 párrafos)"},
-{"heading":"Objetivos","content":"Lista de 3-4 objetivos"},
+{"heading":"Objetivos","content":"Texto con lista de 3-4 objetivos"},
 {"heading":"Desarrollo","content":"Texto de desarrollo (2-3 párrafos)"},
 {"heading":"Análisis","content":"Texto de análisis (3-4 párrafos)"},
-{"heading":"Conclusiones","content":"3-4 conclusiones"},
-{"heading":"Bibliografía","content":"3-4 referencias APA"}
+{"heading":"Conclusiones","content":"Texto con 3-4 conclusiones"},
+{"heading":"Bibliografía","content":"Texto con 3-4 referencias APA"}
 ]}
 
+IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
 Tema: ${prompt}
 Genera las 6 secciones COMPLETAS.`,
         [],
@@ -90,6 +91,19 @@ Genera las 6 secciones COMPLETAS.`,
         
         content = JSON.parse(jsonText);
         
+        // CRÍTICO: Validar y limpiar sections - convertir arrays a strings
+        if (content.sections && Array.isArray(content.sections)) {
+          content.sections = content.sections.map(section => {
+            if (Array.isArray(section.content)) {
+              // Convertir array a string con viñetas
+              section.content = section.content.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
+            } else if (typeof section.content !== 'string') {
+              section.content = String(section.content || '');
+            }
+            return section;
+          });
+        }
+        
         console.log('[Word] Parseado exitoso:', content.title, 'Secciones:', content.sections?.length);
       } catch (parseError) {
         console.error('[Word] Error parsing JSON:', parseError.message);
@@ -149,13 +163,15 @@ Genera las 6 secciones COMPLETAS.`,
     try {
       // 1. IA genera datos tabulares con prompt MUY específico
       const aiResponse = await aiAssistant.chat(
-        `Responde SOLO con este JSON exacto (sin texto adicional):
-{"sheetName":"Datos","headers":["Col1","Col2","Col3"],"rows":[["a","b","c"],["d","e","f"]]}
+        `Responde SOLO con JSON válido (sin texto adicional, sin markdown):
+{"sheetName":"Datos","headers":["Columna1","Columna2","Columna3"],"rows":[["valor1","valor2","valor3"],["valor4","valor5","valor6"]]}
 
-Genera datos para: ${prompt}
-Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
+Genera una tabla Excel sobre: ${prompt}
+
+Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
+Responde SOLO con el JSON.`,
         [],
-        { maxTokens: 700, temperature: 0.3 }
+        { maxTokens: 1500, temperature: 0.5 }
       );
       
       if (!aiResponse.success) {
@@ -169,12 +185,14 @@ Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
         
         console.log('[Excel] Respuesta IA completa:', jsonText.substring(0, 300));
         
-        // Limpiar HTML entities PRIMERO
-        jsonText = jsonText.replace(/&quot;/g, '"');
-        jsonText = jsonText.replace(/&amp;/g, '&');
-        jsonText = jsonText.replace(/&#39;/g, "'");
-        jsonText = jsonText.replace(/&lt;/g, '<');
-        jsonText = jsonText.replace(/&gt;/g, '>');
+        // Limpiar HTML entities MÚLTIPLES VECES
+        for (let i = 0; i < 3; i++) {
+          jsonText = jsonText.replace(/&quot;/g, '"');
+          jsonText = jsonText.replace(/&amp;/g, '&');
+          jsonText = jsonText.replace(/&#39;/g, "'");
+          jsonText = jsonText.replace(/&lt;/g, '<');
+          jsonText = jsonText.replace(/&gt;/g, '>');
+        }
         
         // Remover markdown
         jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '').replace(/```$/g, '');
@@ -211,21 +229,50 @@ Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
         if (!data.rows || !Array.isArray(data.rows)) {
           throw new Error('Invalid rows structure');
         }
+        if (!data.headers || !Array.isArray(data.headers)) {
+          throw new Error('Invalid headers structure');
+        }
         
         console.log('[Excel] Parseado exitoso:', data.sheetName, 'Headers:', data.headers?.length, 'Rows:', data.rows?.length);
       } catch (parseError) {
         console.error('[Excel] Error parsing JSON:', parseError.message);
         console.error('[Excel] Texto recibido:', aiResponse.message.substring(0, 500));
         
-        // Fallback
-        data = {
-          sheetName: 'Datos',
-          headers: ['Columna 1', 'Columna 2', 'Columna 3'],
-          rows: [
-            ['Dato 1', 'Dato 2', 'Dato 3'],
-            ['Dato 4', 'Dato 5', 'Dato 6']
-          ]
-        };
+        // Fallback contextual basado en el prompt
+        const isStudentData = prompt.toLowerCase().includes('estudiante') || prompt.toLowerCase().includes('alumno');
+        const isFinancial = prompt.toLowerCase().includes('financ') || prompt.toLowerCase().includes('presupuesto');
+        
+        if (isStudentData) {
+          data = {
+            sheetName: 'Estudiantes',
+            headers: ['Nombre', 'Código', 'Programa', 'Promedio'],
+            rows: [
+              ['Juan Pérez', '2020001', 'Ingeniería', '4.2'],
+              ['María Gómez', '2020002', 'Administración', '4.5'],
+              ['Carlos Ruiz', '2020003', 'Derecho', '3.8']
+            ]
+          };
+        } else if (isFinancial) {
+          data = {
+            sheetName: 'Finanzas',
+            headers: ['Concepto', 'Monto', 'Fecha', 'Estado'],
+            rows: [
+              ['Matrícula', '$2,500,000', '2024-01-15', 'Pagado'],
+              ['Materiales', '$500,000', '2024-02-01', 'Pendiente'],
+              ['Transporte', '$300,000', '2024-02-15', 'Pagado']
+            ]
+          };
+        } else {
+          data = {
+            sheetName: 'Datos',
+            headers: ['Descripción', 'Valor', 'Observaciones'],
+            rows: [
+              [`Dato sobre: ${prompt}`, 'Valor 1', 'Información generada'],
+              ['Dato adicional', 'Valor 2', 'Ejemplo contextual'],
+              ['Dato complementario', 'Valor 3', 'Referencia']
+            ]
+          };
+        }
       }
       
       // 3. Crear Excel
@@ -284,14 +331,15 @@ Máximo 8 filas. Usa el formato exacto mostrado arriba.`,
   "author": "Autor",
   "sections": [
     {"heading": "Introducción", "content": "Texto normal de introducción (2-3 párrafos)"},
-    {"heading": "Objetivos", "content": "Lista de 3-4 objetivos"},
+    {"heading": "Objetivos", "content": "Texto con lista de 3-4 objetivos"},
     {"heading": "Desarrollo", "content": "Texto de desarrollo (2-3 párrafos)"},
     {"heading": "Análisis", "content": "Texto de análisis (2-3 párrafos)"},
-    {"heading": "Conclusiones", "content": "3-4 conclusiones"},
-    {"heading": "Bibliografía", "content": "3-4 referencias en formato APA"}
+    {"heading": "Conclusiones", "content": "Texto con 3-4 conclusiones"},
+    {"heading": "Bibliografía", "content": "Texto con 3-4 referencias en formato APA"}
   ]
 }
 
+IMPORTANTE: "content" debe ser SIEMPRE texto (string), NUNCA array.
 Prompt del usuario: ${prompt}
 
 Genera un informe COMPLETO con las 6 secciones. Mantén el contenido conciso pero profesional.
@@ -362,6 +410,19 @@ Responde SOLO con el JSON, nada más.`,
         console.log('[PDF] JSON limpio:', jsonText.substring(0, 300));
         
         content = JSON.parse(jsonText);
+        
+        // CRÍTICO: Validar y limpiar sections - convertir arrays a strings
+        if (content.sections && Array.isArray(content.sections)) {
+          content.sections = content.sections.map(section => {
+            if (Array.isArray(section.content)) {
+              // Convertir array a string con viñetas
+              section.content = section.content.map((item, idx) => `${idx + 1}. ${item}`).join('\n');
+            } else if (typeof section.content !== 'string') {
+              section.content = String(section.content || '');
+            }
+            return section;
+          });
+        }
         
         console.log('[PDF] Parseado exitoso:', content.title, 'Secciones:', content.sections?.length);
       } catch (parseError) {
