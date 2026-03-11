@@ -88,15 +88,14 @@ class DocumentGeneratorService {
             .replace(/\r/g, '')      // \r literal
             .replace(/\\t/g, ' ')   // \t escapado a espacio
             .replace(/\t/g, ' ')     // \t literal a espacio
-            .replace(/\\"/g, '"')   // \" a "
             .replace(/\s+/g, ' ')    // Múltiples espacios a uno
             .trim();
-          return `"content":"${cleanContent.replace(/"/g, '\\"')}"`; // Re-escapar comillas
+          return `"content":"${cleanContent}"`;
         });
         
         // Limpiar heading también
         jsonText = jsonText.replace(/"heading"\s*:\s*"([^"]*)"/g, (match, heading) => {
-          const cleanHeading = heading.replace(/"/g, '').trim();
+          const cleanHeading = heading.replace(/\s+/g, ' ').trim();
           return `"heading":"${cleanHeading}"`;
         });
         
