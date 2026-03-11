@@ -493,6 +493,15 @@ Responde SOLO con el JSON, nada más.`,
       
       const buffer = await pdfPromise;
       
+      // Validar que el PDF comience con %PDF
+      const pdfHeader = buffer.slice(0, 4).toString('ascii');
+      console.log('[PDF] Header del PDF:', pdfHeader);
+      
+      if (!pdfHeader.startsWith('%PDF')) {
+        console.error('[PDF] ERROR: PDF inválido, no comienza con %PDF');
+        throw new Error('PDF generado es inválido');
+      }
+      
       console.log('[PDF] PDF generado exitosamente. Tamaño:', buffer.length, 'bytes');
       
       return { success: true, buffer, content, format: 'pdf' };

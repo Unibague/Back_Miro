@@ -101,7 +101,10 @@ aiAssistantController.generateWord = async (req, res) => {
     }
     
     // Si el frontend pide base64, devolver JSON
-    if (returnBase64) {
+    // PERO solo si NO está usando responseType: 'blob' (detectar por Accept header)
+    const acceptsBlob = req.headers.accept?.includes('application/') || req.headers.accept?.includes('*/*');
+    
+    if (returnBase64 && !acceptsBlob) {
       console.log('[Controller] Enviando Word como base64');
       return res.status(200).json({
         success: true,
@@ -117,7 +120,7 @@ aiAssistantController.generateWord = async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.docx"');
     res.setHeader('Content-Length', result.buffer.length);
-    res.send(result.buffer);
+    res.end(result.buffer, 'binary');
     
     console.log('[Controller] Word enviado exitosamente');
   } catch (error) {
@@ -142,7 +145,9 @@ aiAssistantController.generateExcel = async (req, res) => {
     }
     
     // Si el frontend pide base64, devolver JSON
-    if (returnBase64) {
+    const acceptsBlob = req.headers.accept?.includes('application/') || req.headers.accept?.includes('*/*');
+    
+    if (returnBase64 && !acceptsBlob) {
       return res.status(200).json({
         success: true,
         filename: 'datos-generados.xlsx',
@@ -155,7 +160,7 @@ aiAssistantController.generateExcel = async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="datos-generados.xlsx"');
     res.setHeader('Content-Length', result.buffer.length);
-    res.send(result.buffer);
+    res.end(result.buffer, 'binary');
   } catch (error) {
     console.error('Error generating Excel:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -194,7 +199,10 @@ aiAssistantController.generatePDF = async (req, res) => {
     }
     
     // Si el frontend pide base64, devolver JSON
-    if (returnBase64) {
+    // PERO solo si NO está usando responseType: 'blob'
+    const acceptsBlob = req.headers.accept?.includes('application/') || req.headers.accept?.includes('*/*');
+    
+    if (returnBase64 && !acceptsBlob) {
       console.log('[Controller] Enviando PDF como base64');
       return res.status(200).json({
         success: true,
@@ -206,11 +214,12 @@ aiAssistantController.generatePDF = async (req, res) => {
     }
     
     console.log('[Controller] Enviando PDF al cliente. Tamaño:', result.buffer.length);
+    console.log('[Controller] Primeros 10 bytes:', result.buffer.slice(0, 10));
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename="documento-generado.pdf"');
     res.setHeader('Content-Length', result.buffer.length);
-    res.send(result.buffer);
+    res.end(result.buffer, 'binary');
     
     console.log('[Controller] PDF enviado exitosamente');
   } catch (error) {
