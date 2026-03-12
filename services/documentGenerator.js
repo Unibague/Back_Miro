@@ -47,7 +47,7 @@ class DocumentGeneratorService {
       Tema: ${prompt}
       Genera las 6 secciones COMPLETAS.`,
         [],
-        { maxTokens: 2500, temperature: 0.7 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -212,13 +212,25 @@ class DocumentGeneratorService {
   
   async generateExcelFromPrompt(prompt) {
     try {
-      // Validar si el prompt está relacionado con MIRÓ
-      if (!this.isRelatedToMiro(prompt)) {
-        console.log('[Excel] Prompt no relacionado con MIRÓ, rechazando generación');
-        return { 
-          success: false, 
-          error: 'El contenido solicitado no está relacionado con el sistema MIRÓ. Por favor, solicita documentos relacionados con acreditación, informes académicos o la Universidad de Ibagué.' 
-        };
+      // Detectar si el prompt menciona "plantilla" o "template"
+      const mentionsTemplate = /plantilla|template|formulario/i.test(prompt);
+      
+      if (mentionsTemplate) {
+        console.log('[Excel] Prompt menciona plantilla, intentando generar desde plantilla');
+        
+        // Intentar extraer nombre de plantilla del prompt
+        const Template = require('../models/templates');
+        const templates = await Template.find().select('name fields').lean();
+        
+        // Buscar plantilla que coincida con el prompt
+        const matchedTemplate = templates.find(t => 
+          prompt.toLowerCase().includes(t.name.toLowerCase())
+        );
+        
+        if (matchedTemplate) {
+          console.log('[Excel] Plantilla encontrada:', matchedTemplate.name);
+          return this.generateExcelFromTemplate(matchedTemplate, 5);
+        }
       }
       
       // 1. IA genera datos tabulares con prompt MUY específico
@@ -229,7 +241,7 @@ class DocumentGeneratorService {
           Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
           Responde SOLO con el JSON.`,
         [],
-        { maxTokens: 2000, temperature: 0.6 }
+        { maxTokens: 4000, temperature: 0.6 }
       );
       
       if (!aiResponse.success) {
@@ -346,6 +358,218 @@ class DocumentGeneratorService {
     }
   }
   
+  async generateExcelFromTemplate(template, numRows = 5) {
+    try {
+      console.log('[Excel Template] Generando datos fake para:', template.name);
+      
+      const headers = [];
+      const fakeDataGenerators = [];
+      
+      // Datos fake realistas
+      const nombres = ['Juan Pérez', 'María González', 'Carlos Rodríguez', 'Ana Martínez', 'Luis Hernández', 'Laura Díaz', 'Pedro Sánchez', 'Sofía López', 'Diego Torres', 'Valentina Ramírez'];
+      const programas = ['Ingeniería de Sistemas', 'Administración de Empresas', 'Derecho', 'Medicina', 'Psicología', 'Contaduría', 'Arquitectura', 'Biología'];
+      const dependencias = ['Facultad de Ingeniería', 'Facultad de Ciencias Económicas', 'Facultad de Derecho', 'Facultad de Ciencias de la Salud', 'Vicerrectoría', 'Rectoría'];
+      const estados = ['Activo', 'Inactivo', 'Pendiente', 'Aprobado', 'Rechazado', 'En Proceso'];
+      const ciudades = ['Ibagué', 'Bogotá', 'Medellín', 'Cali', 'Barranquilla', 'Cartagena'];
+      const tiposDocumento = ['CC - Cédula de ciudadanía', 'TI - Tarjeta de identidad', 'CE - Cédula de extranjería', 'PA - Pasaporte'];
+      const modalidades = ['1 - Presencial', '2 - Virtual', '3 - Híbrido'];
+      const nacionalidades = ['1 - Nacional', '2 - Extranjero'];
+      
+      // Procesar campos de la plantilla
+      if (template.fields && Array.isArray(template.fields)) {
+        template.fields.forEach(field => {
+          const fieldName = (field.name || 'Campo').toLowerCase();
+          const fieldType = (field.datatype || 'Texto Corto'); // Usar datatype en vez de type
+          headers.push(field.name || 'Campo');
+          
+          console.log(`[Excel Template] Campo: ${field.name}, Tipo: ${fieldType}`);
+          
+          // Generar función para datos fake según datatype Y nombre del campo
+          switch (fieldType) {
+            case 'Entero':
+              if (/cédula|cedula|documento|dni|identificación/i.test(fieldName)) {
+                fakeDataGenerators.push(() => Math.floor(Math.random() * 90000000) + 10000000); // 10000000-99999999
+              } else if (/edad|años/i.test(fieldName)) {
+                fakeDataGenerators.push(() => Math.floor(Math.random() * 50) + 18); // 18-67
+              } else if (/cantidad|total|número/i.test(fieldName)) {
+                fakeDataGenerators.push(() => Math.floor(Math.random() * 100) + 1);
+              } else {
+                fakeDataGenerators.push(() => Math.floor(Math.random() * 1000));
+              }
+              break;
+              
+            case 'Decimal':
+              if (/promedio|nota|calificación/i.test(fieldName)) {
+                fakeDataGenerators.push(() => (Math.random() * 2 + 3).toFixed(1)); // 3.0 - 5.0
+              } else if (/precio|costo|valor|monto|salario/i.test(fieldName)) {
+                fakeDataGenerators.push(() => (Math.floor(Math.random() * 5000) + 500) * 1000); // 500000-5500000
+              } else {
+                fakeDataGenerators.push(() => (Math.random() * 100).toFixed(2));
+              }
+              break;
+              
+            case 'Porcentaje':
+              fakeDataGenerators.push(() => `${Math.floor(Math.random() * 100)}%`);
+              break;
+              
+            case 'True/False':
+              fakeDataGenerators.push(() => Math.random() > 0.5 ? 'Sí' : 'No');
+              break;
+              
+            case 'Fecha':
+            case 'Fecha Inicial / Fecha Final':
+              fakeDataGenerators.push(() => {
+                const date = new Date();
+                date.setDate(date.getDate() - Math.floor(Math.random() * 365));
+                return date.toISOString().split('T')[0];
+              });
+              break;
+              
+            case 'Link':
+              fakeDataGenerators.push(() => {
+                const tipos = ['documento', 'informe', 'certificado', 'acta'];
+                const tipo = tipos[Math.floor(Math.random() * tipos.length)];
+                return `https://drive.google.com/${tipo}_${Math.floor(Math.random() * 1000)}`;
+              });
+              break;
+              
+            case 'Texto Corto':
+              // Detectar tipo de dato por nombre del campo
+              if (/tipo.*documento|documento.*tipo/i.test(fieldName)) {
+                fakeDataGenerators.push(() => tiposDocumento[Math.floor(Math.random() * tiposDocumento.length)]);
+              } else if (/modalidad/i.test(fieldName)) {
+                fakeDataGenerators.push(() => modalidades[Math.floor(Math.random() * modalidades.length)]);
+              } else if (/nacionalidad/i.test(fieldName)) {
+                fakeDataGenerators.push(() => nacionalidades[Math.floor(Math.random() * nacionalidades.length)]);
+              } else if (/nombre|name/i.test(fieldName)) {
+                fakeDataGenerators.push(() => nombres[Math.floor(Math.random() * nombres.length)]);
+              } else if (/programa|carrera/i.test(fieldName)) {
+                fakeDataGenerators.push(() => programas[Math.floor(Math.random() * programas.length)]);
+              } else if (/dependencia|unidad|área/i.test(fieldName)) {
+                fakeDataGenerators.push(() => dependencias[Math.floor(Math.random() * dependencias.length)]);
+              } else if (/ciudad|municipio/i.test(fieldName)) {
+                fakeDataGenerators.push(() => ciudades[Math.floor(Math.random() * ciudades.length)]);
+              } else if (/estado|status/i.test(fieldName)) {
+                fakeDataGenerators.push(() => estados[Math.floor(Math.random() * estados.length)]);
+              } else if (/código|codigo|id/i.test(fieldName)) {
+                fakeDataGenerators.push(() => `${Math.floor(Math.random() * 9000) + 1000}`);
+              } else {
+                fakeDataGenerators.push(() => `Texto ${Math.floor(Math.random() * 100)}`);
+              }
+              break;
+              
+            case 'Texto Largo':
+              if (/descripción|descripcion|observación|observacion/i.test(fieldName)) {
+                fakeDataGenerators.push(() => {
+                  const descripciones = [
+                    'Cumple con los requisitos establecidos según normativa vigente',
+                    'Requiere seguimiento adicional por parte del área responsable',
+                    'Documentación completa y verificada correctamente',
+                    'En proceso de revisión por el comité evaluador',
+                    'Aprobado según los criterios de acreditación institucional'
+                  ];
+                  return descripciones[Math.floor(Math.random() * descripciones.length)];
+                });
+              } else if (/tipo.*documento|documento.*tipo/i.test(fieldName)) {
+                fakeDataGenerators.push(() => tiposDocumento[Math.floor(Math.random() * tiposDocumento.length)]);
+              } else if (/tipo.*entidad|entidad.*tipo/i.test(fieldName)) {
+                const tiposEntidad = ['ONG', 'Fundación', 'Empresa Privada', 'Entidad Pública', 'Cooperativa', 'Asociación'];
+                fakeDataGenerators.push(() => tiposEntidad[Math.floor(Math.random() * tiposEntidad.length)]);
+              } else if (/nombre.*entidad|entidad.*nombre/i.test(fieldName)) {
+                const entidades = ['Alcaldía Municipal', 'Gobernación del Tolima', 'Cámara de Comercio', 'Cruz Roja', 'Fundación Social', 'Empresa Regional'];
+                fakeDataGenerators.push(() => entidades[Math.floor(Math.random() * entidades.length)]);
+              } else if (/nombre.*proyecto|proyecto.*nombre/i.test(fieldName)) {
+                const proyectos = ['Desarrollo Comunitario Rural', 'Educación para la Paz', 'Sostenibilidad Ambiental', 'Emprendimiento Social', 'Salud Preventiva'];
+                fakeDataGenerators.push(() => proyectos[Math.floor(Math.random() * proyectos.length)]);
+              } else if (/producto|resultado/i.test(fieldName)) {
+                const productos = ['Informe técnico', 'Manual de procedimientos', 'Cartilla educativa', 'Video documental', 'Aplicación web'];
+                fakeDataGenerators.push(() => productos[Math.floor(Math.random() * productos.length)]);
+              } else if (/cod|código|codigo/i.test(fieldName)) {
+                fakeDataGenerators.push(() => `COD-${Math.floor(Math.random() * 9000) + 1000}`);
+              } else if (/nombre|name/i.test(fieldName)) {
+                fakeDataGenerators.push(() => nombres[Math.floor(Math.random() * nombres.length)]);
+              } else if (/programa|carrera/i.test(fieldName)) {
+                fakeDataGenerators.push(() => programas[Math.floor(Math.random() * programas.length)]);
+              } else if (/dependencia|unidad|área/i.test(fieldName)) {
+                fakeDataGenerators.push(() => dependencias[Math.floor(Math.random() * dependencias.length)]);
+              } else {
+                fakeDataGenerators.push(() => `Información detallada sobre el registro número ${Math.floor(Math.random() * 100)}`);
+              }
+              break;
+              
+            case 'select':
+            case 'radio':
+            case 'dropdown':
+              fakeDataGenerators.push(() => {
+                const options = field.options || estados;
+                return options[Math.floor(Math.random() * options.length)];
+              });
+              break;
+              
+            case 'email':
+            case 'correo':
+              fakeDataGenerators.push(() => {
+                const usuario = nombres[Math.floor(Math.random() * nombres.length)]
+                  .toLowerCase()
+                  .replace(/\s+/g, '.')
+                  .normalize('NFD')
+                  .replace(/[\u0300-\u036f]/g, '');
+                return `${usuario}@unibague.edu.co`;
+              });
+              break;
+              
+            case 'file':
+            case 'archivo':
+              fakeDataGenerators.push(() => {
+                const tipos = ['documento', 'informe', 'certificado', 'acta', 'reporte'];
+                const tipo = tipos[Math.floor(Math.random() * tipos.length)];
+                return `${tipo}_${Math.floor(Math.random() * 100)}.pdf`;
+              });
+              break;
+              
+            default:
+              fakeDataGenerators.push(() => `Dato ${Math.floor(Math.random() * 100)}`);
+          }
+        });
+      }
+      
+      // Si no hay campos, usar headers genéricos
+      if (headers.length === 0) {
+        headers.push('Nombre', 'Programa', 'Estado');
+        fakeDataGenerators.push(
+          () => nombres[Math.floor(Math.random() * nombres.length)],
+          () => programas[Math.floor(Math.random() * programas.length)],
+          () => estados[Math.floor(Math.random() * estados.length)]
+        );
+      }
+      
+      // Generar filas con datos fake
+      const rows = [];
+      for (let i = 0; i < numRows; i++) {
+        const row = fakeDataGenerators.map(generator => generator());
+        rows.push(row);
+      }
+      
+      // Crear Excel
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Datos');
+      
+      const buffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      
+      return { 
+        success: true, 
+        buffer, 
+        data: { sheetName: 'Datos', headers, rows },
+        format: 'xlsx',
+        source: 'template'
+      };
+    } catch (error) {
+      console.error('[Excel Template] Error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+  
   async generateSimpleWord(content) {
     const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
     
@@ -412,7 +636,7 @@ Prompt del usuario: ${prompt}
 Genera un informe COMPLETO con las 6 secciones. Mantén el contenido conciso pero profesional.
 Responde SOLO con el JSON, nada más.`,
         [],
-        { maxTokens: 2500, temperature: 0.7 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
