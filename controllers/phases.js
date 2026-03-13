@@ -148,6 +148,29 @@ phaseController.removeSubactividad = async (req, res) => {
   }
 };
 
+/* PUT /phases/:id/actividades/:actividadId/subactividades/reorder — reordenar subactividades
+   body: { orden: ["id1", "id2", ...] } */
+phaseController.reorderSubactividades = async (req, res) => {
+  try {
+    const { orden } = req.body;
+    if (!Array.isArray(orden)) return res.status(400).json({ error: 'orden debe ser un array de IDs' });
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+    const act = phase.actividades.id(req.params.actividadId);
+    if (!act) return res.status(404).json({ error: 'Actividad no encontrada' });
+
+    const subMap = new Map(act.subactividades.map(s => [String(s._id), s]));
+    const reordenadas = orden.map(id => subMap.get(id)).filter(Boolean);
+    act.subactividades.forEach(s => { if (!orden.includes(String(s._id))) reordenadas.push(s); });
+    act.subactividades = reordenadas;
+    await phase.save();
+    res.status(200).json(phase);
+  } catch (error) {
+    console.error('Error reordenando subactividades:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 /* PUT /phases/:id/reorder — reordenar actividades por array de IDs
    body: { orden: ["id1", "id2", ...] } */
 phaseController.reorderActividades = async (req, res) => {

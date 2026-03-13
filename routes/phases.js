@@ -11,6 +11,7 @@ router.post('/:id/actividades',                    controller.addActividad);
 router.put('/:id/actividades/:actividadId',        controller.updateActividad);
 router.delete('/:id/actividades/:actividadId',                                          controller.removeActividad);
 router.post('/:id/actividades/:actividadId/subactividades',                             controller.addSubactividad);
+router.put('/:id/actividades/:actividadId/subactividades/reorder',                      controller.reorderSubactividades);
 router.put('/:id/actividades/:actividadId/subactividades/:subactividadId',              controller.updateSubactividad);
 router.delete('/:id/actividades/:actividadId/subactividades/:subactividadId',           controller.removeSubactividad);
 
