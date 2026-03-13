@@ -61,23 +61,30 @@ class DocumentGeneratorService {
         
         console.log('[Word] Respuesta IA original:', jsonText.substring(0, 300));
         
-        // Limpiar HTML entities PRIMERO Y MÚLTIPLES VECES
-        for (let i = 0; i < 3; i++) {
-          jsonText = jsonText.replace(/&quot;/g, '"');
-          jsonText = jsonText.replace(/&amp;/g, '&');
-          jsonText = jsonText.replace(/&#39;/g, "'");
-          jsonText = jsonText.replace(/&lt;/g, '<');
-          jsonText = jsonText.replace(/&gt;/g, '>');
+        // CRÍTICO: Limpiar HTML entities recursivamente
+        let previousText = '';
+        let iterations = 0;
+        while (previousText !== jsonText && iterations < 10) {
+          previousText = jsonText;
+          jsonText = jsonText.replace(/&quot;/gi, '"');
+          jsonText = jsonText.replace(/&amp;/gi, '&');
+          jsonText = jsonText.replace(/&#39;/gi, "'");
+          jsonText = jsonText.replace(/&#x27;/gi, "'");
+          jsonText = jsonText.replace(/&lt;/gi, '<');
+          jsonText = jsonText.replace(/&gt;/gi, '>');
+          jsonText = jsonText.replace(/&apos;/gi, "'");
+          iterations++;
         }
+        console.log('[Word] Limpieza entities completada en', iterations, 'iteraciones');
         
-        // NUEVO: Limpiar Unicode mal formado
+        // Remover markdown
+        jsonText = jsonText.replace(/```json\n?/gi, '').replace(/```\n?/gi, '');
+        
+        // Limpiar Unicode mal formado
         jsonText = jsonText.replace(/\\u([0-9a-fA-F]{0,3}(?![0-9a-fA-F]))/g, '');
         jsonText = jsonText.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
           return String.fromCharCode(parseInt(hex, 16));
         });
-        
-        // Remover markdown
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         
         // CRÍTICO: Convertir arrays en "content" a strings ANTES del parsing
         jsonText = jsonText.replace(/"content"\s*:\s*\[([^\]]+)\]/g, (match, arrayContent) => {
@@ -241,7 +248,7 @@ class DocumentGeneratorService {
           Crea 3-5 columnas relevantes y 5-8 filas con datos reales relacionados al tema.
           Responde SOLO con el JSON.`,
         [],
-        { maxTokens: 4000, temperature: 0.6 }
+        { maxTokens: 4000, temperature: 0.7 }
       );
       
       if (!aiResponse.success) {
@@ -255,13 +262,19 @@ class DocumentGeneratorService {
         
         console.log('[Excel] Respuesta IA completa:', jsonText.substring(0, 300));
         
-        // Limpiar HTML entities MÚLTIPLES VECES
-        for (let i = 0; i < 3; i++) {
-          jsonText = jsonText.replace(/&quot;/g, '"');
-          jsonText = jsonText.replace(/&amp;/g, '&');
-          jsonText = jsonText.replace(/&#39;/g, "'");
-          jsonText = jsonText.replace(/&lt;/g, '<');
-          jsonText = jsonText.replace(/&gt;/g, '>');
+        // Limpiar HTML entities recursivamente
+        let previousText = '';
+        let iterations = 0;
+        while (previousText !== jsonText && iterations < 10) {
+          previousText = jsonText;
+          jsonText = jsonText.replace(/&quot;/gi, '"');
+          jsonText = jsonText.replace(/&amp;/gi, '&');
+          jsonText = jsonText.replace(/&#39;/gi, "'");
+          jsonText = jsonText.replace(/&#x27;/gi, "'");
+          jsonText = jsonText.replace(/&lt;/gi, '<');
+          jsonText = jsonText.replace(/&gt;/gi, '>');
+          jsonText = jsonText.replace(/&apos;/gi, "'");
+          iterations++;
         }
         
         // Remover markdown
@@ -650,23 +663,30 @@ Responde SOLO con el JSON, nada más.`,
         
         console.log('[PDF] Respuesta IA original:', jsonText.substring(0, 300));
         
-        // Limpiar HTML entities PRIMERO Y MÚLTIPLES VECES
-        for (let i = 0; i < 3; i++) {
-          jsonText = jsonText.replace(/&quot;/g, '"');
-          jsonText = jsonText.replace(/&amp;/g, '&');
-          jsonText = jsonText.replace(/&#39;/g, "'");
-          jsonText = jsonText.replace(/&lt;/g, '<');
-          jsonText = jsonText.replace(/&gt;/g, '>');
+        // CRÍTICO: Limpiar HTML entities recursivamente
+        let previousText = '';
+        let iterations = 0;
+        while (previousText !== jsonText && iterations < 10) {
+          previousText = jsonText;
+          jsonText = jsonText.replace(/&quot;/gi, '"');
+          jsonText = jsonText.replace(/&amp;/gi, '&');
+          jsonText = jsonText.replace(/&#39;/gi, "'");
+          jsonText = jsonText.replace(/&#x27;/gi, "'");
+          jsonText = jsonText.replace(/&lt;/gi, '<');
+          jsonText = jsonText.replace(/&gt;/gi, '>');
+          jsonText = jsonText.replace(/&apos;/gi, "'");
+          iterations++;
         }
+        console.log('[PDF] Limpieza entities completada en', iterations, 'iteraciones');
         
-        // NUEVO: Limpiar Unicode mal formado
+        // Remover markdown
+        jsonText = jsonText.replace(/```json\n?/gi, '').replace(/```\n?/gi, '');
+        
+        // Limpiar Unicode mal formado
         jsonText = jsonText.replace(/\\u([0-9a-fA-F]{0,3}(?![0-9a-fA-F]))/g, '');
         jsonText = jsonText.replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
           return String.fromCharCode(parseInt(hex, 16));
         });
-        
-        // Remover markdown
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
         
         // CRÍTICO: Convertir arrays en "content" a strings ANTES del parsing
         jsonText = jsonText.replace(/"content"\s*:\s*\[([^\]]+)\]/g, (match, arrayContent) => {
