@@ -100,7 +100,7 @@ Esquema JSON a completar (reemplaza ... con contenido real en espanol, max 2 ora
       format: "json",
       keep_alive: -1,
       options: {
-        temperature: 0.2,
+        temperature: 0.6,
         num_predict: 3000,
         num_ctx: 4096
       }
