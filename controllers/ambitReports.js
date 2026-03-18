@@ -4,6 +4,8 @@ const os = require("os");
 const path = require("path");
 const Report = require("../models/reports");
 const ProducerReport = require("../models/producerReports");
+const PublishedReport = require("../models/publishedReports");
+const PublishedProducerReport = require("../models/publishedProducerReports");
 const UserService = require("../services/users");
 const AuditLogger = require("../services/auditLogger");
 const GeminiAmbitReportsService = require("../services/geminiAmbitReports");
@@ -41,8 +43,7 @@ const uniqObjectIds = (...groups) => {
 };
 
 ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
-  // Aumentar timeout para esta operación
-  req.setTimeout(240000); // 4 minutos
+  req.setTimeout(240000);
   res.setTimeout(240000);
   
   try {
@@ -55,6 +56,7 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
       email,
     } = req.body;
 
+    console.log('[AmbitReport] Body recibido:', { producerReportId, responsibleReportId, name, email, instructions });
     if (!email) {
       return res.status(400).json({ message: "email is required" });
     }
@@ -72,8 +74,8 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
     const user = await UserService.findUserByEmailAndRole(email, "Administrador");
 
     const [producerReport, responsibleReport] = await Promise.all([
-      ProducerReport.findById(producerReportId).lean(),
-      Report.findById(responsibleReportId).lean(),
+      ProducerReport.findById(producerReportId).populate({ path: 'dimensions', select: 'name', model: 'dimensions' }).lean(),
+      Report.findById(responsibleReportId).populate({ path: 'dimensions', select: 'name', model: 'dimensions' }).lean(),
     ]);
 
     if (!producerReport) {
@@ -84,10 +86,49 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
       return res.status(404).json({ message: "Responsible report not found" });
     }
 
-    const mergedDimensions = uniqObjectIds(
-      producerReport.dimensions,
-      responsibleReport.dimensions
+    // Buscar respuestas reales enviadas para estos informes
+    const producerObjId = new mongoose.Types.ObjectId(producerReportId);
+    const responsibleObjId = new mongoose.Types.ObjectId(responsibleReportId);
+
+    const [publishedProducerData, publishedResponsibleData] = await Promise.all([
+      PublishedProducerReport.find({ "report._id": producerObjId })
+        .select("filled_reports period")
+        .lean(),
+      PublishedReport.find({ "report._id": responsibleObjId })
+        .select("filled_reports period")
+        .lean(),
+    ]);
+
+    console.log(`[AmbitReport] PublishedProducer encontrados: ${publishedProducerData.length}, PublishedResponsible: ${publishedResponsibleData.length}`);
+    // Extraer filled_reports con datos relevantes
+    const producerFilledReports = publishedProducerData.flatMap(p =>
+      (p.filled_reports || []).map(fr => ({
+        dependency: fr.dependency,
+        status: fr.status,
+        observations: fr.observations || "",
+        loaded_date: fr.loaded_date,
+        send_by: fr.send_by?.full_name || fr.send_by?.email || "",
+      }))
     );
+
+    const responsibleFilledReports = publishedResponsibleData.flatMap(p =>
+      (p.filled_reports || []).map(fr => ({
+        dimension: fr.dimension,
+        status: fr.status,
+        observations: fr.observations || "",
+        loaded_date: fr.loaded_date,
+        send_by: fr.send_by?.full_name || fr.send_by?.email || "",
+      }))
+    );
+
+    console.log(`[AmbitReport] Respuestas productor: ${producerFilledReports.length}, Responsable: ${responsibleFilledReports.length}`);
+
+    const mergedDimensions = uniqObjectIds(
+      producerReport.dimensions.map(d => d._id || d),
+      responsibleReport.dimensions.map(d => d._id || d)
+    );
+
+    console.log('[AmbitReport] mergedDimensions:', mergedDimensions.length);
 
     if (mergedDimensions.length === 0) {
       return res.status(400).json({
@@ -102,6 +143,8 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
       aiResult = await GeminiAmbitReportsService.generateMergePlan({
         producerReport,
         responsibleReport,
+        producerFilledReports,
+        responsibleFilledReports,
         instructions: String(instructions || ""),
       });
     } catch (error) {
@@ -110,6 +153,7 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
     }
 
     const aiParsed = aiResult?.parsed || null;
+    console.log('[AmbitReport] aiParsed:', JSON.stringify(aiParsed, null, 2));
 
     const generatedDescription =
       String(aiParsed?.description || "").trim() ||
@@ -147,47 +191,40 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
         : null;
 
     let generatedAttachment = null;
+    let generatedResponsibleAttachment = null;
+    let generatedProducerAttachment = null;
     try {
       const docResult = await buildMergedAmbitWordDocument({
         reportName: String(name).trim(),
         producerReport,
         responsibleReport,
         aiMergePlan: aiParsed,
-        aiMetadata: {
-          model: aiResult?.model || null,
-        },
+        aiMetadata: { model: aiResult?.model || null },
       });
 
-      const tempFilePath = path.join(
-        os.tmpdir(),
-        `ambit-report-${Date.now()}-${Math.random().toString(36).slice(2)}.${docResult.stats.format}`
-      );
-      fs.writeFileSync(tempFilePath, docResult.buffer);
+      const uploadDoc = async (buffer, label) => {
+        if (!buffer) return null;
+        const tempPath = path.join(os.tmpdir(), `ambit-${label}-${Date.now()}.docx`);
+        fs.writeFileSync(tempPath, buffer);
+        const uploaded = await uploadFileToGoogleDrive(
+          { path: tempPath, mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+          'Formatos/Informes/Dimensiones',
+          buildSafeFileName(`${name}_${label}`, '.docx')
+        );
+        try { fs.unlinkSync(tempPath); } catch (_) {}
+        return { id: uploaded.id, link: uploaded.webViewLink, download: uploaded.webContentLink };
+      };
 
-      const mimeType = docResult.stats.format === 'docx' 
-        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        : 'application/rtf';
+      const [mainUploaded, responsibleUploaded, producerUploaded] = await Promise.all([
+        uploadDoc(docResult.buffer, 'ambito'),
+        uploadDoc(docResult.responsibleBuffer, 'responsable'),
+        uploadDoc(docResult.producerBuffer, 'productor'),
+      ]);
 
-      const uploaded = await uploadFileToGoogleDrive(
-        {
-          path: tempFilePath,
-          mimetype: mimeType,
-        },
-        "Formatos/Informes/Dimensiones",
-        aiSuggestedFileName.replace(/\.rtf$/i, `.${docResult.stats.format}`)
-      );
+      if (mainUploaded) generatedAttachment = { ...mainUploaded, source: 'generated_ai_merge', document_stats: docResult.stats };
+      if (responsibleUploaded) generatedResponsibleAttachment = { ...responsibleUploaded, source: 'generated_responsible' };
+      if (producerUploaded) generatedProducerAttachment = { ...producerUploaded, source: 'generated_producer' };
 
-        generatedAttachment = {
-          id: uploaded.id,
-          link: uploaded.webViewLink,
-          download: uploaded.webContentLink,
-          source: "generated_ai_merge",
-          document_stats: docResult.stats,
-        };
-
-      try {
-        fs.unlinkSync(tempFilePath);
-      } catch (_) {}
     } catch (error) {
       console.error("Error generating/uploading ambit workbook attachment:", error);
     }
@@ -214,22 +251,13 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
         model: aiResult?.model || null,
         strategy: aiResult ? "ai-merge-plan" : "base-merge-fallback",
         source_reports: {
-          producer: {
-            _id: String(producerReport._id),
-            name: producerReport.name,
-          },
-          responsible: {
-            _id: String(responsibleReport._id),
-            name: responsibleReport.name,
-          },
+          producer: { _id: String(producerReport._id), name: producerReport.name },
+          responsible: { _id: String(responsibleReport._id), name: responsibleReport.name },
         },
         inherited_attachment_from: generatedAttachment ? null : inheritedAttachment?.source || null,
-        generated_attachment: generatedAttachment
-          ? {
-              source: generatedAttachment.source,
-              document_stats: generatedAttachment.document_stats || null,
-            }
-          : null,
+        generated_attachment: generatedAttachment ? { source: generatedAttachment.source, document_stats: generatedAttachment.document_stats || null } : null,
+        generated_responsible_attachment: generatedResponsibleAttachment || null,
+        generated_producer_attachment: generatedProducerAttachment || null,
         instructions: String(instructions || "").trim(),
         merge_plan: aiParsed,
         raw_response: aiResult?.rawText || null,
@@ -281,14 +309,13 @@ ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
         mergePlan: aiParsed,
       },
       sources: {
-        producerReport: {
-          _id: producerReport._id,
-          name: producerReport.name,
-        },
-        responsibleReport: {
-          _id: responsibleReport._id,
-          name: responsibleReport.name,
-        },
+        producerReport: { _id: producerReport._id, name: producerReport.name },
+        responsibleReport: { _id: responsibleReport._id, name: responsibleReport.name },
+      },
+      attachments: {
+        ambit: generatedAttachment || null,
+        responsible: generatedResponsibleAttachment || null,
+        producer: generatedProducerAttachment || null,
       },
     });
   } catch (error) {

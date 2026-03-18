@@ -16,30 +16,28 @@ class GeminiAmbitReportsService {
     };
   }
 
-  static buildPrompt({ producerReport, responsibleReport, instructions }) {
-    return [
-      "JSON:",
-      JSON.stringify({
-        report_title: "Informe de " + producerReport.name,
-        table_of_contents: [
-          {section: "Objetivo", page: 1},
-          {section: "Variables", page: 2},
-          {section: "Metodologia", page: 3},
-          {section: "Analisis", page: 4},
-          {section: "Conclusiones", page: 5}
-        ],
-        sections: {
-          objective: "Analizar datos de " + producerReport.name + " y " + responsibleReport.name,
-          variables: "Variables institucionales",
-          methodology: "Analisis cuantitativo y cualitativo",
-          analysis: [{dimension_name: "General", content: "Analisis de datos", conclusions: "Resultados positivos"}],
-          general_conclusions: "Cumplimiento de objetivos",
-          integral_evaluation: "Evaluacion satisfactoria",
-          improvement_actions: ["Continuar mejorando"],
-          references: ["CNA 2024"]
-        }
-      }),
-    ].join("\n");
+  static buildPrompt({ producerReport, responsibleReport, producerFilledReports, responsibleFilledReports, instructions }) {
+    const producerDims = (producerReport.dimensions || []).map(d => d.name || d).filter(Boolean);
+    const responsibleDims = (responsibleReport.dimensions || []).map(d => d.name || d).filter(Boolean);
+    const allDims = [...new Set([...producerDims, ...responsibleDims])];
+
+    const fmtReports = (list) => list.length > 0
+      ? list.slice(0, 5).map((fr, i) =>
+          `${i + 1}. Estado:${fr.status} Obs:${(fr.observations || 'ninguna').substring(0, 60)}`
+        ).join('; ')
+      : 'Sin respuestas.';
+
+    const analysisSchema = allDims.map(dim => `{"dimension_name":"${dim}","content":"...","conclusions":"..."}`).join(',');
+
+    return `Eres experto en acreditacion CNA Colombia. Responde SOLO con JSON valido, sin texto adicional.
+
+DATOS:
+Productor: "${producerReport.name}" | Dims: ${producerDims.join(', ') || 'N/A'} | Respuestas: ${fmtReports(producerFilledReports)}
+Responsable: "${responsibleReport.name}" | Dims: ${responsibleDims.join(', ') || 'N/A'} | Respuestas: ${fmtReports(responsibleFilledReports)}
+${instructions ? `Instrucciones extra: ${instructions}` : ''}
+
+Esquema JSON a completar (reemplaza ... con contenido real en espanol, max 2 oraciones por campo):
+{"report_title":"Informe Ambito: ${producerReport.name} y ${responsibleReport.name}","filename_suggestion":"informe_ambito","description":"...","requires_attachment":false,"table_of_contents":[{"section":"Objetivo","page":1},{"section":"Analisis","page":2},{"section":"Conclusiones","page":3}],"sections":{"objective":"...","variables":"...","methodology":"...","analysis":[${analysisSchema}],"general_conclusions":"...","integral_evaluation":"...","improvement_actions":["...","..."],"references":["CNA 2024","Lineamientos Unibague"]}}`;
   }
 
   static safeJsonParse(content) {
@@ -61,9 +59,9 @@ class GeminiAmbitReportsService {
     }
   }
 
-  static async generateMergePlan({ producerReport, responsibleReport, instructions }) {
+  static async generateMergePlan({ producerReport, responsibleReport, producerFilledReports, responsibleFilledReports, instructions }) {
     const { model, ollamaUrl, useGemini, geminiKey } = this.getConfig();
-    const prompt = this.buildPrompt({ producerReport, responsibleReport, instructions });
+    const prompt = this.buildPrompt({ producerReport, responsibleReport, producerFilledReports, responsibleFilledReports, instructions });
 
     console.log("[AI] Using:", useGemini ? 'Gemini API' : 'Ollama', model);
 
@@ -79,9 +77,7 @@ class GeminiAmbitReportsService {
     
     const response = await axios.post(url, {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { 
-        temperature: 0.3
-      }
+      generationConfig: { temperature: 0.3 }
     }, { timeout: 30000 });
 
     const content = response?.data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -105,11 +101,11 @@ class GeminiAmbitReportsService {
       keep_alive: -1,
       options: {
         temperature: 0.2,
-        num_predict: 500,
+        num_predict: 3000,
         num_ctx: 4096
       }
     }, {
-      timeout: 120000  // 2 minutos para llama3.2:3b
+      timeout: 240000
     });
 
     const content = response?.data?.response;
