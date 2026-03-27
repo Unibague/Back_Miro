@@ -1,0 +1,202 @@
+const Process        = require('../models/processes');
+const Phase          = require('../models/phases');
+const ProcessDoc     = require('../models/processDocuments');
+const Program        = require('../models/programs');
+const ProcessHistory = require('../models/processHistory');
+
+const processHistoryController = {};
+
+/* POST /processes/:id/close
+   Archiva el proceso en processHistory, elimina sus fases/documentos y
+   reinicia el proceso (fase 0, sin resolución, sin fechas). */
+processHistoryController.close = async (req, res) => {
+  try {
+    const proc = await Process.findById(req.params.id);
+    if (!proc) return res.status(404).json({ error: 'Proceso no encontrado' });
+
+    const program = await Program.findOne({ dep_code_programa: proc.program_code });
+    if (!program) return res.status(404).json({ error: 'Programa asociado no encontrado' });
+
+    const sufijo = proc.tipo_proceso.toLowerCase();
+
+    /* 1 — Obtener todas las fases del proceso con sus documentos, actividades y subactividades */
+    const fases = await Phase.find({ proceso_id: proc._id }).sort({ numero: 1 });
+
+    const mapDoc = d => ({
+      _id:           d._id,
+      name:          d.name,
+      drive_id:      d.drive_id,
+      view_link:     d.view_link,
+      download_link: d.download_link,
+      mime_type:     d.mime_type ?? null,
+      size:          d.size ?? null,
+      subido_en:     d.createdAt ?? null,
+    });
+
+    const fasesSnapshot = await Promise.all(
+      fases.map(async (f) => {
+        // Docs de nivel fase (sin actividad)
+        const faseDocs = await ProcessDoc.find({ phase_id: f._id, actividad_id: null }).lean();
+
+        // Para cada actividad, capturar sus docs y los de sus subactividades
+        const actividadesSnapshot = await Promise.all(
+          f.actividades.map(async (act) => {
+            const actDocs = await ProcessDoc.find({
+              phase_id: f._id,
+              actividad_id: act._id,
+              subactividad_id: null,
+            }).lean();
+
+            const subactividades = await Promise.all(
+              act.subactividades.map(async (sub) => {
+                const subDocs = await ProcessDoc.find({
+                  phase_id: f._id,
+                  actividad_id: act._id,
+                  subactividad_id: sub._id,
+                }).lean();
+                return {
+                  nombre:           sub.nombre,
+                  completada:       sub.completada,
+                  fecha_completado: sub.fecha_completado ?? null,
+                  observaciones:    sub.observaciones ?? '',
+                  documentos:       subDocs.map(mapDoc),
+                };
+              })
+            );
+
+            return {
+              nombre:           act.nombre,
+              responsables:     act.responsables ?? '',
+              completada:       act.completada,
+              fecha_completado: act.fecha_completado ?? null,
+              observaciones:    act.observaciones ?? '',
+              documentos:       actDocs.map(mapDoc),
+              subactividades,
+            };
+          })
+        );
+
+        return {
+          fase_numero:              f.numero,
+          fase_nombre:              f.nombre,
+          actividades_completadas:  f.actividades.filter(a => a.completada).length,
+          actividades_total:        f.actividades.length,
+          documentos:               faseDocs.map(mapDoc),
+          actividades:              actividadesSnapshot,
+        };
+      })
+    );
+
+    /* 2 — Capturar documentos ligados directamente al proceso (PDF resolución vigente) */
+    const docsDirectos = await ProcessDoc.find({ process_id: proc._id, phase_id: null }).lean();
+    const docResolucionSnapshot = docsDirectos.map(mapDoc);
+
+    /* 3 — Capturar snapshot del PM hijo si existe (antes de eliminarlo) */
+    const pmHijo = await Process.findOne({
+      program_code: proc.program_code,
+      tipo_proceso: 'PM',
+      parent_process_id: proc._id,
+    });
+    const pmLigadoSnapshot = pmHijo ? {
+      subtipo:                          pmHijo.subtipo ?? null,
+      fecha_envio_pm_vicerrectoria:     pmHijo.fecha_envio_pm_vicerrectoria     ?? null,
+      fecha_entrega_pm_cna:             pmHijo.fecha_entrega_pm_cna             ?? null,
+      fecha_envio_avance_vicerrectoria: pmHijo.fecha_envio_avance_vicerrectoria ?? null,
+      fecha_radicacion_avance_cna:      pmHijo.fecha_radicacion_avance_cna      ?? null,
+      observaciones:                    pmHijo.observaciones ?? '',
+    } : null;
+
+    /* 4 — Crear registro en processHistory */
+    await ProcessHistory.create({
+      program_code:      proc.program_code,
+      dep_code_facultad: program.dep_code_facultad,
+      nombre_programa:   program.nombre,
+      process_id:        proc._id,
+      tipo_proceso:      proc.tipo_proceso,
+      nombre_proceso:    proc.name,
+      subtipo:           proc.subtipo ?? null,
+
+      codigo_resolucion:   program[`codigo_resolucion_${sufijo}`] ?? null,
+      fecha_resolucion:    program[`fecha_resolucion_${sufijo}`]  ?? null,
+      duracion_resolucion: program[`duracion_resolucion_${sufijo}`] ?? null,
+
+      fecha_vencimiento:      proc.fecha_vencimiento,
+      fecha_inicio:           proc.fecha_inicio,
+      fecha_documento_par:    proc.fecha_documento_par,
+      fecha_digitacion_saces: proc.fecha_digitacion_saces,
+      fecha_radicado_men:     proc.fecha_radicado_men,
+
+      fase_al_cierre:    proc.fase_actual,
+      observaciones:     proc.observaciones ?? '',
+      condicion:         proc.condicion ?? null,
+
+      pm_ligado: pmLigadoSnapshot,
+
+      fases: fasesSnapshot,
+      documentos_proceso: docResolucionSnapshot,
+      cerrado_por: req.body.cerrado_por ?? null,
+    });
+
+    /* 5 — Limpiar documentos de fases y del proceso */
+    const faseIds = fases.map(f => f._id);
+    await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
+    await ProcessDoc.deleteMany({ process_id: proc._id });
+
+    /* 6 — Eliminar fases actuales */
+    await Phase.deleteMany({ proceso_id: proc._id });
+
+    /* 7 — Eliminar el PM hijo si existía */
+    if (pmHijo) {
+      await Phase.deleteMany({ proceso_id: pmHijo._id });
+      await ProcessDoc.deleteMany({ process_id: pmHijo._id });
+      await Process.findByIdAndDelete(pmHijo._id);
+    }
+
+    /* 8 — Limpiar los campos de resolución del programa para este tipo */
+    const camposResolucion = {
+      [`fecha_resolucion_${sufijo}`]:    null,
+      [`codigo_resolucion_${sufijo}`]:   null,
+      [`duracion_resolucion_${sufijo}`]: null,
+    };
+    await Program.findByIdAndUpdate(program._id, { $set: camposResolucion });
+
+    /* 9 — Eliminar el proceso activo (ya fue archivado en el historial) */
+    await Process.findByIdAndDelete(proc._id);
+
+    res.status(200).json({ message: 'Proceso cerrado y archivado correctamente' });
+  } catch (error) {
+    console.error('Error cerrando proceso:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* GET /process-history
+   Filtros opcionales: program_code, dep_code_facultad, tipo_proceso */
+processHistoryController.getAll = async (req, res) => {
+  try {
+    const query = {};
+    if (req.query.program_code)      query.program_code      = req.query.program_code;
+    if (req.query.dep_code_facultad) query.dep_code_facultad = req.query.dep_code_facultad;
+    if (req.query.tipo_proceso)      query.tipo_proceso      = req.query.tipo_proceso;
+
+    const records = await ProcessHistory.find(query).sort({ cerrado_en: -1 });
+    res.status(200).json(records);
+  } catch (error) {
+    console.error('Error obteniendo historial:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* GET /process-history/:id — detalle de un registro histórico */
+processHistoryController.getById = async (req, res) => {
+  try {
+    const record = await ProcessHistory.findById(req.params.id);
+    if (!record) return res.status(404).json({ error: 'Registro no encontrado' });
+    res.status(200).json(record);
+  } catch (error) {
+    console.error('Error obteniendo registro histórico:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+module.exports = processHistoryController;
