@@ -19,32 +19,10 @@ processHistoryController.close = async (req, res) => {
 
     const sufijo = proc.tipo_proceso.toLowerCase();
 
-    /* 1 — Obtener todas las fases del proceso con sus documentos */
+    /* 1 — Obtener todas las fases del proceso con sus documentos, actividades y subactividades */
     const fases = await Phase.find({ proceso_id: proc._id }).sort({ numero: 1 });
-    const fasesSnapshot = await Promise.all(
-      fases.map(async (f) => {
-        const docs = await ProcessDoc.find({ phase_id: f._id }).lean();
-        return {
-          fase_numero:              f.numero,
-          fase_nombre:              f.nombre,
-          actividades_completadas:  f.actividades.filter(a => a.completada).length,
-          actividades_total:        f.actividades.length,
-          documentos: docs.map(d => ({
-            _id:           d._id,
-            name:          d.name,
-            drive_id:      d.drive_id,
-            view_link:     d.view_link,
-            download_link: d.download_link,
-            mime_type:     d.mime_type ?? null,
-            size:          d.size ?? null,
-          })),
-        };
-      })
-    );
 
-    /* 2 — Capturar documentos ligados directamente al proceso (PDF resolución vigente) */
-    const docsDirectos = await ProcessDoc.find({ process_id: proc._id, phase_id: null }).lean();
-    const docResolucionSnapshot = docsDirectos.map(d => ({
+    const mapDoc = d => ({
       _id:           d._id,
       name:          d.name,
       drive_id:      d.drive_id,
@@ -52,7 +30,66 @@ processHistoryController.close = async (req, res) => {
       download_link: d.download_link,
       mime_type:     d.mime_type ?? null,
       size:          d.size ?? null,
-    }));
+      subido_en:     d.createdAt ?? null,
+    });
+
+    const fasesSnapshot = await Promise.all(
+      fases.map(async (f) => {
+        // Docs de nivel fase (sin actividad)
+        const faseDocs = await ProcessDoc.find({ phase_id: f._id, actividad_id: null }).lean();
+
+        // Para cada actividad, capturar sus docs y los de sus subactividades
+        const actividadesSnapshot = await Promise.all(
+          f.actividades.map(async (act) => {
+            const actDocs = await ProcessDoc.find({
+              phase_id: f._id,
+              actividad_id: act._id,
+              subactividad_id: null,
+            }).lean();
+
+            const subactividades = await Promise.all(
+              act.subactividades.map(async (sub) => {
+                const subDocs = await ProcessDoc.find({
+                  phase_id: f._id,
+                  actividad_id: act._id,
+                  subactividad_id: sub._id,
+                }).lean();
+                return {
+                  nombre:           sub.nombre,
+                  completada:       sub.completada,
+                  fecha_completado: sub.fecha_completado ?? null,
+                  observaciones:    sub.observaciones ?? '',
+                  documentos:       subDocs.map(mapDoc),
+                };
+              })
+            );
+
+            return {
+              nombre:           act.nombre,
+              responsables:     act.responsables ?? '',
+              completada:       act.completada,
+              fecha_completado: act.fecha_completado ?? null,
+              observaciones:    act.observaciones ?? '',
+              documentos:       actDocs.map(mapDoc),
+              subactividades,
+            };
+          })
+        );
+
+        return {
+          fase_numero:              f.numero,
+          fase_nombre:              f.nombre,
+          actividades_completadas:  f.actividades.filter(a => a.completada).length,
+          actividades_total:        f.actividades.length,
+          documentos:               faseDocs.map(mapDoc),
+          actividades:              actividadesSnapshot,
+        };
+      })
+    );
+
+    /* 2 — Capturar documentos ligados directamente al proceso (PDF resolución vigente) */
+    const docsDirectos = await ProcessDoc.find({ process_id: proc._id, phase_id: null }).lean();
+    const docResolucionSnapshot = docsDirectos.map(mapDoc);
 
     /* 3 — Capturar snapshot del PM hijo si existe (antes de eliminarlo) */
     const pmHijo = await Process.findOne({

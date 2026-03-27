@@ -11,8 +11,14 @@ processDocumentsController.getByPhase = async (req, res) => {
       return res.status(400).json({ error: 'phase_id es requerido' });
     }
     const query = { phase_id };
-    if (actividad_id)    query.actividad_id    = actividad_id;
-    if (subactividad_id) query.subactividad_id = subactividad_id;
+    if (actividad_id) {
+      query.actividad_id = actividad_id;
+      // Solo docs de esa subactividad o solo de la actividad (sin subactividad)
+      query.subactividad_id = subactividad_id || null;
+    } else {
+      // Solo docs de nivel fase (sin actividad ni subactividad)
+      query.actividad_id = null;
+    }
     const docs = await ProcessDocument.find(query).sort({ createdAt: -1 });
     res.status(200).json(docs);
   } catch (error) {

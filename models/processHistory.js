@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-/* Snapshot de un documento de fase al momento de cerrar el proceso */
+/* Snapshot de un documento al momento de cerrar el proceso */
 const docSnapshotSchema = new mongoose.Schema(
   {
     _id:           { type: mongoose.Schema.Types.ObjectId },
@@ -10,6 +10,33 @@ const docSnapshotSchema = new mongoose.Schema(
     download_link: { type: String },
     mime_type:     { type: String, default: null },
     size:          { type: Number, default: null },
+    subido_en:     { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+/* Snapshot de una subactividad */
+const subactividadSnapshotSchema = new mongoose.Schema(
+  {
+    nombre:          { type: String },
+    completada:      { type: Boolean, default: false },
+    fecha_completado:{ type: String, default: null },
+    observaciones:   { type: String, default: '' },
+    documentos:      { type: [docSnapshotSchema], default: [] },
+  },
+  { _id: false }
+);
+
+/* Snapshot de una actividad */
+const actividadSnapshotSchema = new mongoose.Schema(
+  {
+    nombre:          { type: String },
+    responsables:    { type: String, default: '' },
+    completada:      { type: Boolean, default: false },
+    fecha_completado:{ type: String, default: null },
+    observaciones:   { type: String, default: '' },
+    documentos:      { type: [docSnapshotSchema], default: [] },
+    subactividades:  { type: [subactividadSnapshotSchema], default: [] },
   },
   { _id: false }
 );
@@ -17,11 +44,12 @@ const docSnapshotSchema = new mongoose.Schema(
 /* Snapshot de una fase completa al momento de cerrar el proceso */
 const faseSnapshotSchema = new mongoose.Schema(
   {
-    fase_numero: { type: Number },
-    fase_nombre: { type: String },
+    fase_numero:             { type: Number },
+    fase_nombre:             { type: String },
     actividades_completadas: { type: Number, default: 0 },
     actividades_total:       { type: Number, default: 0 },
     documentos:              { type: [docSnapshotSchema], default: [] },
+    actividades:             { type: [actividadSnapshotSchema], default: [] },
   },
   { _id: false }
 );
