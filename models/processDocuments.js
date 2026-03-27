@@ -1,0 +1,60 @@
+const mongoose = require('mongoose');
+
+const processDocumentSchema = new mongoose.Schema(
+  {
+    phase_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'phases',
+      required: false,
+    },
+    process_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'processes',
+      required: false,
+    },
+    actividad_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    subactividad_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    name: {
+      type: String,
+      required: true,
+    },
+    drive_id: {
+      type: String,
+      required: true,
+    },
+    view_link: {
+      type: String,
+      required: true,
+    },
+    download_link: {
+      type: String,
+      required: true,
+    },
+    mime_type: {
+      type: String,
+      default: null,
+    },
+    size: {
+      type: Number,
+      default: null,
+    },
+    doc_type: {
+      type: String,
+      enum: ['resolucion', 'proceso'],
+      default: 'proceso',
+    },
+  },
+  {
+    versionKey: false,
+    timestamps: true,
+  }
+);
+
+module.exports = mongoose.model('processesdocuments', processDocumentSchema);
+
