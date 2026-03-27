@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const ExcelJS = require("exceljs");
 const PizZip = require("pizzip");
@@ -8,6 +9,7 @@ const PublishedTemplate = require("../models/publishedTemplates");
 const Dependency = require("../models/dependencies");
 const Period = require("../models/periods");
 const Student = require("../models/students");
+const Validator = require("./validators");
 const UserService = require("../services/users");
 const {
   uploadFileToGoogleDrive,
@@ -19,6 +21,139 @@ const {
 const axios = require("axios");
 
 const controller = {};
+
+const normalizeArrayInput = (value) => {
+  if (Array.isArray(value)) return value;
+  if (value === undefined || value === null || value === "") return [];
+  return [value];
+};
+
+const normalizeBoolean = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return fallback;
+};
+
+const parseIdArray = (value) =>
+  normalizeArrayInput(value)
+    .flatMap((item) => {
+      if (typeof item === "string" && item.trim().startsWith("[")) {
+        try {
+          return JSON.parse(item);
+        } catch (error) {
+          return [item];
+        }
+      }
+      return [item];
+    })
+    .filter(Boolean);
+
+const parseFieldsInput = (value) => {
+  if (!value) return [];
+
+  const rawFields = (() => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        return [];
+      }
+    }
+    return [];
+  })();
+
+  return rawFields
+    .map((field) => ({
+      name: String(field?.name || "").trim(),
+      worksheet_name: String(field?.worksheet_name || "").trim(),
+      insert_after: String(field?.insert_after || "").trim(),
+      datatype: String(field?.datatype || "").trim(),
+      required: normalizeBoolean(field?.required, true),
+      validate_with: String(field?.validate_with || "").trim(),
+      comment: String(field?.comment || "").trim(),
+      field_origin: String(field?.field_origin || "snies_extra").trim() === "snies_original"
+        ? "snies_original"
+        : "snies_extra",
+      visible_for_producer: normalizeBoolean(field?.visible_for_producer, true),
+      export_to_snies: normalizeBoolean(field?.export_to_snies, false),
+      multiple: normalizeBoolean(field?.multiple, false),
+    }))
+    .filter((field) => field.name && field.datatype);
+};
+
+const getWorkbookSheetsFromTemplate = async (template) => {
+  const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(templateBuffer);
+
+  return workbook.worksheets.map((worksheet) => {
+    const { headers } = extractWorksheetHeaders(worksheet);
+    const configuredExtraFieldNames = new Set(
+      (template.fields || [])
+        .filter((field) => field?.field_origin !== "snies_original" && field?.worksheet_name === worksheet.name)
+        .map((field) => normalizeFieldName(field.name))
+        .filter(Boolean)
+    );
+
+    const originalHeaders = headers.filter(
+      (header) => !configuredExtraFieldNames.has(normalizeFieldName(header))
+    );
+    const visualFields = originalHeaders.map((header) => ({
+      name: header,
+      field_origin: "snies_original",
+      visible_for_producer: true,
+      export_to_snies: true,
+    }));
+
+    const additionalFields = (template.fields || [])
+      .filter((field) => field?.field_origin !== "snies_original" && field?.worksheet_name === worksheet.name)
+      .map((field) => ({
+        name: field.name || "",
+        insert_after: field.insert_after || "",
+        field_origin: "snies_extra",
+        visible_for_producer: field.visible_for_producer ?? true,
+        export_to_snies: field.export_to_snies ?? false,
+      }));
+
+    additionalFields.forEach((field) => {
+      const normalizedName = normalizeFieldName(field.name);
+      if (!normalizedName) {
+        return;
+      }
+
+      const currentIndex = visualFields.findIndex((item) => normalizeFieldName(item.name) === normalizedName);
+      if (currentIndex >= 0) {
+        visualFields.splice(currentIndex, 1);
+      }
+
+      const insertAfter = normalizeFieldName(field.insert_after);
+      const insertAfterIndex = insertAfter
+        ? visualFields.findIndex((item) => normalizeFieldName(item.name) === insertAfter)
+        : -1;
+
+      if (insertAfterIndex >= 0) {
+        visualFields.splice(insertAfterIndex + 1, 0, field);
+      } else {
+        visualFields.push(field);
+      }
+    });
+
+    return {
+      worksheetName: worksheet.name,
+      headers: originalHeaders,
+      visual_fields: visualFields,
+    };
+  }).filter(
+    (sheet) =>
+      !isInfoWorksheet(sheet.worksheetName) &&
+      normalizeComparableName(sheet.worksheetName) !== "GUIA_CAMPOS_SNIES" &&
+      normalizeComparableName(sheet.worksheetName) !== "LISTAS"
+  );
+};
 
 const normalizeFieldName = (fieldName = "") =>
   fieldName
@@ -38,6 +173,45 @@ const buildDownloadFileName = (template) => {
   }
 
   return `${templateName}${extension}`;
+};
+
+const sanitizeWorksheetName = (value, fallback = "Hoja") => {
+  const cleaned = String(value || fallback)
+    .replace(/[\\/*?:[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (cleaned || fallback).slice(0, 31);
+};
+
+const resolveUniqueWorksheetName = (workbook, value, fallback = "Hoja") => {
+  const baseName = sanitizeWorksheetName(value, fallback) || fallback;
+  let candidate = baseName;
+  let counter = 1;
+
+  while (workbook.getWorksheet(candidate)) {
+    const suffix = `_${counter}`;
+    candidate = `${baseName.slice(0, 31 - suffix.length)}${suffix}`;
+    counter += 1;
+  }
+
+  return candidate;
+};
+
+const buildComparisonFileName = (template) => {
+  const templateName = String(template?.name || "comparativo_snies").trim() || "comparativo_snies";
+  return `${templateName}_comparativo_campos.xlsx`;
+};
+
+const buildAllComparisonsFileName = () => {
+  const dateTag = new Date().toISOString().slice(0, 10);
+  return `snies_comparativo_campos_${dateTag}.xlsx`;
+};
+
+const MATCH_FILL = {
+  type: "pattern",
+  pattern: "solid",
+  fgColor: { argb: "FFD9F2D9" },
 };
 
 const normalizeComparableName = (value = "") =>
@@ -382,6 +556,100 @@ const columnNumberToName = (columnNumber) => {
   return columnName || "A";
 };
 
+const normalizeToken = (value = "") =>
+  String(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+const resolveValueByKey = (row, targetKey) => {
+  if (Object.prototype.hasOwnProperty.call(row || {}, targetKey)) {
+    return row[targetKey];
+  }
+
+  const normalizedTarget = normalizeToken(targetKey);
+  const matchedKey = Object.keys(row || {}).find((key) => normalizeToken(key) === normalizedTarget);
+  return matchedKey ? row[matchedKey] : undefined;
+};
+
+const toOptionText = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object" && value.$numberInt !== undefined) {
+    return String(value.$numberInt ?? "").trim();
+  }
+  return String(value).trim();
+};
+
+const getValidatorOptions = (validator, preferredColumnName) => {
+  const options = [];
+  const seen = new Set();
+
+  (validator?.values || []).forEach((row) => {
+    const keys = Object.keys(row || {});
+    if (keys.length === 0) return;
+
+    const preferredKey = preferredColumnName
+      ? keys.find((key) => normalizeToken(key) === normalizeToken(preferredColumnName))
+      : undefined;
+
+    const idKey = preferredKey || keys[0];
+    const idValue = resolveValueByKey(row, idKey);
+    if (idValue === null || idValue === undefined) return;
+
+    const descKey = keys.find((key) => {
+      if (key === idKey) return false;
+      const normalized = normalizeToken(key);
+      return (
+        normalized.includes("DESCRIPCION") ||
+        normalized.includes("NOMBRE") ||
+        normalized.startsWith("DESC")
+      );
+    });
+
+    const idText = toOptionText(idValue);
+    if (!idText || seen.has(idText)) return;
+
+    const descValue = descKey ? resolveValueByKey(row, descKey) : undefined;
+    const descText = toOptionText(descValue);
+    const displayLabel = descText ? `${idText} - ${descText}` : idText;
+
+    seen.add(idText);
+    options.push({ value: idText, displayLabel });
+  });
+
+  return options;
+};
+
+const columnNameToNumber = (columnName = "") => {
+  return String(columnName)
+    .toUpperCase()
+    .split("")
+    .reduce((total, char) => {
+      if (char < "A" || char > "Z") {
+        return total;
+      }
+
+      return total * 26 + (char.charCodeAt(0) - 64);
+    }, 0);
+};
+
+const parseCellReference = (cellRef = "") => {
+  const match = String(cellRef).match(/^([A-Z]+)(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    columnName: match[1].toUpperCase(),
+    columnNumber: columnNameToNumber(match[1]),
+    rowNumber: Number(match[2]),
+  };
+};
+
 const getWorksheetXmlPathMap = (zip) => {
   const parser = new DOMParser();
   const workbookXml = zip.file("xl/workbook.xml")?.asText();
@@ -443,6 +711,398 @@ const buildCellNode = (doc, cellRef, value) => {
   return cellNode;
 };
 
+const getRelationshipTargetPath = (baseFilePath, target = "") => {
+  const normalizedTarget = String(target || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  if (normalizedTarget.startsWith("xl/")) {
+    return normalizedTarget;
+  }
+
+  const baseDir = path.posix.dirname(baseFilePath);
+  return path.posix.normalize(path.posix.join(baseDir, normalizedTarget));
+};
+
+const getWorksheetCommentsFileMap = (zip, worksheetPathMap) => {
+  const parser = new DOMParser();
+  const commentsBySheet = new Map();
+
+  Object.entries(worksheetPathMap).forEach(([worksheetName, worksheetPath]) => {
+    const relsPath = `${path.posix.dirname(worksheetPath)}/_rels/${path.posix.basename(worksheetPath)}.rels`;
+    const relsFile = zip.file(relsPath);
+
+    if (!relsFile) {
+      commentsBySheet.set(worksheetName, new Map());
+      return;
+    }
+
+    const relsDoc = parser.parseFromString(relsFile.asText(), "application/xml");
+    const relationships = Array.from(relsDoc.getElementsByTagName("Relationship"));
+    const commentsRelationship = relationships.find((relationship) =>
+      String(relationship.getAttribute("Type") || "").includes("/comments")
+    );
+
+    if (!commentsRelationship) {
+      commentsBySheet.set(worksheetName, new Map());
+      return;
+    }
+
+    const commentsPath = getRelationshipTargetPath(worksheetPath, commentsRelationship.getAttribute("Target"));
+    const commentsFile = commentsPath ? zip.file(commentsPath) : null;
+
+    if (!commentsFile) {
+      commentsBySheet.set(worksheetName, new Map());
+      return;
+    }
+
+    const commentsDoc = parser.parseFromString(commentsFile.asText(), "application/xml");
+    const sheetComments = new Map();
+
+    Array.from(commentsDoc.getElementsByTagName("comment")).forEach((commentNode) => {
+      const ref = commentNode.getAttribute("ref");
+      const textValue = Array.from(commentNode.getElementsByTagName("t"))
+        .map((textNode) => textNode.textContent || "")
+        .join("")
+        .trim();
+
+      if (ref && textValue) {
+        sheetComments.set(ref, textValue);
+      }
+    });
+
+    commentsBySheet.set(worksheetName, sheetComments);
+  });
+
+  return commentsBySheet;
+};
+
+const getOriginalHeaderCommentsBySheet = (templateBuffer, workbook) => {
+  const zip = new PizZip(templateBuffer);
+  const worksheetPathMap = getWorksheetXmlPathMap(zip);
+  const worksheetCommentsMap = getWorksheetCommentsFileMap(zip, worksheetPathMap);
+  const originalCommentsBySheet = new Map();
+
+  workbook.worksheets.forEach((worksheet) => {
+    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const commentsByRef = worksheetCommentsMap.get(worksheet.name) || new Map();
+    const commentsByField = new Map();
+
+    commentsByRef.forEach((commentText, cellRef) => {
+      const parsedRef = parseCellReference(cellRef);
+      if (!parsedRef || parsedRef.rowNumber !== headerRowNumber) {
+        return;
+      }
+
+      const headerName = headers[parsedRef.columnNumber - 1];
+      const normalizedHeaderName = normalizeFieldName(headerName);
+
+      if (normalizedHeaderName && commentText) {
+        commentsByField.set(normalizedHeaderName, commentText);
+      }
+    });
+
+    originalCommentsBySheet.set(worksheet.name, commentsByField);
+  });
+
+  return originalCommentsBySheet;
+};
+
+const buildWorksheetHeaderCommentsPlan = (workbook, configuredFields, originalCommentsBySheet) => {
+  const configuredCommentsBySheet = new Map();
+
+  configuredFields
+    .filter((field) => field?.name && field?.worksheet_name)
+    .forEach((field) => {
+      const sheetName = String(field.worksheet_name || "").trim();
+      const normalizedFieldName = normalizeFieldName(field.name);
+
+      if (!configuredCommentsBySheet.has(sheetName)) {
+        configuredCommentsBySheet.set(sheetName, new Map());
+      }
+
+      configuredCommentsBySheet.get(sheetName).set(normalizedFieldName, String(field.comment || "").trim());
+    });
+
+  return workbook.worksheets.reduce((acc, worksheet) => {
+    if (isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+      return acc;
+    }
+
+    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const originalComments = originalCommentsBySheet.get(worksheet.name) || new Map();
+    const configuredComments = configuredCommentsBySheet.get(worksheet.name) || new Map();
+
+    const comments = headers.reduce((sheetComments, headerName, index) => {
+      const normalizedHeaderName = normalizeFieldName(headerName);
+      const configuredComment = configuredComments.get(normalizedHeaderName);
+      const originalComment = originalComments.get(normalizedHeaderName);
+      const commentText = configuredComment || originalComment || "";
+
+      if (!commentText) {
+        return sheetComments;
+      }
+
+      sheetComments.push({
+        ref: `${columnNumberToName(index + 1)}${headerRowNumber}`,
+        text: commentText,
+        columnNumber: index + 1,
+        rowNumber: headerRowNumber,
+      });
+
+      return sheetComments;
+    }, []);
+
+    if (comments.length > 0) {
+      acc.set(worksheet.name, comments);
+    }
+
+    return acc;
+  }, new Map());
+};
+
+const applyHeaderHelpPromptsToWorkbook = (workbook, commentsPlan, endRow = 1000) => {
+  if (!commentsPlan || commentsPlan.size === 0) {
+    return;
+  }
+
+  commentsPlan.forEach((comments, worksheetName) => {
+    const worksheet = workbook.getWorksheet(worksheetName);
+    if (!worksheet || !Array.isArray(comments) || comments.length === 0) {
+      return;
+    }
+
+    comments.forEach((comment) => {
+      const promptText = String(comment.text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+      if (!promptText) {
+        return;
+      }
+
+      const promptTitle = worksheet.getCell(comment.ref).value
+        ? String(worksheet.getCell(comment.ref).value).slice(0, 32)
+        : "Ayuda";
+
+      for (let row = comment.rowNumber + 1; row <= endRow; row += 1) {
+        const cell = worksheet.getCell(row, comment.columnNumber);
+        const baseValidation = cell.dataValidation && Object.keys(cell.dataValidation).length > 0
+          ? { ...cell.dataValidation }
+          : {
+              type: "custom",
+              allowBlank: true,
+              formulae: ["TRUE"],
+              showErrorMessage: false,
+            };
+
+        cell.dataValidation = {
+          ...baseValidation,
+          showInputMessage: true,
+          promptTitle,
+          prompt: promptText.length > 255 ? `${promptText.slice(0, 252)}...` : promptText,
+        };
+      }
+    });
+  });
+};
+
+const buildCommentsXml = (comments = []) => {
+  const doc = new DOMParser().parseFromString(
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author/></authors><commentList/></comments>',
+    "application/xml"
+  );
+
+  const commentListNode = doc.getElementsByTagName("commentList")[0];
+  comments.forEach((comment) => {
+    const commentNode = doc.createElement("comment");
+    commentNode.setAttribute("ref", comment.ref);
+    commentNode.setAttribute("authorId", "0");
+
+    const textNode = doc.createElement("text");
+    const runNode = doc.createElement("t");
+    runNode.appendChild(doc.createTextNode(String(comment.text || "")));
+    textNode.appendChild(runNode);
+    commentNode.appendChild(textNode);
+    commentListNode.appendChild(commentNode);
+  });
+
+  return new XMLSerializer().serializeToString(doc);
+};
+
+const buildVmlCommentsXml = (comments = []) => {
+  const shapeNodes = comments
+    .map((comment, index) => {
+      const startColumn = Math.max(comment.columnNumber - 1, 0);
+      const startRow = Math.max(comment.rowNumber - 1, 0);
+      const endColumn = startColumn + 5;
+      const endRow = startRow + 20;
+
+      return `<v:shape id="_x0000_s${1025 + index}" type="#_x0000_t202" style="position:absolute;visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto"><v:fill color="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox style="mso-direction-alt:auto"/><x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>${startColumn}, 0, ${startRow}, 0, ${endColumn}, 0, ${endRow}, 0</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>${startRow}</x:Row><x:Column>${startColumn}</x:Column></x:ClientData></v:shape>`;
+    })
+    .join("");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<xml xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:x="urn:schemas-microsoft-com:office:excel">` +
+    `<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout>` +
+    `<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202.0" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>` +
+    `${shapeNodes}</xml>`;
+};
+
+const ensureContentTypeEntry = (typesDoc, selector, createEntry) => {
+  if (selector()) {
+    return;
+  }
+
+  const typesNode = typesDoc.getElementsByTagName("Types")[0];
+  if (typesNode) {
+    typesNode.appendChild(createEntry(typesDoc));
+  }
+};
+
+const upsertWorksheetComments = (zip, worksheetPath, comments, commentIndex) => {
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const relsPath = `${path.posix.dirname(worksheetPath)}/_rels/${path.posix.basename(worksheetPath)}.rels`;
+  const commentsPath = `xl/comments${commentIndex}.xml`;
+  const vmlPath = `xl/drawings/vmlDrawing${commentIndex}.vml`;
+
+  let relsDoc;
+  let relationshipsNode;
+
+  if (zip.file(relsPath)) {
+    relsDoc = parser.parseFromString(zip.file(relsPath).asText(), "application/xml");
+    relationshipsNode = relsDoc.getElementsByTagName("Relationships")[0];
+  } else {
+    relsDoc = parser.parseFromString(
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>',
+      "application/xml"
+    );
+    relationshipsNode = relsDoc.getElementsByTagName("Relationships")[0];
+  }
+
+  Array.from(relsDoc.getElementsByTagName("Relationship")).forEach((relationship) => {
+    const type = String(relationship.getAttribute("Type") || "");
+    const target = String(relationship.getAttribute("Target") || "");
+
+    if (type.includes("/comments") || type.includes("/vmlDrawing")) {
+      const targetPath = getRelationshipTargetPath(worksheetPath, target);
+      if (targetPath) {
+        zip.remove(targetPath);
+      }
+
+      relationship.parentNode?.removeChild(relationship);
+    }
+  });
+
+  const commentsRelId = "rIdSniesComments";
+  const vmlRelId = "rIdSniesVml";
+
+  const commentsRel = relsDoc.createElement("Relationship");
+  commentsRel.setAttribute("Id", commentsRelId);
+  commentsRel.setAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments");
+  commentsRel.setAttribute("Target", `../comments${commentIndex}.xml`);
+  relationshipsNode.appendChild(commentsRel);
+
+  const vmlRel = relsDoc.createElement("Relationship");
+  vmlRel.setAttribute("Id", vmlRelId);
+  vmlRel.setAttribute("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing");
+  vmlRel.setAttribute("Target", `../drawings/vmlDrawing${commentIndex}.vml`);
+  relationshipsNode.appendChild(vmlRel);
+
+  zip.file(relsPath, serializer.serializeToString(relsDoc));
+
+  const worksheetDoc = parser.parseFromString(zip.file(worksheetPath).asText(), "application/xml");
+  Array.from(worksheetDoc.getElementsByTagName("legacyDrawing")).forEach((node) => {
+    node.parentNode?.removeChild(node);
+  });
+  Array.from(worksheetDoc.getElementsByTagName("legacyDrawingHF")).forEach((node) => {
+    node.parentNode?.removeChild(node);
+  });
+
+  const worksheetNode = worksheetDoc.getElementsByTagName("worksheet")[0];
+  if (worksheetNode) {
+    const legacyDrawingNode = worksheetDoc.createElement("legacyDrawing");
+    legacyDrawingNode.setAttribute("r:id", vmlRelId);
+    worksheetNode.appendChild(legacyDrawingNode);
+  }
+
+  zip.file(worksheetPath, serializer.serializeToString(worksheetDoc));
+  zip.file(commentsPath, buildCommentsXml(comments));
+  zip.file(vmlPath, buildVmlCommentsXml(comments));
+};
+
+const injectWorksheetCommentsIntoWorkbook = (buffer, commentsPlan) => {
+  if (!commentsPlan || commentsPlan.size === 0) {
+    return buffer;
+  }
+
+  const zip = new PizZip(buffer);
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const worksheetPathMap = getWorksheetXmlPathMap(zip);
+
+  let commentIndex = 1;
+  commentsPlan.forEach((comments, worksheetName) => {
+    const worksheetPath = worksheetPathMap[worksheetName];
+    if (!worksheetPath || !zip.file(worksheetPath) || !Array.isArray(comments) || comments.length === 0) {
+      return;
+    }
+
+    upsertWorksheetComments(zip, worksheetPath, comments, commentIndex);
+    commentIndex += 1;
+  });
+
+  const contentTypesFile = zip.file("[Content_Types].xml");
+  if (contentTypesFile) {
+    const typesDoc = parser.parseFromString(contentTypesFile.asText(), "application/xml");
+
+    ensureContentTypeEntry(
+      typesDoc,
+      () =>
+        Array.from(typesDoc.getElementsByTagName("Default")).some(
+          (node) =>
+            node.getAttribute("Extension") === "vml" &&
+            node.getAttribute("ContentType") === "application/vnd.openxmlformats-officedocument.vmlDrawing"
+        ),
+      (doc) => {
+        const node = doc.createElement("Default");
+        node.setAttribute("Extension", "vml");
+        node.setAttribute("ContentType", "application/vnd.openxmlformats-officedocument.vmlDrawing");
+        return node;
+      }
+    );
+
+    for (let index = 1; index < commentIndex; index += 1) {
+      ensureContentTypeEntry(
+        typesDoc,
+        () =>
+          Array.from(typesDoc.getElementsByTagName("Override")).some(
+            (node) =>
+              node.getAttribute("PartName") === `/xl/comments${index}.xml` &&
+              node.getAttribute("ContentType") === "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"
+          ),
+        (doc) => {
+          const node = doc.createElement("Override");
+          node.setAttribute("PartName", `/xl/comments${index}.xml`);
+          node.setAttribute(
+            "ContentType",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"
+          );
+          return node;
+        }
+      );
+    }
+
+    zip.file("[Content_Types].xml", serializer.serializeToString(typesDoc));
+  }
+
+  return Buffer.from(
+    zip.generate({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+    })
+  );
+};
+
 const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
@@ -484,6 +1144,120 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
   return serializer.serializeToString(doc);
 };
 
+const sanitizeWorkbookZipArtifacts = (buffer) => {
+  const zip = new PizZip(buffer);
+  const parser = new DOMParser();
+  const serializer = new XMLSerializer();
+  const worksheetRelsFolder = "xl/worksheets/_rels/";
+
+  const filesToDelete = new Set();
+  const worksheetRelFiles = Object.keys(zip.files).filter(
+    (fileName) => fileName.startsWith(worksheetRelsFolder) && fileName.endsWith(".rels")
+  );
+
+  worksheetRelFiles.forEach((relsPath) => {
+    const relsFile = zip.file(relsPath);
+    if (!relsFile) {
+      return;
+    }
+
+    const relsDoc = parser.parseFromString(relsFile.asText(), "application/xml");
+    const relationshipsNode = relsDoc.getElementsByTagName("Relationships")[0];
+    if (!relationshipsNode) {
+      return;
+    }
+
+    const relationships = Array.from(relsDoc.getElementsByTagName("Relationship"));
+    const removedIds = [];
+
+    relationships.forEach((relationship) => {
+      const type = relationship.getAttribute("Type") || "";
+      const target = relationship.getAttribute("Target") || "";
+
+      if (
+        type.includes("/threadedComment") ||
+        type.includes("/person")
+      ) {
+        removedIds.push(relationship.getAttribute("Id"));
+        const normalizedTarget = target.replace(/^\/+/, "").replace(/^\.\.\//g, "");
+        const fullTarget = normalizedTarget.startsWith("xl/")
+          ? normalizedTarget
+          : `xl/${normalizedTarget}`;
+        filesToDelete.add(fullTarget);
+        relationshipsNode.removeChild(relationship);
+      }
+    });
+
+    if (removedIds.length > 0) {
+      const worksheetPath = relsPath
+        .replace("xl/worksheets/_rels/", "xl/worksheets/")
+        .replace(".xml.rels", ".xml");
+      const worksheetFile = zip.file(worksheetPath);
+
+      if (worksheetFile) {
+        const worksheetDoc = parser.parseFromString(worksheetFile.asText(), "application/xml");
+        ["legacyDrawing", "legacyDrawingHF"].forEach((tagName) => {
+          Array.from(worksheetDoc.getElementsByTagName(tagName)).forEach((node) => {
+            const relationId =
+              node.getAttribute("r:id") || node.getAttribute("id") || node.getAttribute("R:id");
+            if (!relationId || removedIds.includes(relationId)) {
+              node.parentNode?.removeChild(node);
+            }
+          });
+        });
+
+        zip.file(worksheetPath, serializer.serializeToString(worksheetDoc));
+      }
+
+      zip.file(relsPath, serializer.serializeToString(relsDoc));
+    }
+  });
+
+  Array.from(filesToDelete).forEach((filePath) => {
+    zip.remove(filePath);
+  });
+
+  const workbookRelsFile = zip.file("xl/_rels/workbook.xml.rels");
+  if (workbookRelsFile) {
+    const workbookRelsDoc = parser.parseFromString(workbookRelsFile.asText(), "application/xml");
+    const relationshipsNode = workbookRelsDoc.getElementsByTagName("Relationships")[0];
+    const hasThemeFile = Boolean(zip.file("xl/theme/theme1.xml"));
+    let removedTheme = false;
+
+    if (relationshipsNode) {
+      Array.from(workbookRelsDoc.getElementsByTagName("Relationship")).forEach((relationship) => {
+        const type = relationship.getAttribute("Type") || "";
+
+        if (type.includes("/theme") && !hasThemeFile) {
+          relationshipsNode.removeChild(relationship);
+          removedTheme = true;
+        }
+      });
+    }
+
+    zip.file("xl/_rels/workbook.xml.rels", serializer.serializeToString(workbookRelsDoc));
+
+    if (removedTheme) {
+      const workbookFile = zip.file("xl/workbook.xml");
+      if (workbookFile) {
+        const workbookDoc = parser.parseFromString(workbookFile.asText(), "application/xml");
+        const workbookPr = workbookDoc.getElementsByTagName("workbookPr")[0];
+        if (workbookPr) {
+          workbookPr.removeAttribute("defaultThemeVersion");
+        }
+        zip.file("xl/workbook.xml", serializer.serializeToString(workbookDoc));
+      }
+    }
+  }
+
+  return Buffer.from(
+    zip.generate({
+      type: "nodebuffer",
+      compression: "DEFLATE",
+    })
+  );
+};
+
 const extractWorksheetHeaders = (worksheet) => {
   let bestRowNumber = 1;
   let bestHeaders = [];
@@ -505,6 +1279,355 @@ const extractWorksheetHeaders = (worksheet) => {
     headerRowNumber: bestRowNumber,
     headers: bestHeaders,
   };
+};
+
+const cloneExcelStyle = (style = {}) => JSON.parse(JSON.stringify(style || {}));
+const GUIDE_WORKSHEET_NAME = "GUIA_CAMPOS_SNIES";
+const isGuideWorksheet = (worksheetName = "") =>
+  normalizeComparableName(worksheetName) === normalizeComparableName(GUIDE_WORKSHEET_NAME);
+
+const cloneCellValue = (value) => {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === "object") {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  return value;
+};
+
+const cloneWorkbookWithoutLegacyArtifacts = (sourceWorkbook) => {
+  const cleanWorkbook = new ExcelJS.Workbook();
+
+  cleanWorkbook.creator = sourceWorkbook.creator;
+  cleanWorkbook.lastModifiedBy = sourceWorkbook.lastModifiedBy;
+  cleanWorkbook.created = sourceWorkbook.created;
+  cleanWorkbook.modified = sourceWorkbook.modified;
+  cleanWorkbook.lastPrinted = sourceWorkbook.lastPrinted;
+  cleanWorkbook.properties = { ...(sourceWorkbook.properties || {}) };
+  cleanWorkbook.calcProperties = { ...(sourceWorkbook.calcProperties || {}) };
+  cleanWorkbook.views = Array.isArray(sourceWorkbook.views)
+    ? JSON.parse(JSON.stringify(sourceWorkbook.views))
+    : [];
+
+  sourceWorkbook.worksheets.forEach((sourceSheet) => {
+    const targetSheet = cleanWorkbook.addWorksheet(sourceSheet.name, {
+      properties: { ...(sourceSheet.properties || {}) },
+      pageSetup: { ...(sourceSheet.pageSetup || {}) },
+      views: Array.isArray(sourceSheet.views) ? JSON.parse(JSON.stringify(sourceSheet.views)) : [],
+      state: sourceSheet.state,
+    });
+
+    sourceSheet.columns.forEach((column, index) => {
+      const targetColumn = targetSheet.getColumn(index + 1);
+      targetColumn.width = column.width;
+      targetColumn.hidden = column.hidden;
+      targetColumn.outlineLevel = column.outlineLevel;
+      targetColumn.style = cloneExcelStyle(column.style || {});
+    });
+
+    sourceSheet.eachRow({ includeEmpty: true }, (sourceRow, rowNumber) => {
+      const targetRow = targetSheet.getRow(rowNumber);
+      targetRow.height = sourceRow.height;
+      targetRow.hidden = sourceRow.hidden;
+      targetRow.outlineLevel = sourceRow.outlineLevel;
+
+      sourceRow.eachCell({ includeEmpty: true }, (sourceCell, colNumber) => {
+        const targetCell = targetRow.getCell(colNumber);
+        targetCell.value = cloneCellValue(sourceCell.value);
+        targetCell.style = cloneExcelStyle(sourceCell.style || {});
+        if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+        if (sourceCell.note) {
+          targetCell.note = cloneNoteValue(sourceCell.note);
+        }
+      });
+
+      targetRow.commit();
+    });
+
+    const mergeRanges = sourceSheet.model?.merges || [];
+    mergeRanges.forEach((range) => {
+      try {
+        targetSheet.mergeCells(range);
+      } catch (error) {
+        // Ignore invalid merge ranges from legacy templates.
+      }
+    });
+  });
+
+  return cleanWorkbook;
+};
+
+const applyConfiguredFieldsToWorksheet = (worksheet, configuredFields = []) => {
+  const normalizedFields = configuredFields.filter(
+    (field) => field?.name && field?.worksheet_name === worksheet.name
+  );
+
+  if (normalizedFields.length === 0 || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+    return;
+  }
+
+  const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+  if (!headerRowNumber) {
+    return;
+  }
+
+  const headerRow = worksheet.getRow(headerRowNumber);
+  const currentHeaders = [...headers];
+  const normalizedHeaderNames = currentHeaders.map((header) => normalizeFieldName(header));
+
+  normalizedFields.forEach((field) => {
+    const fieldName = String(field.name || "").trim();
+    const normalizedFieldName = normalizeFieldName(fieldName);
+
+    if (!fieldName || !normalizedFieldName || normalizedHeaderNames.includes(normalizedFieldName)) {
+      return;
+    }
+
+    const normalizedInsertAfter = normalizeFieldName(field.insert_after || "");
+    const insertAfterIndex = normalizedInsertAfter
+      ? normalizedHeaderNames.findIndex((header) => header === normalizedInsertAfter)
+      : -1;
+    const insertColumnIndex = insertAfterIndex >= 0
+      ? insertAfterIndex + 2
+      : currentHeaders.length + 1;
+
+    worksheet.spliceColumns(insertColumnIndex, 0, []);
+
+    const targetCell = headerRow.getCell(insertColumnIndex);
+    const styleSourceCell = insertColumnIndex > 1
+      ? headerRow.getCell(insertColumnIndex - 1)
+      : headerRow.getCell(insertColumnIndex + 1);
+
+    if (styleSourceCell?.style) {
+      targetCell.style = cloneExcelStyle(styleSourceCell.style);
+    }
+
+    targetCell.value = fieldName;
+    targetCell.note = field.comment
+      ? {
+          texts: [
+            {
+              text: String(field.comment).trim(),
+              font: {
+                size: 11,
+                name: "Calibri",
+              },
+            },
+          ],
+        }
+      : undefined;
+
+    const sourceColumn = worksheet.getColumn(insertColumnIndex > 1 ? insertColumnIndex - 1 : insertColumnIndex + 1);
+    const targetColumn = worksheet.getColumn(insertColumnIndex);
+    if (sourceColumn?.width) {
+      targetColumn.width = sourceColumn.width;
+    } else {
+      targetColumn.width = Math.max(fieldName.length + 4, 18);
+    }
+
+    currentHeaders.splice(insertColumnIndex - 1, 0, fieldName);
+    normalizedHeaderNames.splice(insertColumnIndex - 1, 0, normalizedFieldName);
+  });
+};
+
+const clearWorkbookNotes = (workbook) => {
+  workbook.worksheets.forEach((worksheet) => {
+    worksheet.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        if (cell.note) {
+          cell.note = undefined;
+        }
+      });
+    });
+  });
+};
+
+const removeConfiguredFieldsFromWorksheet = (worksheet, configuredFields = []) => {
+  const normalizedFieldsToRemove = new Set(
+    configuredFields
+      .filter((field) => field?.name && field?.worksheet_name === worksheet.name)
+      .map((field) => normalizeFieldName(field.name))
+      .filter(Boolean)
+  );
+
+  if (normalizedFieldsToRemove.size === 0 || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+    return;
+  }
+
+  const { headers } = extractWorksheetHeaders(worksheet);
+  for (let index = headers.length - 1; index >= 0; index -= 1) {
+    const normalizedHeader = normalizeFieldName(headers[index]);
+    if (normalizedFieldsToRemove.has(normalizedHeader)) {
+      worksheet.spliceColumns(index + 1, 1);
+    }
+  }
+};
+
+const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []) => {
+  const fieldsWithValidator = configuredFields.filter(
+    (field) => field?.worksheet_name && field?.name && field?.validate_with && !field?.multiple
+  );
+
+  if (fieldsWithValidator.length === 0) {
+    return;
+  }
+
+  const validators = (
+    await Promise.all(fieldsWithValidator.map((field) => Validator.giveValidatorToExcel(field.validate_with)))
+  ).filter(Boolean);
+
+  if (validators.length === 0) {
+    return;
+  }
+
+  const sourcesSheetName = "_Listas";
+  const existingSourcesSheet = workbook.getWorksheet(sourcesSheetName);
+  const sourcesSheet = existingSourcesSheet ?? workbook.addWorksheet(sourcesSheetName);
+  sourcesSheet.state = "veryHidden";
+
+  let sourceCol = Math.max(1, sourcesSheet.columnCount + 1);
+
+  workbook.worksheets.forEach((worksheet) => {
+    if (worksheet.name === sourcesSheetName || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+      return;
+    }
+
+    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    if (!headerRowNumber) {
+      return;
+    }
+
+    const worksheetFields = fieldsWithValidator.filter((field) => field.worksheet_name === worksheet.name);
+    worksheetFields.forEach((field) => {
+      const fieldIndex = headers.findIndex(
+        (header) => normalizeFieldName(header) === normalizeFieldName(field.name)
+      );
+      if (fieldIndex < 0) {
+        return;
+      }
+
+      const validateWithParts = String(field.validate_with || "").split(" - ");
+      const validatorName = validateWithParts[0]?.trim();
+      const validatorColumnName = validateWithParts.slice(1).join(" - ").trim();
+      if (!validatorName) {
+        return;
+      }
+
+      const validator = validators.find((item) => normalizeToken(item.name) === normalizeToken(validatorName));
+      if (!validator) {
+        return;
+      }
+
+      const options = getValidatorOptions(validator, validatorColumnName);
+      if (options.length === 0) {
+        return;
+      }
+
+      options.forEach((option, optionIndex) => {
+        sourcesSheet.getCell(optionIndex + 1, sourceCol).value = option.displayLabel;
+      });
+
+      const colLetter = columnNumberToName(sourceCol);
+      const rangeRef = `'${sourcesSheetName}'!$${colLetter}$1:$${colLetter}$${options.length}`;
+      const targetColumnIndex = fieldIndex + 1;
+      const normalizedComment = field.comment
+        ? String(field.comment).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+        : "";
+      const promptText =
+        normalizedComment.length > 220
+          ? `${normalizedComment.slice(0, 217)}...`
+          : normalizedComment;
+
+      for (let row = headerRowNumber + 1; row <= 1000; row += 1) {
+        const cell = worksheet.getCell(row, targetColumnIndex);
+        const validation = {
+          type: "list",
+          allowBlank: true,
+          formulae: [rangeRef],
+          showErrorMessage: true,
+          errorTitle: "Valor no valido",
+          error: "Selecciona un valor de la lista desplegable.",
+        };
+
+        if (promptText) {
+          validation.showInputMessage = true;
+          validation.promptTitle = String(field.name || "").slice(0, 32);
+          validation.prompt = promptText;
+        }
+
+        cell.dataValidation = validation;
+      }
+
+      sourceCol += 1;
+    });
+  });
+};
+
+const buildWorkbookWithConfiguredFields = async (
+  workbookInput,
+  configuredFields = [],
+  previousConfiguredFields = []
+) => {
+  const sourceBuffer = Buffer.isBuffer(workbookInput)
+    ? Buffer.from(workbookInput)
+    : fs.readFileSync(workbookInput);
+  const sourceWorkbook = new ExcelJS.Workbook();
+
+  await sourceWorkbook.xlsx.load(sourceBuffer);
+
+  const originalCommentsBySheet = getOriginalHeaderCommentsBySheet(sourceBuffer, sourceWorkbook);
+
+  const workbook = cloneWorkbookWithoutLegacyArtifacts(sourceWorkbook);
+
+  workbook.worksheets.forEach((worksheet) => {
+    removeConfiguredFieldsFromWorksheet(worksheet, previousConfiguredFields);
+    applyConfiguredFieldsToWorksheet(worksheet, configuredFields);
+  });
+
+  await applyValidatorDropdownsToWorkbook(workbook, configuredFields);
+
+  const headerCommentsPlan = buildWorksheetHeaderCommentsPlan(
+    workbook,
+    configuredFields,
+    originalCommentsBySheet
+  );
+  applyHeaderHelpPromptsToWorkbook(workbook, headerCommentsPlan);
+
+  const existingGuideWorksheet = workbook.getWorksheet(GUIDE_WORKSHEET_NAME);
+  if (existingGuideWorksheet) {
+    workbook.removeWorksheet(existingGuideWorksheet.id);
+  }
+
+  const updatedBuffer = await workbook.xlsx.writeBuffer();
+  const sanitizedBuffer = sanitizeWorkbookZipArtifacts(Buffer.from(updatedBuffer));
+  return injectWorksheetCommentsIntoWorkbook(sanitizedBuffer, headerCommentsPlan);
+};
+
+const createTemporaryExcelUpload = (fileName, buffer) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "snies-template-"));
+  const tempPath = path.join(tempDir, fileName || `snies-template-${Date.now()}.xlsx`);
+
+  fs.writeFileSync(tempPath, buffer);
+
+  return {
+    path: tempPath,
+    originalname: fileName || path.basename(tempPath),
+    mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    tempDir,
+  };
+};
+
+const cleanupTemporaryExcelUpload = (file) => {
+  if (file?.path && fs.existsSync(file.path)) {
+    fs.unlinkSync(file.path);
+  }
+
+  if (file?.tempDir && fs.existsSync(file.tempDir)) {
+    fs.rmSync(file.tempDir, { recursive: true, force: true });
+  }
 };
 
 const getSourceTemplatesFromSnies = (template) => {
@@ -1037,8 +2160,13 @@ const buildSniesDataset = async (template) => {
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(templateBuffer);
+  workbook.worksheets.forEach((worksheet) => {
+    removeConfiguredFieldsFromWorksheet(worksheet, (template.fields || []).filter((field) => field?.field_origin !== "snies_original"));
+  });
   const workbookNotes = captureWorkbookNotes(workbook);
-  const worksheets = workbook.worksheets;
+  const worksheets = workbook.worksheets.filter(
+    (worksheet) => !isGuideWorksheet(worksheet.name)
+  );
 
   if (!worksheets[0]) {
     throw new Error("SNIES template workbook has no worksheets");
@@ -1119,6 +2247,283 @@ const buildSniesDataset = async (template) => {
   return { workbook, sheetDatasets, sourceTemplates, workbookNotes, templateBuffer };
 };
 
+const buildSniesComparisonDataset = async (template) => {
+  const sourceTemplates = getSourceTemplatesFromSnies(template);
+  const sourceTemplateIds = sourceTemplates.map((item) => item.template_id).filter(Boolean);
+
+  const publishedTemplates = sourceTemplateIds.length
+    ? await PublishedTemplate.find(
+        { _id: { $in: sourceTemplateIds } },
+        { _id: 1, name: 1, "template.fields.name": 1 }
+      ).lean()
+    : [];
+
+  const sourceTemplateMap = publishedTemplates.reduce((acc, publishedTemplate) => {
+    acc[String(publishedTemplate._id)] = publishedTemplate;
+    return acc;
+  }, {});
+
+  const normalizedSourceTemplates = sourceTemplates.map((sourceTemplate) => {
+    const publishedTemplate = sourceTemplateMap[String(sourceTemplate.template_id)];
+    const fieldNames = Array.isArray(publishedTemplate?.template?.fields)
+      ? publishedTemplate.template.fields.map((field) => field?.name).filter(Boolean)
+      : [];
+
+    return {
+      template_id: sourceTemplate.template_id,
+      template_name: sourceTemplate.template_name,
+      fieldNames,
+      normalizedKeys: fieldNames.map((fieldName) => normalizeFieldName(fieldName)),
+    };
+  });
+
+  const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(templateBuffer);
+
+  const sheetDatasets = workbook.worksheets.map((worksheet) => {
+    const { headers } = extractWorksheetHeaders(worksheet);
+
+    if (isInfoWorksheet(worksheet.name)) {
+      return null;
+    }
+
+    if (headers.length === 0) {
+      return {
+        worksheetName: worksheet.name,
+        headers,
+        sourceTemplate: null,
+      };
+    }
+
+    const matchedSourceTemplate = workbook.worksheets.length > 1
+      ? getWorksheetTemplateMatch(worksheet.name, headers, normalizedSourceTemplates)
+      : normalizedSourceTemplates[0] || null;
+
+    return {
+      worksheetName: worksheet.name,
+      headers,
+      sourceTemplate: matchedSourceTemplate
+        ? {
+            template_id: matchedSourceTemplate.template_id,
+            template_name: matchedSourceTemplate.template_name,
+            fieldNames: matchedSourceTemplate.fieldNames || [],
+          }
+        : null,
+    };
+  });
+
+  return {
+    sheetDatasets: sheetDatasets.filter(Boolean),
+    sourceTemplates: normalizedSourceTemplates,
+  };
+};
+
+const applyFieldComparisonBorders = (worksheet, rowNumber, columns) => {
+  columns.forEach((column) => {
+    worksheet.getCell(`${column}${rowNumber}`).border = {
+      top: { style: "thin", color: { argb: "FFD0D7DE" } },
+      left: { style: "thin", color: { argb: "FFD0D7DE" } },
+      bottom: { style: "thin", color: { argb: "FFD0D7DE" } },
+      right: { style: "thin", color: { argb: "FFD0D7DE" } },
+    };
+  });
+};
+
+const appendFieldComparisonSheets = async (workbook, template, dataset, includeTemplateNameInSheet = false) => {
+  dataset.sheetDatasets.forEach((sheet, index) => {
+    const rawSheetName = includeTemplateNameInSheet
+      ? `${template.name}_${sheet.worksheetName}`
+      : sheet.worksheetName;
+    const worksheet = workbook.addWorksheet(
+      resolveUniqueWorksheetName(workbook, rawSheetName, `Hoja_${index + 1}`)
+    );
+    const sniesFields = Array.isArray(sheet.headers) ? sheet.headers : [];
+    const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
+      ? sheet.sourceTemplate.fieldNames
+      : [];
+    const miroNormalizedFieldSet = new Set(miroFields.map((fieldName) => normalizeFieldName(fieldName)));
+    const sniesNormalizedFieldSet = new Set(sniesFields.map((fieldName) => normalizeFieldName(fieldName)));
+    const totalRows = Math.max(sniesFields.length, miroFields.length, 1);
+
+    worksheet.columns = [
+      { width: 8 },
+      { width: 42 },
+      { width: 4 },
+      { width: 8 },
+      { width: 42 },
+    ];
+
+    worksheet.mergeCells("A1:B1");
+    worksheet.mergeCells("D1:E1");
+    worksheet.getCell("A1").value = "Campos SNIES";
+    worksheet.getCell("D1").value = "Campos MIRÓ";
+    worksheet.getCell("A2").value = "#";
+    worksheet.getCell("B2").value = "Campo SNIES";
+    worksheet.getCell("D2").value = "#";
+    worksheet.getCell("E2").value = "Campo MIRÓ";
+
+    for (let rowIndex = 0; rowIndex < totalRows; rowIndex += 1) {
+      const excelRow = rowIndex + 3;
+      const sniesField = sniesFields[rowIndex] || "";
+      const miroField = miroFields[rowIndex] || "";
+      const sniesCell = worksheet.getCell(`B${excelRow}`);
+      const miroCell = worksheet.getCell(`E${excelRow}`);
+
+      worksheet.getCell(`A${excelRow}`).value = sniesField ? rowIndex + 1 : "";
+      sniesCell.value = sniesField;
+      worksheet.getCell(`D${excelRow}`).value = miroField ? rowIndex + 1 : "";
+      miroCell.value = miroField;
+
+      if (sniesField && miroNormalizedFieldSet.has(normalizeFieldName(sniesField))) {
+        sniesCell.fill = MATCH_FILL;
+      }
+
+      if (miroField && sniesNormalizedFieldSet.has(normalizeFieldName(miroField))) {
+        miroCell.fill = MATCH_FILL;
+      }
+    }
+
+    ["A1", "D1"].forEach((cellRef) => {
+      const cell = worksheet.getCell(cellRef);
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF0F1F39" },
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    ["A2", "B2", "D2", "E2"].forEach((cellRef) => {
+      const cell = worksheet.getCell(cellRef);
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1D4E89" },
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    for (let rowNumber = 2; rowNumber <= totalRows + 2; rowNumber += 1) {
+      applyFieldComparisonBorders(worksheet, rowNumber, ["A", "B", "D", "E"]);
+    }
+
+    worksheet.views = [{ state: "frozen", ySplit: 2 }];
+  });
+};
+
+const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => {
+  const worksheet = workbook.addWorksheet(
+    resolveUniqueWorksheetName(workbook, template.name, "Plantilla_SNIES")
+  );
+
+  worksheet.columns = [
+    { width: 24 },
+    { width: 8 },
+    { width: 42 },
+    { width: 4 },
+    { width: 8 },
+    { width: 42 },
+  ];
+
+  let currentRow = 1;
+
+  dataset.sheetDatasets.forEach((sheet, index) => {
+    const sniesFields = Array.isArray(sheet.headers) ? sheet.headers : [];
+    const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
+      ? sheet.sourceTemplate.fieldNames
+      : [];
+    const miroNormalizedFieldSet = new Set(miroFields.map((fieldName) => normalizeFieldName(fieldName)));
+    const sniesNormalizedFieldSet = new Set(sniesFields.map((fieldName) => normalizeFieldName(fieldName)));
+    const totalRows = Math.max(sniesFields.length, miroFields.length, 1);
+    const sectionStartRow = currentRow;
+    const headerRow = sectionStartRow + 1;
+    const subHeaderRow = sectionStartRow + 2;
+    const dataStartRow = sectionStartRow + 3;
+    const dataEndRow = dataStartRow + totalRows - 1;
+
+    worksheet.mergeCells(`B${headerRow}:C${headerRow}`);
+    worksheet.mergeCells(`E${headerRow}:F${headerRow}`);
+    worksheet.getCell(`B${headerRow}`).value = "Campos SNIES";
+    worksheet.getCell(`E${headerRow}`).value = "Campos MIRÓ";
+    worksheet.getCell(`B${subHeaderRow}`).value = "#";
+    worksheet.getCell(`C${subHeaderRow}`).value = "Campo SNIES";
+    worksheet.getCell(`E${subHeaderRow}`).value = "#";
+    worksheet.getCell(`F${subHeaderRow}`).value = "Campo MIRÓ";
+
+    worksheet.mergeCells(`A${headerRow}:A${dataEndRow}`);
+    const sectionCell = worksheet.getCell(`A${headerRow}`);
+    sectionCell.value = sheet.worksheetName || `Hoja ${index + 1}`;
+    sectionCell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    sectionCell.font = { bold: true, color: { argb: "FF1F1F1F" } };
+    sectionCell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFF2F2F2" },
+    };
+
+    ["B", "E"].forEach((column) => {
+      const cell = worksheet.getCell(`${column}${headerRow}`);
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF0F1F39" },
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    ["B", "C", "E", "F"].forEach((column) => {
+      const cell = worksheet.getCell(`${column}${subHeaderRow}`);
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1D4E89" },
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+
+    for (let rowIndex = 0; rowIndex < totalRows; rowIndex += 1) {
+      const excelRow = dataStartRow + rowIndex;
+      const sniesField = sniesFields[rowIndex] || "";
+      const miroField = miroFields[rowIndex] || "";
+      const sniesCell = worksheet.getCell(`C${excelRow}`);
+      const miroCell = worksheet.getCell(`F${excelRow}`);
+
+      worksheet.getCell(`B${excelRow}`).value = sniesField ? rowIndex + 1 : "";
+      sniesCell.value = sniesField;
+      worksheet.getCell(`E${excelRow}`).value = miroField ? rowIndex + 1 : "";
+      miroCell.value = miroField;
+
+      if (sniesField && miroNormalizedFieldSet.has(normalizeFieldName(sniesField))) {
+        sniesCell.fill = MATCH_FILL;
+      }
+
+      if (miroField && sniesNormalizedFieldSet.has(normalizeFieldName(miroField))) {
+        miroCell.fill = MATCH_FILL;
+      }
+
+      applyFieldComparisonBorders(worksheet, excelRow, ["A", "B", "C", "E", "F"]);
+    }
+
+    applyFieldComparisonBorders(worksheet, headerRow, ["A", "B", "C", "E", "F"]);
+    applyFieldComparisonBorders(worksheet, subHeaderRow, ["A", "B", "C", "E", "F"]);
+
+    currentRow = dataEndRow + 2;
+  });
+
+  worksheet.views = [{ state: "frozen", ySplit: 3 }];
+};
+
+const buildFieldComparisonWorkbook = async (template, dataset) => {
+  const workbook = new ExcelJS.Workbook();
+  await appendFieldComparisonSheets(workbook, template, dataset);
+  return workbook;
+};
+
 controller.getTemplates = async (req, res) => {
   try {
     const {
@@ -1175,18 +2580,19 @@ controller.getFeedOptions = async (req, res) => {
             name: { $regex: search, $options: "i" },
           }
         : {}),
-      "loaded_data.0": { $exists: true },
     };
 
     const publishedTemplates = await PublishedTemplate.find(query)
       .sort({ name: 1 })
-      .select("_id name period loaded_data");
+      .select("_id name period loaded_data")
+      .lean();
 
     return res.status(200).json({
       publishedTemplates: publishedTemplates.map((template) => ({
         value: template._id.toString(),
-        label: `${template.name} (${template.loaded_data?.length || 0} dependencias)`,
+        label: `${template.name} (${template.loaded_data?.length || 0} dependencias con datos)`,
         name: template.name,
+        loadedDependencies: template.loaded_data?.length || 0,
       })),
     });
   } catch (error) {
@@ -1299,6 +2705,84 @@ controller.downloadConnectedData = async (req, res) => {
   }
 };
 
+controller.downloadFieldComparison = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.query;
+
+    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
+
+    const template = await SniesTemplate.findById(id);
+    if (!template) {
+      return res.status(404).json({ error: "SNIES template not found" });
+    }
+
+    const previousFields = Array.isArray(template.fields) ? template.fields : [];
+
+    const dataset = await buildSniesComparisonDataset(template);
+    const comparisonWorkbook = await buildFieldComparisonWorkbook(template, dataset);
+    const outputBuffer = await comparisonWorkbook.xlsx.writeBuffer();
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${buildComparisonFileName(template)}"; filename*=UTF-8''${encodeURIComponent(buildComparisonFileName(template))}`
+    );
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    return res.send(Buffer.from(outputBuffer));
+  } catch (error) {
+    console.error("Error downloading SNIES field comparison:", error);
+    return res.status(500).json({
+      error: "Error downloading SNIES field comparison",
+      details: error.message,
+    });
+  }
+};
+
+controller.downloadAllFieldComparisons = async (req, res) => {
+  try {
+    const { email, periodId } = req.query;
+
+    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
+
+    const templates = await SniesTemplate.find(periodId ? { period: periodId } : {})
+      .sort({ createdAt: -1 });
+
+    if (!templates.length) {
+      return res.status(404).json({ error: "No SNIES templates found" });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+
+    for (const template of templates) {
+      const dataset = await buildSniesComparisonDataset(template);
+      appendConsolidatedFieldComparisonSheet(workbook, template, dataset);
+    }
+
+    const outputBuffer = await workbook.xlsx.writeBuffer();
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${buildAllComparisonsFileName()}"; filename*=UTF-8''${encodeURIComponent(buildAllComparisonsFileName())}`
+    );
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    return res.send(Buffer.from(outputBuffer));
+  } catch (error) {
+    console.error("Error downloading all SNIES field comparisons:", error);
+    return res.status(500).json({
+      error: "Error downloading all SNIES field comparisons",
+      details: error.message,
+    });
+  }
+};
+
 controller.downloadTemplateFile = async (req, res) => {
   try {
     const { id } = req.params;
@@ -1333,13 +2817,64 @@ controller.downloadTemplateFile = async (req, res) => {
   }
 };
 
+controller.getTemplateById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.query;
+
+    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
+
+    const template = await SniesTemplate.findById(id);
+    if (!template) {
+      return res.status(404).json({ error: "SNIES template not found" });
+    }
+
+    const workbookSheets = await getWorkbookSheetsFromTemplate(template);
+
+    return res.status(200).json({
+      _id: template._id,
+      name: template.name,
+      file_name: template.file_name,
+      file_description: template.file_description || "",
+      active: template.active,
+      fields: (template.fields || []).map((field) => ({
+        name: field.name || "",
+        worksheet_name: field.worksheet_name || "",
+        insert_after: field.insert_after || "",
+        datatype: field.datatype || "",
+        required: field.required ?? true,
+        validate_with: field.validate_with || "",
+        comment: field.comment || "",
+        field_origin: field.field_origin || "snies_extra",
+        visible_for_producer: field.visible_for_producer ?? true,
+        export_to_snies: field.export_to_snies ?? false,
+        multiple: field.multiple ?? false,
+      })),
+      dimensions: (template.dimensions || []).map((item) => String(item)),
+      producers: (template.producers || []).map((item) => String(item)),
+      created_by: template.created_by,
+      period: template.period,
+      workbook_sheets: workbookSheets,
+    });
+  } catch (error) {
+    console.error("Error fetching SNIES template by id:", error);
+    return res.status(500).json({
+      error: "Error fetching SNIES template by id",
+      details: error.message,
+    });
+  }
+};
+
 controller.createTemplate = async (req, res) => {
   try {
-    const { email, name, periodId } = req.body;
+    const { email, name, periodId, file_description, active } = req.body;
     const sourcePublishedTemplateIds = []
       .concat(req.body.sourcePublishedTemplateIds || [])
       .concat(req.body.sourcePublishedTemplateId || [])
       .filter(Boolean);
+    const fields = parseFieldsInput(req.body.fields);
+    const dimensions = parseIdArray(req.body.dimensions);
+    const producers = parseIdArray(req.body.producers);
 
     if (!req.file) {
       return res.status(400).json({ error: "No file attached" });
@@ -1357,16 +2892,23 @@ controller.createTemplate = async (req, res) => {
       "Responsable",
     ]);
     const sourceTemplates = await getPublishedTemplateSources(sourcePublishedTemplateIds);
+    let uploadFile = req.file;
+
+    if (fields.length > 0) {
+      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(req.file.path, fields);
+      fs.writeFileSync(req.file.path, updatedWorkbookBuffer);
+    }
 
     const uploaded = await uploadFileToGoogleDrive(
-      req.file,
+      uploadFile,
       "Formatos/Plantillas/SNIES",
-      req.file.originalname
+      uploadFile.originalname
     );
 
     const template = new SniesTemplate({
       name: name.trim(),
       file_name: req.file.originalname,
+      file_description: file_description ? String(file_description).trim() : "",
       created_by: user,
       period: periodId || undefined,
       source_published_template_id: sourceTemplates[0]?._id,
@@ -1378,6 +2920,10 @@ controller.createTemplate = async (req, res) => {
       drive_file_id: uploaded.id,
       drive_file_link: uploaded.webViewLink,
       drive_file_download: uploaded.webContentLink,
+      active: normalizeBoolean(active, true),
+      fields,
+      dimensions,
+      producers,
     });
 
     await template.save();
@@ -1403,13 +2949,18 @@ controller.createTemplate = async (req, res) => {
 };
 
 controller.updateTemplate = async (req, res) => {
+  let tempUploadFile = null;
+
   try {
     const { id } = req.params;
-    const { email, name, periodId } = req.body;
+    const { email, name, periodId, file_name, file_description, active } = req.body;
     const sourcePublishedTemplateIds = []
       .concat(req.body.sourcePublishedTemplateIds || [])
       .concat(req.body.sourcePublishedTemplateId || [])
       .filter(Boolean);
+    const fields = parseFieldsInput(req.body.fields);
+    const dimensions = parseIdArray(req.body.dimensions);
+    const producers = parseIdArray(req.body.producers);
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
@@ -1421,11 +2972,33 @@ controller.updateTemplate = async (req, res) => {
       return res.status(404).json({ error: "SNIES template not found" });
     }
 
+    const previousFields = Array.isArray(template.fields)
+      ? template.fields.map((field) => ({ ...field.toObject?.() || field }))
+      : [];
+
     if (name?.trim()) {
       template.name = name.trim();
     }
+    if (file_name?.trim()) {
+      template.file_name = file_name.trim();
+    }
+    if (file_description !== undefined) {
+      template.file_description = String(file_description || "").trim();
+    }
     if (periodId) {
       template.period = periodId;
+    }
+    if (req.body.active !== undefined) {
+      template.active = normalizeBoolean(active, template.active);
+    }
+    if (req.body.fields !== undefined) {
+      template.fields = fields;
+    }
+    if (req.body.dimensions !== undefined) {
+      template.dimensions = dimensions;
+    }
+    if (req.body.producers !== undefined) {
+      template.producers = producers;
     }
     if (sourcePublishedTemplateIds.length > 0) {
       const sourceTemplates = await getPublishedTemplateSources(sourcePublishedTemplateIds);
@@ -1435,6 +3008,11 @@ controller.updateTemplate = async (req, res) => {
         template_id: sourceTemplate._id,
         template_name: sourceTemplate.name,
       }));
+    }
+
+    if (req.file && fields.length > 0) {
+      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(req.file.path, fields);
+      fs.writeFileSync(req.file.path, updatedWorkbookBuffer);
     }
 
     if (req.file) {
@@ -1447,6 +3025,24 @@ controller.updateTemplate = async (req, res) => {
       template.file_name = req.file.originalname;
       template.drive_file_link = updated.webViewLink;
       template.drive_file_download = updated.webContentLink;
+    } else if (req.body.fields !== undefined) {
+      const currentWorkbookBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(
+        currentWorkbookBuffer,
+        fields,
+        previousFields
+      );
+
+      tempUploadFile = createTemporaryExcelUpload(template.file_name, updatedWorkbookBuffer);
+
+      const updated = await updateFileInGoogleDrive(
+        template.drive_file_id,
+        tempUploadFile,
+        template.file_name
+      );
+
+      template.drive_file_link = updated.webViewLink;
+      template.drive_file_download = updated.webContentLink;
     }
 
     await template.save();
@@ -1454,6 +3050,7 @@ controller.updateTemplate = async (req, res) => {
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
+    cleanupTemporaryExcelUpload(tempUploadFile);
 
     return res.status(200).json({
       message: "SNIES template updated",
@@ -1464,6 +3061,7 @@ controller.updateTemplate = async (req, res) => {
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
+    cleanupTemporaryExcelUpload(tempUploadFile);
     return res.status(500).json({
       error: "Error updating SNIES template",
       details: error.message,

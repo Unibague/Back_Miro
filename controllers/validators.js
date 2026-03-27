@@ -721,6 +721,73 @@ validatorController.getAllValidators = async (req, res) => {
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
-  };
+};
+
+validatorController.getValidatorOptions = async (req, res) => {
+    try {
+        const options = [
+            {
+                name: 'Funcionarios - Identificacion',
+                type: 'Entero',
+                validator_name: 'Funcionarios',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            },
+            {
+                name: 'Estudiantes - Codigo',
+                type: 'Texto Corto',
+                validator_name: 'Estudiantes',
+                column_name: 'Codigo',
+                columns: ['Codigo'],
+                preview_values: [],
+            },
+            {
+                name: 'Estudiantes - Identificacion',
+                type: 'Texto Corto',
+                validator_name: 'Estudiantes',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            },
+            {
+                name: 'Participantes - Identificacion',
+                type: 'Texto Corto',
+                validator_name: 'Participantes',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            }
+        ];
+
+        const validators = await Validator.find({}, { name: 1, columns: 1 });
+        const dynamicOptions = validators.flatMap((validator) =>
+            validator.columns
+                .filter((column) => column.is_validator)
+                .map((column) => ({
+                    name: `${validator.name} - ${column.name}`,
+                    type: column.type,
+                    validator_name: validator.name,
+                    column_name: column.name,
+                    columns: validator.columns.map((validatorColumn) => validatorColumn.name),
+                    preview_values: (column.values || [])
+                        .map((value) => {
+                            if (value === null || value === undefined) return '';
+                            if (typeof value === 'object') {
+                                if (value.value !== undefined) return String(value.value);
+                                return JSON.stringify(value);
+                            }
+                            return String(value);
+                        })
+                        .filter(Boolean)
+                        .slice(0, 8),
+                }))
+        );
+
+        res.status(200).json({ options: [...options, ...dynamicOptions] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
 
 module.exports = validatorController
