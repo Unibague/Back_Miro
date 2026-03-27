@@ -44,6 +44,10 @@ const reportSchema = new Schema({
         },
       ],
       required: true,
+    },
+    ai_generation: {
+      type: Schema.Types.Mixed,
+      required: false,
     }
 }, {
     versionKey: false,

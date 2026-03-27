@@ -30,9 +30,15 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ limit: '500mb', extended: false }));
+app.use(express.json({ limit: '500mb', charset: 'utf-8' }));
+app.use(express.urlencoded({ limit: '500mb', extended: false, charset: 'utf-8' }));
 app.use(morgan('dev'));
+
+// Configurar charset UTF-8 para todas las respuestas
+app.use((req, res, next) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  next();
+});
 
 if (process.env.NODE_ENV === 'production') {
   app.use((req, res, next) => {
@@ -57,6 +63,7 @@ apiRouter.use("/templates", require('./routes/templates'));
 apiRouter.use("/pTemplates", require('./routes/publishedTemplates'));
 apiRouter.use("/validators", require('./routes/validators'));
 apiRouter.use("/reports", require('./routes/reports'));
+apiRouter.use("/ambitReports", require('./routes/ambitReports'));
 apiRouter.use("/pReports", require('./routes/publishedReports'));
 apiRouter.use("/producerReports", require('./routes/producerReports'));
 apiRouter.use("/pProducerReports", require('./routes/publishedProducerReports'));
@@ -72,6 +79,14 @@ apiRouter.use("/processes",        require('./routes/processes'));
 apiRouter.use("/phases",           require('./routes/phases'));
 apiRouter.use("/process-documents", require('./routes/phaseDocuments'));
 apiRouter.use("/process-history",  require('./routes/processHistory'));
+apiRouter.use("/config-audit", require('./routes/configurationAudit'));
+apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
+apiRouter.use("/template-status", require('./routes/templateStatus'));
+apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
+
+// Ruta directa para jerarquía aoi
+const dependencyController = require('./controllers/dependencies');
+apiRouter.get("/hierarchy", dependencyController.getHierarchy);
 
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/p', apiRouter);
@@ -85,13 +100,18 @@ app.use('/', swaggerRouter);
 
 const PORT = process.env.PORT || 6000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   if (process.env.NODE_ENV === 'production') {
     console.log('Servr running in production mode on ' + PORT);
   } else {
     console.log('Server running in development mode on ' + PORT);
   }
 });
+
+// Aumentar timeout para AI Assistant y generación de informes
+server.timeout = 240000; // 4 minutos
+server.keepAliveTimeout = 240000;
+server.headersTimeout = 245000;
 
 initDB();
 

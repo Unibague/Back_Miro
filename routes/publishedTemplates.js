@@ -20,6 +20,7 @@ router.get("/published", controller.getPublishedTemplatesDimension);
 router.get("/dimension/mergedData", controller.getFilledDataMergedForDimension);
 
 router.get("/template/:id", controller.getTemplateById);
+router.get("/hasData/:id", controller.hasData);
 
 router.get('/uploaded/:id_template', controller.getUploadedTemplateDataByProducer);
 

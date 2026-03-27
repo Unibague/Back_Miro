@@ -241,6 +241,42 @@ dimensionController.getProducers = async (req, res) => {
   }
 }
 
+dimensionController.getDimensionsByUser = async (req, res) => {
+  const { email } = req.params;
+
+  try {
+    const user = await User.findOne({ email, isActive: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    let dimensions;
+
+    if (user.activeRole === 'Administrador') {
+      dimensions = await Dimension.find({}, '_id name');
+    } else {
+      const userDependencies = await Dependency.find({
+        visualizers: { $in: [email] }
+      });
+
+      if (userDependencies.length === 0) {
+        return res.status(200).json([]);
+      }
+
+      const dependencyIds = userDependencies.map(dep => dep._id);
+      dimensions = await Dimension.find(
+        { responsible: { $in: dependencyIds } },
+        '_id name'
+      );
+    }
+
+    res.status(200).json(dimensions);
+  } catch (error) {
+    console.error('Error fetching dimensions by user:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+};
+
 dimensionController.getDimensionById = async (req, res) => {
   const { id } = req.params;
 

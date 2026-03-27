@@ -152,6 +152,31 @@ periodController.updatePeriod = async (req, res) => {
         if (!updatedPeriod) {
             return res.status(404).json({ error: "Period not found" });
         }
+
+        // Si se actualizó producer_end_date, actualizar deadline de plantillas y reportes de productores
+        if (req.body.producer_end_date) {
+            await Promise.all([
+                PublishedTemplate.updateMany(
+                    { period: id },
+                    { deadline: req.body.producer_end_date }
+                ),
+                PublishedProducerReport.updateMany(
+                    { period: id },
+                    { deadline: req.body.producer_end_date }
+                )
+            ]);
+            console.log(`✅ Actualizado deadline de plantillas y reportes productores para periodo ${id}`);
+        }
+
+        // Si se actualizó responsible_end_date, actualizar deadline de reportes de responsables
+        if (req.body.responsible_end_date) {
+            await PublishedReport.updateMany(
+                { period: id },
+                { deadline: req.body.responsible_end_date }
+            );
+            console.log(`✅ Actualizado deadline de reportes responsables para periodo ${id}`);
+        }
+
         res.status(200).json(updatedPeriod);
     } catch (error) {
         res.status(500).json({ error: error.message });

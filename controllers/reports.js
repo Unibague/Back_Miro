@@ -313,7 +313,7 @@ reportController.deleteReport = async (req, res) => {
     
     // Registrar en auditoría
     try {
-      const userEmail = email || 'practicantes.g3@unibague.edu.co'; // Temporal
+      const userEmail = email || 'user'; // Temporal
       const user = await User.findOne({ email: userEmail });
       if (user) {
         await AuditLogger.logDelete(

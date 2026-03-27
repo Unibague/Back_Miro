@@ -33,7 +33,8 @@ userController.loadUsers = async (req, res) => {
     console.log('User from middleware:', req.user);
     
     try {
-        dependencyController.loadDependencies();
+        // Sincronizar dependencias primero (sin req/res)
+        await dependencyController.syncDependenciesInternal();
 
         const response = await axios.get(USERS_ENDPOINT);
 

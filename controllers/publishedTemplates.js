@@ -264,11 +264,11 @@ const enrichBeneficiariosData = async (data) => {
   }
 };
 
-// Función para normalizar nombres de campos para Excel
+// Función para normalizar nombres de campos para Excel (preservando tildes)
 const normalizeFieldName = (fieldName) => {
   return fieldName
     .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '_') // Reemplazar caracteres especiales con guión bajo
+    .replace(/[^A-ZÁÉÍÓÚÑÜ0-9]/g, '_') // Preservar letras con tilde y Ñ
     .replace(/_+/g, '_') // Reemplazar múltiples guiones bajos con uno solo
     .replace(/^_|_$/g, ''); // Eliminar guiones bajos al inicio y final
 };
@@ -512,6 +512,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     }
 
     const published_templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -613,6 +614,7 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
     };
 
     let templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -829,9 +831,13 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
-    const now = new Date(datetime_now().toDateString());
-    const endDate = new Date(pubTem.deadline).toDateString();
-    if (endDate < now) {
+    const now = new Date(datetime_now());
+    const deadline = new Date(pubTem.deadline);
+    
+    // Establecer deadline a las 23:59:59 del día
+    deadline.setHours(23, 59, 59, 999);
+    
+    if (deadline < now) {
       return res.status(403).json({ status: 'The period is closed' });
     }
 
@@ -1369,6 +1375,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     }
 
     const templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -1477,6 +1484,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
 
     // Fetch templates with initial population
     const templates = await PublishedTemplate.find(query)
+      .collation({ locale: 'es', strength: 1 })
       .skip(skip)
       .limit(limit)
       .populate('period')
@@ -1610,6 +1618,8 @@ publTempController.getTemplateById = async (req, res) => {
       return res.status(404).json({ status: 'Template not found' });
     }
 
+    const validatorsMap = new Map();
+
     const fieldsWithValidatorIds = await Promise.all(publishedTemplate.template.fields.map(async (field) => {
       if (field.validate_with) {
         try {
@@ -1618,16 +1628,28 @@ publTempController.getTemplateById = async (req, res) => {
 
           // Buscar en la base de datos por el templateName y luego encontrar la columna correspondiente
           const validator = await ValidatorModel.findOne({ name: templateName });
-          
+
           if (validator) {
             // Encontrar la columna que es validadora
             const column = validator.columns.find(col => col.name === columnName && col.is_validator);
-            
+
             if (column) {
               field.validate_with = {
                 id: validator._id.toString(),
                 name: `${validator.name} - ${column.name}`,
               };
+
+              // Recolectar datos del validator para incluirlos en la respuesta
+              if (!validatorsMap.has(validator.name)) {
+                const values = validator.columns.reduce((acc, col) => {
+                  col.values.forEach((value, index) => {
+                    if (!acc[index]) acc[index] = {};
+                    acc[index][col.name] = value.$numberInt !== undefined ? value.$numberInt : value;
+                  });
+                  return acc;
+                }, []);
+                validatorsMap.set(validator.name, { name: validator.name, values });
+              }
             } else {
               console.error(`Validator column not found for: ${columnName}`);
             }
@@ -1646,6 +1668,7 @@ publTempController.getTemplateById = async (req, res) => {
       template: {
         ...publishedTemplate.template._doc,
         fields: fieldsWithValidatorIds,
+        validators: Array.from(validatorsMap.values()),
       },
       publishedTemplate: publishedTemplate
     };
@@ -1853,5 +1876,34 @@ publTempController.cleanHyperlinkData = async (req, res) => {
 
 
 
+
+publTempController.hasData = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email } = req.query;
+
+    const pubTem = await PublishedTemplate.findById(id, 'loaded_data');
+    if (!pubTem) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    if (!email) {
+      // Sin email, responder si hay algún dato cargado en la plantilla
+      return res.json({ hasData: pubTem.loaded_data.length > 0 });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'User not found' });
+    }
+
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const hasData = pubTem.loaded_data.some(d => allUserDependencies.includes(d.dependency));
+
+    return res.json({ hasData });
+  } catch (error) {
+    return res.status(500).json({ status: 'Internal server error', message: error.message });
+  }
+};
 
 module.exports = publTempController;
