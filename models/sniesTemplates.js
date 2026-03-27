@@ -1,6 +1,84 @@
 const mongoose = require("mongoose");
 const Schema = mongoose.Schema;
 
+const allowedDataTypes = [
+  "Entero",
+  "Decimal",
+  "Porcentaje",
+  "Texto Corto",
+  "Texto Largo",
+  "True/False",
+  "Fecha",
+  "Fecha Inicial / Fecha Final",
+  "Link",
+];
+
+const fieldSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+    },
+    worksheet_name: {
+      type: String,
+      required: false,
+      trim: true,
+      default: "",
+    },
+    insert_after: {
+      type: String,
+      required: false,
+      trim: true,
+      default: "",
+    },
+    datatype: {
+      type: String,
+      required: true,
+      enum: allowedDataTypes,
+    },
+    required: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+    validate_with: {
+      type: String,
+      required: false,
+      default: "",
+    },
+    comment: {
+      type: String,
+      required: false,
+      default: "",
+    },
+    field_origin: {
+      type: String,
+      required: true,
+      enum: ["snies_original", "snies_extra"],
+      default: "snies_extra",
+    },
+    visible_for_producer: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+    export_to_snies: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+    multiple: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
+  },
+  {
+    _id: false,
+    versionKey: false,
+  }
+);
+
 const sniesTemplateSchema = new Schema(
   {
     name: {
@@ -12,6 +90,12 @@ const sniesTemplateSchema = new Schema(
       type: String,
       required: true,
       trim: true,
+    },
+    file_description: {
+      type: String,
+      required: false,
+      trim: true,
+      default: "",
     },
     created_by: {
       type: {},
@@ -66,6 +150,23 @@ const sniesTemplateSchema = new Schema(
       type: Boolean,
       default: true,
       required: true,
+    },
+    fields: {
+      type: [fieldSchema],
+      default: [],
+      required: false,
+    },
+    dimensions: {
+      type: [Schema.Types.ObjectId],
+      ref: "dimensions",
+      default: [],
+      required: false,
+    },
+    producers: {
+      type: [Schema.Types.ObjectId],
+      ref: "dependencies",
+      default: [],
+      required: false,
     },
   },
   {
