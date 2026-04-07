@@ -15,8 +15,6 @@ const datetime_now = () => {
 };
 
 class ProducerReportsService {
-// services/ProducerReportsService.js
-
 static async getReports(periodId = null) {
   try {
     const reports = await ProducerReport.find().lean();
