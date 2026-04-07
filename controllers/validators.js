@@ -14,6 +14,14 @@ const isBlankValue = (value) => {
     return normalized === '' || normalized.toLowerCase() === 'null' || normalized.toLowerCase() === 'nan';
 };
 
+const hasMeaningfulValue = (value) => {
+    if (Array.isArray(value)) {
+        return value.some((item) => hasMeaningfulValue(item));
+    }
+
+    return !isBlankValue(value);
+};
+
 const allowedDataTypes = {
     "Entero": (value) => {
         const num = Number(value);
@@ -406,6 +414,10 @@ validatorController.validateColumn = async (column) => {
     if (normalizedValue !== value) {
       console.log(`DEBUG - Valor final normalizado:`, normalizedValue);
     }
+
+    if (!required && isBlankValue(normalizedValue)) {
+      return null;
+    }
     
     return normalizedValue;
   });
@@ -444,7 +456,7 @@ validatorController.validateColumn = async (column) => {
     });
   }
 
-if (datatype === "Entero") {
+  if (datatype === "Entero") {
   values = values.map(value => {
     const isEmpty = isBlankValue(value);
     if (!required && isEmpty) return null;
@@ -470,8 +482,9 @@ if (datatype === "Entero") {
   let validator = null;
   let columnToValidate = null;
   let validValuesSet = null;
+  const shouldValidateOptionalField = required || values.some((value) => hasMeaningfulValue(value));
 
-  if (validate_with) {
+  if (validate_with && shouldValidateOptionalField) {
     const [validatorName, columnName] = validate_with.split(' - ');
     console.log('DEBUG validateColumn - validate_with:', validate_with);
     console.log('DEBUG validateColumn - validatorName:', validatorName);

@@ -1,5 +1,7 @@
 const PublishedTemplate = require('../models/publishedTemplates.js');
 const Template = require('../models/templates.js')
+const SniesTemplate = require('../models/sniesTemplates');
+const CnaTemplate = require('../models/cnaTemplates');
 const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
@@ -15,6 +17,53 @@ const auditLogger = require('../services/auditLogger');
 const axios = require('axios');
 
 const publTempController = {};
+
+const isBlankOptionalValue = (value) => {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'number') return Number.isNaN(value);
+  if (Array.isArray(value)) {
+    return value.length === 0 || value.every((item) => isBlankOptionalValue(item));
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '' || normalized === 'null' || normalized === 'nan';
+};
+
+const resolveLatestTemplateSnapshot = async (templateSnapshot) => {
+  const templateId = templateSnapshot?._id;
+  if (!templateId) return null;
+
+  const latestTemplate =
+    await Template.findById(templateId).lean() ||
+    await SniesTemplate.findById(templateId).lean() ||
+    await CnaTemplate.findById(templateId).lean();
+
+  return latestTemplate || null;
+};
+
+const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
+  if (!publishedTemplate?.template?._id) return publishedTemplate;
+
+  const latestTemplate = await resolveLatestTemplateSnapshot(publishedTemplate.template);
+  if (!latestTemplate) return publishedTemplate;
+
+  const currentTemplateId = String(publishedTemplate.template._id);
+  const latestTemplateId = String(latestTemplate._id);
+  const currentFields = JSON.stringify(publishedTemplate.template.fields || []);
+  const latestFields = JSON.stringify(latestTemplate.fields || []);
+
+  if (
+    currentTemplateId !== latestTemplateId ||
+    currentFields !== latestFields ||
+    JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
+    JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
+  ) {
+    publishedTemplate.template = latestTemplate;
+    await publishedTemplate.save();
+  }
+
+  return publishedTemplate;
+};
 
 // Mapeo de códigos alfa-2 de países a IDs numéricos
 const countryCodeToId = {
@@ -831,6 +880,8 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
+    await refreshPublishedTemplateSnapshot(pubTem);
+
     const now = new Date(datetime_now());
     const deadline = new Date(pubTem.deadline);
     
@@ -944,16 +995,17 @@ const result = pubTem.template.fields.map((field) => {
     }
     
     // Limpiar valores: convertir string "null" a null real
-    if (typeof val === 'string' && val.trim() === 'null') {
+    if (typeof val === 'string' && ['null', 'nan'].includes(val.trim().toLowerCase())) {
       val = null;
     }
     
     // Limpiar valores vacíos para campos no obligatorios
-    if (!field.required && (val === null || val === undefined || (typeof val === 'string' && val.trim() === ''))) {
+    if (!field.required && isBlankOptionalValue(val)) {
       val = null;
     }
 
 if (field.multiple) {
+  if (!field.required && isBlankOptionalValue(val)) return [];
   if (val === null || val === undefined) return [];
 
   // Forzamos a string y separamos por coma
@@ -1617,6 +1669,8 @@ publTempController.getTemplateById = async (req, res) => {
     if (!publishedTemplate) {
       return res.status(404).json({ status: 'Template not found' });
     }
+
+    await refreshPublishedTemplateSnapshot(publishedTemplate);
 
     const validatorsMap = new Map();
 

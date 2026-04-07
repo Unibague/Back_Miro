@@ -22,6 +22,19 @@ const axios = require("axios");
 
 const controller = {};
 
+const syncPublishedTemplateSnapshots = async (templateDocument) => {
+  if (!templateDocument?._id) return;
+
+  await PublishedTemplate.updateMany(
+    { "template._id": templateDocument._id },
+    {
+      $set: {
+        template: templateDocument.toObject ? templateDocument.toObject() : templateDocument,
+      },
+    }
+  );
+};
+
 const normalizeArrayInput = (value) => {
   if (Array.isArray(value)) return value;
   if (value === undefined || value === null || value === "") return [];
@@ -3002,6 +3015,7 @@ controller.createTemplate = async (req, res) => {
     });
 
     await template.save();
+    await syncPublishedTemplateSnapshots(template);
 
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
@@ -3121,6 +3135,7 @@ controller.updateTemplate = async (req, res) => {
     }
 
     await template.save();
+    await syncPublishedTemplateSnapshots(template);
 
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
