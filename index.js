@@ -79,6 +79,7 @@ apiRouter.use("/processes",        require('./routes/processes'));
 apiRouter.use("/phases",           require('./routes/phases'));
 apiRouter.use("/process-documents", require('./routes/phaseDocuments'));
 apiRouter.use("/process-history",  require('./routes/processHistory'));
+apiRouter.use("/casos",            require('./routes/casos'));
 apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
