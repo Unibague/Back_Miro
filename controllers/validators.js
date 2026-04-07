@@ -179,7 +179,7 @@ validatorController.updateValidator = async (req, res) => {
             return res.status(400).json({ status: "Validator ID is required" });
         }
         
-        // Usar email por defecto si no se proporciona
+        // Usar email 
         const finalUserEmail = userEmail;
         
         const user = await User.findOne({ email: finalUserEmail });
