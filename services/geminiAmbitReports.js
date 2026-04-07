@@ -109,7 +109,7 @@ class GeminiAmbitReportsService {
         num_ctx: 4096
       }
     }, {
-      timeout: 120000  // 2 minutos para llama3.2:3b
+      timeout: 120000  
     });
 
     const content = response?.data?.response;
