@@ -83,6 +83,7 @@ apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
+apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');

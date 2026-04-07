@@ -7,6 +7,13 @@ const auditLogger = require('../services/auditLogger');
 
 const validatorController = {}
 
+const isBlankValue = (value) => {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'number') return Number.isNaN(value);
+    const normalized = String(value).trim();
+    return normalized === '' || normalized.toLowerCase() === 'null' || normalized.toLowerCase() === 'nan';
+};
+
 const allowedDataTypes = {
     "Entero": (value) => {
         const num = Number(value);
@@ -439,7 +446,7 @@ validatorController.validateColumn = async (column) => {
 
 if (datatype === "Entero") {
   values = values.map(value => {
-    const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+    const isEmpty = isBlankValue(value);
     if (!required && isEmpty) return null;
     
     // Convertir directamente a entero
@@ -450,7 +457,7 @@ if (datatype === "Entero") {
 } else if (datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
-      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+      const isEmpty = isBlankValue(value);
       if (!required && isEmpty) return null;
       
       const num = Number(value);
@@ -549,7 +556,7 @@ if (datatype === "Entero") {
   values.forEach((value, index) => {
 const realIndex = index;
 
-  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+  const isEmpty = isBlankValue(value);
 
 
 
@@ -586,7 +593,7 @@ if (multiple && Array.isArray(value)) {
   });
 } else {
   // Solo validar tipo de dato si el campo es obligatorio O si tiene valor
-  if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+  if (required || !isBlankValue(value)) {
     const validateFn = allowedDataTypes[datatype];
     if (typeof validateFn === 'function') {
       const validation = validateFn(value);
@@ -604,7 +611,7 @@ if (multiple && Array.isArray(value)) {
 
 if (columnToValidate && validValuesSet) {
   // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
-  if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
+  if (!required && isBlankValue(value)) {
     return; // Saltar validación de validate_with para campos no obligatorios vacíos
   }
   
@@ -641,7 +648,7 @@ if (columnToValidate && validValuesSet) {
     });
   } else {
     // Solo validar validate_with si el campo es obligatorio O si tiene valor
-    if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+    if (required || !isBlankValue(value)) {
       let normalizedVal = value;
 
       // Detectar si los valores del validador son números
