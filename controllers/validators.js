@@ -7,6 +7,21 @@ const auditLogger = require('../services/auditLogger');
 
 const validatorController = {}
 
+const isBlankValue = (value) => {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'number') return Number.isNaN(value);
+    const normalized = String(value).trim();
+    return normalized === '' || normalized.toLowerCase() === 'null' || normalized.toLowerCase() === 'nan';
+};
+
+const hasMeaningfulValue = (value) => {
+    if (Array.isArray(value)) {
+        return value.some((item) => hasMeaningfulValue(item));
+    }
+
+    return !isBlankValue(value);
+};
+
 const allowedDataTypes = {
     "Entero": (value) => {
         const num = Number(value);
@@ -164,7 +179,7 @@ validatorController.updateValidator = async (req, res) => {
             return res.status(400).json({ status: "Validator ID is required" });
         }
         
-        // Usar email por defecto si no se proporciona
+        // Usar email 
         const finalUserEmail = userEmail;
         
         const user = await User.findOne({ email: finalUserEmail });
@@ -399,6 +414,10 @@ validatorController.validateColumn = async (column) => {
     if (normalizedValue !== value) {
       console.log(`DEBUG - Valor final normalizado:`, normalizedValue);
     }
+
+    if (!required && isBlankValue(normalizedValue)) {
+      return null;
+    }
     
     return normalizedValue;
   });
@@ -437,9 +456,9 @@ validatorController.validateColumn = async (column) => {
     });
   }
 
-if (datatype === "Entero") {
+  if (datatype === "Entero") {
   values = values.map(value => {
-    const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+    const isEmpty = isBlankValue(value);
     if (!required && isEmpty) return null;
     
     // Convertir directamente a entero
@@ -450,7 +469,7 @@ if (datatype === "Entero") {
 } else if (datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
-      const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+      const isEmpty = isBlankValue(value);
       if (!required && isEmpty) return null;
       
       const num = Number(value);
@@ -463,8 +482,9 @@ if (datatype === "Entero") {
   let validator = null;
   let columnToValidate = null;
   let validValuesSet = null;
+  const shouldValidateOptionalField = required || values.some((value) => hasMeaningfulValue(value));
 
-  if (validate_with) {
+  if (validate_with && shouldValidateOptionalField) {
     const [validatorName, columnName] = validate_with.split(' - ');
     console.log('DEBUG validateColumn - validate_with:', validate_with);
     console.log('DEBUG validateColumn - validatorName:', validatorName);
@@ -549,7 +569,7 @@ if (datatype === "Entero") {
   values.forEach((value, index) => {
 const realIndex = index;
 
-  const isEmpty = value === null || value === undefined || `${value}`.trim?.() === '' || `${value}`.trim() === 'null';
+  const isEmpty = isBlankValue(value);
 
 
 
@@ -586,7 +606,7 @@ if (multiple && Array.isArray(value)) {
   });
 } else {
   // Solo validar tipo de dato si el campo es obligatorio O si tiene valor
-  if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+  if (required || !isBlankValue(value)) {
     const validateFn = allowedDataTypes[datatype];
     if (typeof validateFn === 'function') {
       const validation = validateFn(value);
@@ -604,7 +624,7 @@ if (multiple && Array.isArray(value)) {
 
 if (columnToValidate && validValuesSet) {
   // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
-  if (!required && (value === null || value === undefined || `${value}`.trim() === '')) {
+  if (!required && isBlankValue(value)) {
     return; // Saltar validación de validate_with para campos no obligatorios vacíos
   }
   
@@ -641,7 +661,7 @@ if (columnToValidate && validValuesSet) {
     });
   } else {
     // Solo validar validate_with si el campo es obligatorio O si tiene valor
-    if (required || (value !== null && value !== undefined && `${value}`.trim() !== '')) {
+    if (required || !isBlankValue(value)) {
       let normalizedVal = value;
 
       // Detectar si los valores del validador son números
@@ -721,6 +741,73 @@ validatorController.getAllValidators = async (req, res) => {
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
-  };
+};
+
+validatorController.getValidatorOptions = async (req, res) => {
+    try {
+        const options = [
+            {
+                name: 'Funcionarios - Identificacion',
+                type: 'Entero',
+                validator_name: 'Funcionarios',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            },
+            {
+                name: 'Estudiantes - Codigo',
+                type: 'Texto Corto',
+                validator_name: 'Estudiantes',
+                column_name: 'Codigo',
+                columns: ['Codigo'],
+                preview_values: [],
+            },
+            {
+                name: 'Estudiantes - Identificacion',
+                type: 'Texto Corto',
+                validator_name: 'Estudiantes',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            },
+            {
+                name: 'Participantes - Identificacion',
+                type: 'Texto Corto',
+                validator_name: 'Participantes',
+                column_name: 'Identificacion',
+                columns: ['Identificacion'],
+                preview_values: [],
+            }
+        ];
+
+        const validators = await Validator.find({}, { name: 1, columns: 1 });
+        const dynamicOptions = validators.flatMap((validator) =>
+            validator.columns
+                .filter((column) => column.is_validator)
+                .map((column) => ({
+                    name: `${validator.name} - ${column.name}`,
+                    type: column.type,
+                    validator_name: validator.name,
+                    column_name: column.name,
+                    columns: validator.columns.map((validatorColumn) => validatorColumn.name),
+                    preview_values: (column.values || [])
+                        .map((value) => {
+                            if (value === null || value === undefined) return '';
+                            if (typeof value === 'object') {
+                                if (value.value !== undefined) return String(value.value);
+                                return JSON.stringify(value);
+                            }
+                            return String(value);
+                        })
+                        .filter(Boolean)
+                        .slice(0, 8),
+                }))
+        );
+
+        res.status(200).json({ options: [...options, ...dynamicOptions] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
 
 module.exports = validatorController

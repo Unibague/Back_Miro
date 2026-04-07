@@ -79,7 +79,7 @@ const fieldSchema = new Schema(
   }
 );
 
-const sniesTemplateSchema = new Schema(
+const cnaTemplateSchema = new Schema(
   {
     name: {
       type: String,
@@ -175,4 +175,4 @@ const sniesTemplateSchema = new Schema(
   }
 );
 
-module.exports = mongoose.model("sniesTemplates", sniesTemplateSchema);
+module.exports = mongoose.model("cnaTemplates", cnaTemplateSchema);

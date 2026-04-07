@@ -4,7 +4,7 @@ const path = require("path");
 const ExcelJS = require("exceljs");
 const PizZip = require("pizzip");
 const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
-const SniesTemplate = require("../models/sniesTemplates");
+const CnaTemplate = require("../models/cnaTemplates");
 const PublishedTemplate = require("../models/publishedTemplates");
 const Dependency = require("../models/dependencies");
 const Period = require("../models/periods");
@@ -104,7 +104,7 @@ const getWorkbookSheetsFromTemplate = async (template) => {
   await workbook.xlsx.load(templateBuffer);
 
   return workbook.worksheets.map((worksheet) => {
-    const { headers } = extractWorksheetHeaders(worksheet);
+    const { headers } = extractDetailedWorksheetHeaders(worksheet);
     const configuredExtraFieldNames = new Set(
       (template.fields || [])
         .filter((field) => field?.field_origin !== "snies_original" && field?.worksheet_name === worksheet.name)
@@ -163,7 +163,7 @@ const getWorkbookSheetsFromTemplate = async (template) => {
   }).filter(
     (sheet) =>
       !isInfoWorksheet(sheet.worksheetName) &&
-      normalizeComparableName(sheet.worksheetName) !== "GUIA_CAMPOS_SNIES" &&
+      normalizeComparableName(sheet.worksheetName) !== "GUIA_CAMPOS_CNA" &&
       normalizeComparableName(sheet.worksheetName) !== "LISTAS"
   );
 };
@@ -182,7 +182,7 @@ const buildDownloadFileName = (template) => {
   const extension = path.extname(String(template?.file_name || "").trim()) || ".xlsx";
 
   if (!templateName) {
-    return `plantilla_snies${extension}`;
+    return `plantilla_cna${extension}`;
   }
 
   return `${templateName}${extension}`;
@@ -212,19 +212,13 @@ const resolveUniqueWorksheetName = (workbook, value, fallback = "Hoja") => {
 };
 
 const buildComparisonFileName = (template) => {
-  const templateName = String(template?.name || "comparativo_snies").trim() || "comparativo_snies";
+  const templateName = String(template?.name || "comparativo_cna").trim() || "comparativo_cna";
   return `${templateName}_comparativo_campos.xlsx`;
 };
 
 const buildAllComparisonsFileName = () => {
   const dateTag = new Date().toISOString().slice(0, 10);
-  return `snies_comparativo_campos_${dateTag}.xlsx`;
-};
-
-const MATCH_FILL = {
-  type: "pattern",
-  pattern: "solid",
-  fgColor: { argb: "FFD9F2D9" },
+  return `cna_comparativo_campos_${dateTag}.xlsx`;
 };
 
 const normalizeComparableName = (value = "") =>
@@ -1294,8 +1288,132 @@ const extractWorksheetHeaders = (worksheet) => {
   };
 };
 
+const parseRangeReference = (rangeRef = "") => {
+  const [startRef, endRef] = String(rangeRef).split(":");
+  const start = parseCellReference(startRef);
+  const end = parseCellReference(endRef || startRef);
+
+  if (!start || !end) {
+    return null;
+  }
+
+  return {
+    startRow: Math.min(start.rowNumber, end.rowNumber),
+    endRow: Math.max(start.rowNumber, end.rowNumber),
+    startColumn: Math.min(start.columnNumber, end.columnNumber),
+    endColumn: Math.max(start.columnNumber, end.columnNumber),
+  };
+};
+
+const buildWorksheetMergeLookup = (worksheet) => {
+  const mergeLookup = new Map();
+  const mergeRanges = Array.isArray(worksheet.model?.merges) ? worksheet.model.merges : [];
+
+  mergeRanges.forEach((rangeRef) => {
+    const parsedRange = parseRangeReference(rangeRef);
+    if (!parsedRange) {
+      return;
+    }
+
+    for (let row = parsedRange.startRow; row <= parsedRange.endRow; row += 1) {
+      for (let column = parsedRange.startColumn; column <= parsedRange.endColumn; column += 1) {
+        mergeLookup.set(`${row}:${column}`, parsedRange);
+      }
+    }
+  });
+
+  return mergeLookup;
+};
+
+const getMergedAwareCellValue = (worksheet, mergeLookup, rowNumber, columnNumber) => {
+  const mergeRange = mergeLookup.get(`${rowNumber}:${columnNumber}`);
+  const sourceRow = mergeRange?.startRow || rowNumber;
+  const sourceColumn = mergeRange?.startColumn || columnNumber;
+  const rawValue = worksheet.getRow(sourceRow).getCell(sourceColumn).value;
+  const text = String(convertCellValue(rawValue) || "").trim();
+
+  return {
+    text,
+    spanColumns: mergeRange ? mergeRange.endColumn - mergeRange.startColumn + 1 : 1,
+  };
+};
+
+const isLikelyHeaderLabel = (text = "") => {
+  const normalizedText = String(text).trim();
+  if (!normalizedText) {
+    return false;
+  }
+
+  if (/^\d{1,4}([.,]\d+)?%?$/.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^(I|II|III|IV|V|VI|VII|VIII|IX|X)$/i.test(normalizedText)) {
+    return false;
+  }
+
+  return true;
+};
+
+const extractDetailedWorksheetHeaders = (worksheet) => {
+  const maxHeaderScanRows = Math.min(10, worksheet.rowCount || 10);
+  const mergeLookup = buildWorksheetMergeLookup(worksheet);
+  let bestRowNumber = 1;
+  let bestScore = 0;
+  let maxColumnNumber = 0;
+
+  for (let rowNumber = 1; rowNumber <= maxHeaderScanRows; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    maxColumnNumber = Math.max(maxColumnNumber, row.cellCount || row.actualCellCount || 0);
+
+    let rowScore = 0;
+    for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
+      const { text, spanColumns } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber, columnNumber);
+      if (!text || spanColumns > 3 || !isLikelyHeaderLabel(text)) {
+        continue;
+      }
+
+      rowScore += 1;
+    }
+
+    if (rowScore > bestScore) {
+      bestScore = rowScore;
+      bestRowNumber = rowNumber;
+    }
+  }
+
+  const windowStart = Math.max(1, bestRowNumber - 2);
+  const windowEnd = Math.min(maxHeaderScanRows, bestRowNumber + 1);
+  const headers = [];
+
+  for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
+    const parts = [];
+
+    for (let rowNumber = windowStart; rowNumber <= windowEnd; rowNumber += 1) {
+      const { text, spanColumns } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber, columnNumber);
+      if (!text || spanColumns > 3 || !isLikelyHeaderLabel(text)) {
+        continue;
+      }
+
+      if (!parts.includes(text)) {
+        parts.push(text);
+      }
+    }
+
+    const combinedHeader = parts.join(" - ").trim();
+    if (combinedHeader) {
+      headers.push(combinedHeader);
+    }
+  }
+
+  return {
+    headerRowNumber: bestRowNumber,
+    headers,
+  };
+};
+
 const cloneExcelStyle = (style = {}) => JSON.parse(JSON.stringify(style || {}));
-const GUIDE_WORKSHEET_NAME = "GUIA_CAMPOS_SNIES";
+const GUIDE_WORKSHEET_NAME = "GUIA_CAMPOS_CNA";
 const isGuideWorksheet = (worksheetName = "") =>
   normalizeComparableName(worksheetName) === normalizeComparableName(GUIDE_WORKSHEET_NAME);
 
@@ -2182,7 +2300,7 @@ const buildSniesDataset = async (template) => {
   );
 
   if (!worksheets[0]) {
-    throw new Error("SNIES template workbook has no worksheets");
+    throw new Error("CNA template workbook has no worksheets");
   }
 
   const useWorksheetMapping = worksheets.length > 1;
@@ -2295,7 +2413,7 @@ const buildSniesComparisonDataset = async (template) => {
   await workbook.xlsx.load(templateBuffer);
 
   const sheetDatasets = workbook.worksheets.map((worksheet) => {
-    const { headers } = extractWorksheetHeaders(worksheet);
+    const { headers } = extractDetailedWorksheetHeaders(worksheet);
 
     if (isInfoWorksheet(worksheet.name)) {
       return null;
@@ -2355,8 +2473,6 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
     const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
       ? sheet.sourceTemplate.fieldNames
       : [];
-    const miroNormalizedFieldSet = new Set(miroFields.map((fieldName) => normalizeFieldName(fieldName)));
-    const sniesNormalizedFieldSet = new Set(sniesFields.map((fieldName) => normalizeFieldName(fieldName)));
     const totalRows = Math.max(sniesFields.length, miroFields.length, 1);
 
     worksheet.columns = [
@@ -2369,12 +2485,12 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
 
     worksheet.mergeCells("A1:B1");
     worksheet.mergeCells("D1:E1");
-    worksheet.getCell("A1").value = "Campos SNIES";
-    worksheet.getCell("D1").value = "Campos MIRÓ";
+    worksheet.getCell("A1").value = "Campos CNA";
+    worksheet.getCell("D1").value = "Campos Miro";
     worksheet.getCell("A2").value = "#";
-    worksheet.getCell("B2").value = "Campo SNIES";
+    worksheet.getCell("B2").value = "Campo CNA";
     worksheet.getCell("D2").value = "#";
-    worksheet.getCell("E2").value = "Campo MIRÓ";
+    worksheet.getCell("E2").value = "Campo Miro";
 
     for (let rowIndex = 0; rowIndex < totalRows; rowIndex += 1) {
       const excelRow = rowIndex + 3;
@@ -2388,34 +2504,17 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
       worksheet.getCell(`D${excelRow}`).value = miroField ? rowIndex + 1 : "";
       miroCell.value = miroField;
 
-      if (sniesField && miroNormalizedFieldSet.has(normalizeFieldName(sniesField))) {
-        sniesCell.fill = MATCH_FILL;
-      }
-
-      if (miroField && sniesNormalizedFieldSet.has(normalizeFieldName(miroField))) {
-        miroCell.fill = MATCH_FILL;
-      }
     }
 
     ["A1", "D1"].forEach((cellRef) => {
       const cell = worksheet.getCell(cellRef);
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF0F1F39" },
-      };
+      cell.font = { bold: true, size: 12 };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
     ["A2", "B2", "D2", "E2"].forEach((cellRef) => {
       const cell = worksheet.getCell(cellRef);
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF1D4E89" },
-      };
+      cell.font = { bold: true };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
@@ -2429,7 +2528,7 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
 
 const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => {
   const worksheet = workbook.addWorksheet(
-    resolveUniqueWorksheetName(workbook, template.name, "Plantilla_SNIES")
+    resolveUniqueWorksheetName(workbook, template.name, "Plantilla_CNA")
   );
 
   worksheet.columns = [
@@ -2448,8 +2547,6 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
     const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
       ? sheet.sourceTemplate.fieldNames
       : [];
-    const miroNormalizedFieldSet = new Set(miroFields.map((fieldName) => normalizeFieldName(fieldName)));
-    const sniesNormalizedFieldSet = new Set(sniesFields.map((fieldName) => normalizeFieldName(fieldName)));
     const totalRows = Math.max(sniesFields.length, miroFields.length, 1);
     const sectionStartRow = currentRow;
     const headerRow = sectionStartRow + 1;
@@ -2459,43 +2556,28 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
 
     worksheet.mergeCells(`B${headerRow}:C${headerRow}`);
     worksheet.mergeCells(`E${headerRow}:F${headerRow}`);
-    worksheet.getCell(`B${headerRow}`).value = "Campos SNIES";
-    worksheet.getCell(`E${headerRow}`).value = "Campos MIRÓ";
+    worksheet.getCell(`B${headerRow}`).value = "Campos CNA";
+    worksheet.getCell(`E${headerRow}`).value = "Campos Miro";
     worksheet.getCell(`B${subHeaderRow}`).value = "#";
-    worksheet.getCell(`C${subHeaderRow}`).value = "Campo SNIES";
+    worksheet.getCell(`C${subHeaderRow}`).value = "Campo CNA";
     worksheet.getCell(`E${subHeaderRow}`).value = "#";
-    worksheet.getCell(`F${subHeaderRow}`).value = "Campo MIRÓ";
+    worksheet.getCell(`F${subHeaderRow}`).value = "Campo Miro";
 
     worksheet.mergeCells(`A${headerRow}:A${dataEndRow}`);
     const sectionCell = worksheet.getCell(`A${headerRow}`);
     sectionCell.value = sheet.worksheetName || `Hoja ${index + 1}`;
     sectionCell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
     sectionCell.font = { bold: true, color: { argb: "FF1F1F1F" } };
-    sectionCell.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFF2F2F2" },
-    };
 
     ["B", "E"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${headerRow}`);
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 12 };
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF0F1F39" },
-      };
+      cell.font = { bold: true, size: 12 };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
     ["B", "C", "E", "F"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${subHeaderRow}`);
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF1D4E89" },
-      };
+      cell.font = { bold: true };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
@@ -2511,13 +2593,6 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
       worksheet.getCell(`E${excelRow}`).value = miroField ? rowIndex + 1 : "";
       miroCell.value = miroField;
 
-      if (sniesField && miroNormalizedFieldSet.has(normalizeFieldName(sniesField))) {
-        sniesCell.fill = MATCH_FILL;
-      }
-
-      if (miroField && sniesNormalizedFieldSet.has(normalizeFieldName(miroField))) {
-        miroCell.fill = MATCH_FILL;
-      }
 
       applyFieldComparisonBorders(worksheet, excelRow, ["A", "B", "C", "E", "F"]);
     }
@@ -2558,12 +2633,12 @@ controller.getTemplates = async (req, res) => {
       ...(periodId ? { period: periodId } : {}),
     };
 
-    const templates = await SniesTemplate.find(query)
+    const templates = await CnaTemplate.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(pageSize);
 
-    const total = await SniesTemplate.countDocuments(query);
+    const total = await CnaTemplate.countDocuments(query);
 
     return res.status(200).json({
       templates,
@@ -2572,9 +2647,9 @@ controller.getTemplates = async (req, res) => {
       pages: Math.ceil(total / pageSize),
     });
   } catch (error) {
-    console.error("Error fetching SNIES templates:", error);
+    console.error("Error fetching CNA templates:", error);
     return res.status(500).json({
-      error: "Error fetching SNIES templates",
+      error: "Error fetching CNA templates",
       details: error.message,
     });
   }
@@ -2609,9 +2684,9 @@ controller.getFeedOptions = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("Error fetching SNIES feed options:", error);
+    console.error("Error fetching CNA feed options:", error);
     return res.status(500).json({
-      error: "Error fetching SNIES feed options",
+      error: "Error fetching CNA feed options",
       details: error.message,
     });
   }
@@ -2624,9 +2699,9 @@ controller.getConnectedData = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const dataset = await buildSniesDataset(template);
@@ -2647,9 +2722,9 @@ controller.getConnectedData = async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error("Error fetching SNIES connected data:", error);
+    console.error("Error fetching CNA connected data:", error);
     return res.status(500).json({
-      error: "Error fetching SNIES connected data",
+      error: "Error fetching CNA connected data",
       details: error.message,
     });
   }
@@ -2662,9 +2737,9 @@ controller.downloadConnectedData = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const { workbook, sheetDatasets, workbookNotes, templateBuffer } = await buildSniesDataset(template);
@@ -2710,9 +2785,9 @@ controller.downloadConnectedData = async (req, res) => {
 
     return res.send(outputBuffer);
   } catch (error) {
-    console.error("Error downloading SNIES connected data:", error);
+    console.error("Error downloading CNA connected data:", error);
     return res.status(500).json({
-      error: "Error downloading SNIES connected data",
+      error: "Error downloading CNA connected data",
       details: error.message,
     });
   }
@@ -2725,9 +2800,9 @@ controller.downloadFieldComparison = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const previousFields = Array.isArray(template.fields) ? template.fields : [];
@@ -2747,9 +2822,9 @@ controller.downloadFieldComparison = async (req, res) => {
 
     return res.send(Buffer.from(outputBuffer));
   } catch (error) {
-    console.error("Error downloading SNIES field comparison:", error);
+    console.error("Error downloading CNA field comparison:", error);
     return res.status(500).json({
-      error: "Error downloading SNIES field comparison",
+      error: "Error downloading CNA field comparison",
       details: error.message,
     });
   }
@@ -2761,11 +2836,11 @@ controller.downloadAllFieldComparisons = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const templates = await SniesTemplate.find(periodId ? { period: periodId } : {})
+    const templates = await CnaTemplate.find(periodId ? { period: periodId } : {})
       .sort({ createdAt: -1 });
 
     if (!templates.length) {
-      return res.status(404).json({ error: "No SNIES templates found" });
+      return res.status(404).json({ error: "No CNA templates found" });
     }
 
     const workbook = new ExcelJS.Workbook();
@@ -2788,9 +2863,9 @@ controller.downloadAllFieldComparisons = async (req, res) => {
 
     return res.send(Buffer.from(outputBuffer));
   } catch (error) {
-    console.error("Error downloading all SNIES field comparisons:", error);
+    console.error("Error downloading all CNA field comparisons:", error);
     return res.status(500).json({
-      error: "Error downloading all SNIES field comparisons",
+      error: "Error downloading all CNA field comparisons",
       details: error.message,
     });
   }
@@ -2803,9 +2878,9 @@ controller.downloadTemplateFile = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const fileBuffer = await downloadDriveFileBuffer(template.drive_file_id);
@@ -2822,9 +2897,9 @@ controller.downloadTemplateFile = async (req, res) => {
 
     return res.send(fileBuffer);
   } catch (error) {
-    console.error("Error downloading SNIES template file:", error);
+    console.error("Error downloading CNA template file:", error);
     return res.status(500).json({
-      error: "Error downloading SNIES template file",
+      error: "Error downloading CNA template file",
       details: error.message,
     });
   }
@@ -2837,9 +2912,9 @@ controller.getTemplateById = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const workbookSheets = await getWorkbookSheetsFromTemplate(template);
@@ -2870,9 +2945,9 @@ controller.getTemplateById = async (req, res) => {
       workbook_sheets: workbookSheets,
     });
   } catch (error) {
-    console.error("Error fetching SNIES template by id:", error);
+    console.error("Error fetching CNA template by id:", error);
     return res.status(500).json({
-      error: "Error fetching SNIES template by id",
+      error: "Error fetching CNA template by id",
       details: error.message,
     });
   }
@@ -2914,11 +2989,11 @@ controller.createTemplate = async (req, res) => {
 
     const uploaded = await uploadFileToGoogleDrive(
       uploadFile,
-      "Formatos/Plantillas/SNIES",
+      "Formatos/Plantillas/CNA",
       uploadFile.originalname
     );
 
-    const template = new SniesTemplate({
+    const template = new CnaTemplate({
       name: name.trim(),
       file_name: req.file.originalname,
       file_description: file_description ? String(file_description).trim() : "",
@@ -2947,16 +3022,16 @@ controller.createTemplate = async (req, res) => {
     }
 
     return res.status(201).json({
-      message: "SNIES template created",
+      message: "CNA template created",
       template,
     });
   } catch (error) {
-    console.error("Error creating SNIES template:", error);
+    console.error("Error creating CNA template:", error);
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
     return res.status(500).json({
-      error: "Error creating SNIES template",
+      error: "Error creating CNA template",
       details: error.message,
     });
   }
@@ -2978,12 +3053,12 @@ controller.updateTemplate = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
       if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     const previousFields = Array.isArray(template.fields)
@@ -3068,17 +3143,17 @@ controller.updateTemplate = async (req, res) => {
     cleanupTemporaryExcelUpload(tempUploadFile);
 
     return res.status(200).json({
-      message: "SNIES template updated",
+      message: "CNA template updated",
       template,
     });
   } catch (error) {
-    console.error("Error updating SNIES template:", error);
+    console.error("Error updating CNA template:", error);
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
     cleanupTemporaryExcelUpload(tempUploadFile);
     return res.status(500).json({
-      error: "Error updating SNIES template",
+      error: "Error updating CNA template",
       details: error.message,
     });
   }
@@ -3091,22 +3166,22 @@ controller.deleteTemplate = async (req, res) => {
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
-    const template = await SniesTemplate.findById(id);
+    const template = await CnaTemplate.findById(id);
     if (!template) {
-      return res.status(404).json({ error: "SNIES template not found" });
+      return res.status(404).json({ error: "CNA template not found" });
     }
 
     if (template.drive_file_id) {
       await deleteDriveFile(template.drive_file_id);
     }
 
-    await SniesTemplate.findByIdAndDelete(id);
+    await CnaTemplate.findByIdAndDelete(id);
 
-    return res.status(200).json({ message: "SNIES template deleted" });
+    return res.status(200).json({ message: "CNA template deleted" });
   } catch (error) {
-    console.error("Error deleting SNIES template:", error);
+    console.error("Error deleting CNA template:", error);
     return res.status(500).json({
-      error: "Error deleting SNIES template",
+      error: "Error deleting CNA template",
       details: error.message,
     });
   }

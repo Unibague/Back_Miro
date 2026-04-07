@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const upload = require("../config/fileReceive");
-const controller = require("../controllers/sniesTemplates");
+const controller = require("../controllers/cnaTemplates");
 
 router.get("/", controller.getTemplates);
 router.get("/feed-options", controller.getFeedOptions);
