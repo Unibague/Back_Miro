@@ -1419,12 +1419,15 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     
     const query = {
       'template.producers': { $in: dependencyIds },
+      'loaded_data.dependency': { $in: dependenciesToQuery },
       name: { $regex: search, $options: 'i' }
     };
     
     if (periodId) {
       query.period = periodId;
     }
+
+    const totalWithData = await PublishedTemplate.countDocuments(query);
 
     const templates = await PublishedTemplate.find(query)
       .collation({ locale: 'es', strength: 1 })
@@ -1439,41 +1442,18 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
         ]
       });
 
-    // Filtrar solo plantillas asignadas que tienen información cargada
-    const templatesWithData = templates.filter(template => {
-      const hasDataForDependencies = template.loaded_data.some(data => 
-        dependenciesToQuery.includes(data.dependency) && 
-        data.filled_data !== undefined
-      );
-      console.log(`\n🔍 Template '${template.name}':`);
-      console.log('  - loaded_data dependencies:', template.loaded_data.map(ld => ld.dependency));
-      console.log('  - dependenciesToQuery:', dependenciesToQuery);
-      console.log('  - hasDataForDependencies:', hasDataForDependencies);
-      return hasDataForDependencies;
-    });
-
     const templatesWithValidators = await Promise.all(
-      templatesWithData.map(async (template) => {
+      templates.map(async (template) => {
         const validators = await Promise.all(
           template.template.fields.map(async (field) => {
             return Validator.giveValidatorToExcel(field.validate_with);
           })
         );
-
         template = template.toObject();
         template.validators = validators.filter(v => v !== undefined);
         return template;
       })
     );
-
-    // Contar total real después del filtrado
-    const allTemplatesForCount = await PublishedTemplate.find(query);
-    const totalWithData = allTemplatesForCount.filter(template => {
-      return template.loaded_data.some(data => 
-        dependenciesToQuery.includes(data.dependency) && 
-        data.filled_data !== undefined
-      );
-    }).length;
 
     res.status(200).json({
       templates: templatesWithValidators,
