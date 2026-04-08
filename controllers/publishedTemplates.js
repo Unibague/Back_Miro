@@ -1419,6 +1419,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     
     const query = {
       'template.producers': { $in: dependencyIds },
+      'loaded_data.dependency': { $in: dependenciesToQuery },
       name: { $regex: search, $options: 'i' }
     };
     
@@ -1465,7 +1466,6 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
             return Validator.giveValidatorToExcel(field.validate_with);
           })
         );
-
         template.validators = validators.filter(v => v !== undefined);
         return template;
       })
