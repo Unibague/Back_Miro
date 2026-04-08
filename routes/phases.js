@@ -7,6 +7,7 @@ router.get('/:id',                                 controller.getById);
 router.put('/:id',                                 controller.update);
 router.put('/:id/reorder',                         controller.reorderActividades);
 router.put('/:id/complete-all',                    controller.completeAll);
+router.put('/:id/revert-all',                      controller.revertAll);
 router.post('/:id/actividades',                    controller.addActividad);
 router.put('/:id/actividades/:actividadId',        controller.updateActividad);
 router.delete('/:id/actividades/:actividadId',                                          controller.removeActividad);

@@ -1,5 +1,6 @@
 const Phase = require('../models/phases');
 const Process = require('../models/processes');
+const Caso = require('../models/casos');
 const { crearPMAutomaticoParaAV } = require('../helpers/pmAutoCreate');
 
 const phaseController = {};
@@ -68,19 +69,45 @@ phaseController.addActividad = async (req, res) => {
 /* PUT /phases/:id/actividades/:actividadId — editar una actividad */
 phaseController.updateActividad = async (req, res) => {
   try {
-    const { nombre, responsables, completada, fecha_completado, observaciones } = req.body;
+    const { nombre, responsables, completada, no_aplica, acto_admin_modo, fecha_completado, observaciones } = req.body;
     const update = {};
     if (nombre            !== undefined) update['actividades.$.nombre']            = nombre;
     if (responsables      !== undefined) update['actividades.$.responsables']      = responsables;
     if (completada        !== undefined) update['actividades.$.completada']        = completada;
+    if (no_aplica         !== undefined) update['actividades.$.no_aplica']         = no_aplica;
+    if (acto_admin_modo   !== undefined) update['actividades.$.acto_admin_modo']   = acto_admin_modo;
     if (fecha_completado  !== undefined) update['actividades.$.fecha_completado']  = fecha_completado;
     if (observaciones     !== undefined) update['actividades.$.observaciones']     = observaciones;
+
     const phase = await Phase.findOneAndUpdate(
       { _id: req.params.id, 'actividades._id': req.params.actividadId },
       { $set: update },
       { new: true }
     );
     if (!phase) return res.status(404).json({ error: 'Fase o actividad no encontrada' });
+
+    // Auto-crear caso al completar "Información del caso" en fase 4
+    if (completada === true && phase.numero === 4) {
+      const act = phase.actividades.id(req.params.actividadId);
+      if (act && act.nombre.trim().toLowerCase() === 'información del caso') {
+        const existing = await Caso.findOne({ proceso_id: phase.proceso_id });
+        if (!existing) await Caso.create({ proceso_id: phase.proceso_id });
+      }
+    }
+
+    // Al cambiar acto_admin_modo en "Acto administrativo", resetear subactividades
+    if (acto_admin_modo !== undefined) {
+      const phase2 = await Phase.findOne({ _id: req.params.id });
+      if (phase2) {
+        const act = phase2.actividades.id(req.params.actividadId);
+        if (act && act.nombre.trim().toLowerCase() === 'acto administrativo') {
+          act.subactividades.forEach(sub => { sub.completada = false; sub.fecha_completado = null; });
+          await phase2.save();
+          return res.status(200).json(phase2);
+        }
+      }
+    }
+
     res.status(200).json(phase);
   } catch (error) {
     console.error('Error actualizando actividad:', error);
@@ -109,7 +136,7 @@ phaseController.addSubactividad = async (req, res) => {
 /* PUT /phases/:id/actividades/:actividadId/subactividades/:subactividadId — editar subactividad */
 phaseController.updateSubactividad = async (req, res) => {
   try {
-    const { nombre, completada, fecha_completado, observaciones } = req.body;
+    const { nombre, completada, no_aplica, fecha_completado, observaciones } = req.body;
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
 
@@ -121,6 +148,7 @@ phaseController.updateSubactividad = async (req, res) => {
 
     if (nombre           !== undefined) sub.nombre           = nombre;
     if (completada       !== undefined) sub.completada       = completada;
+    if (no_aplica        !== undefined) sub.no_aplica        = no_aplica;
     if (fecha_completado !== undefined) sub.fecha_completado = fecha_completado;
     if (observaciones    !== undefined) sub.observaciones    = observaciones;
 
@@ -218,6 +246,35 @@ phaseController.completeAll = async (req, res) => {
     res.status(200).json({ fase: phase, proceso });
   } catch (error) {
     console.error('Error completando todas las actividades:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* PUT /phases/:id/revert-all — descompletar todas las actividades y retroceder fase */
+phaseController.revertAll = async (req, res) => {
+  try {
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+    phase.actividades.forEach(a => {
+      a.completada = false;
+      a.fecha_completado = null;
+      a.subactividades.forEach(s => {
+        s.completada = false;
+        s.fecha_completado = null;
+      });
+    });
+    await phase.save();
+
+    const proceso = await Process.findById(phase.proceso_id);
+    if (proceso && phase.numero === proceso.fase_actual && phase.numero > 0) {
+      proceso.fase_actual = phase.numero - 1;
+      await proceso.save();
+    }
+
+    res.status(200).json({ fase: phase, proceso });
+  } catch (error) {
+    console.error('Error revirtiendo fase:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
