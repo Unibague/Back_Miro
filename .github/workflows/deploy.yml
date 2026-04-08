@@ -104,7 +104,8 @@ jobs:
           -o ConnectTimeout=15 \
           ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} '
           cd ~/MIRO/Back_Miro;
-          git pull;
+          git fetch origin main;
+          git reset --hard origin/main;
           npm install;
           exit;'
 
