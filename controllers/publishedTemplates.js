@@ -1428,8 +1428,6 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
 
     const templates = await PublishedTemplate.find(query)
       .collation({ locale: 'es', strength: 1 })
-      .skip(skip)
-      .limit(limit)
       .populate('period')
       .populate({
         path: 'template',
@@ -1452,28 +1450,29 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       return hasDataForDependencies;
     });
 
+    const normalizedTemplatesWithData = templatesWithData.map((template) => {
+      const templateObject = template.toObject();
+      templateObject.loaded_data = (templateObject.loaded_data || []).filter((data) =>
+        dependenciesToQuery.includes(data.dependency)
+      );
+      return templateObject;
+    });
+
     const templatesWithValidators = await Promise.all(
-      templatesWithData.map(async (template) => {
+      normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
         const validators = await Promise.all(
           template.template.fields.map(async (field) => {
             return Validator.giveValidatorToExcel(field.validate_with);
           })
         );
 
-        template = template.toObject();
         template.validators = validators.filter(v => v !== undefined);
         return template;
       })
     );
 
     // Contar total real después del filtrado
-    const allTemplatesForCount = await PublishedTemplate.find(query);
-    const totalWithData = allTemplatesForCount.filter(template => {
-      return template.loaded_data.some(data => 
-        dependenciesToQuery.includes(data.dependency) && 
-        data.filled_data !== undefined
-      );
-    }).length;
+    const totalWithData = normalizedTemplatesWithData.length;
 
     res.status(200).json({
       templates: templatesWithValidators,

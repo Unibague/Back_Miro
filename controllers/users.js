@@ -277,19 +277,20 @@ userController.getUser = async (req, res) => {
 
 userController.getUserToImpersonate = async (req, res) => {
     const id = req.query.id;
-    const adminEmail = req.query.adminEmail;
+    const adminUser = req.user;
     try {
-        const user = await User.findOne({ _id: id });
+        if (!id) {
+            return res.status(400).json({ error: "User ID is required" });
+        }
+
+        const user = await User.findOne({ _id: id, isActive: true });
         if (!user) {
-            return res.status(404).json({ error: "User not found in DB" });
+            return res.status(404).json({ error: "User not found in DB or inactive" });
         }
         
         // Registrar impersonación si se proporciona adminEmail
-        if (adminEmail) {
-            const adminUser = await User.findOne({ email: adminEmail });
-            if (adminUser) {
-                await auditLogger.logImpersonate(req, adminUser, user.email);
-            }
+        if (adminUser) {
+            await auditLogger.logImpersonate(req, adminUser, user.email);
         }
         
         res.status(200).json(user);
