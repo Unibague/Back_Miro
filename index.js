@@ -86,6 +86,10 @@ apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
 apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
+apiRouter.use("/pdi/macroproyectos",   require('./routes/pdiMacroproyecto'));
+apiRouter.use("/pdi/proyectos",        require('./routes/pdiProyecto'));
+apiRouter.use("/pdi/acciones",         require('./routes/pdiAccionEstrategica'));
+apiRouter.use("/pdi/indicadores",      require('./routes/pdiIndicador'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');
