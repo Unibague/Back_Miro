@@ -1,6 +1,7 @@
 const Indicador         = require('../models/pdiIndicador');
 const { withSemaforo }  = require('../helpers/pdiSemaforo');
 const { recalcularProyecto } = require('./pdiAccionEstrategica');
+const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
 
 async function recalcularAccion(accion_id) {
     const AccionEstrategica = require('../models/pdiAccionEstrategica');
@@ -155,8 +156,62 @@ ctrl.remove = async (req, res) => {
     try {
         const doc = await Indicador.findByIdAndDelete(req.params.id);
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+        // Eliminar archivos del disco al borrar el indicador
+        for (const ev of doc.evidencias ?? []) deleteFile(ev.filename);
         await recalcularAccion(doc.accion_id);
         res.json({ message: 'Indicador eliminado' });
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// ── Evidencias ─────────────────────────────────────────────────────────────
+
+ctrl.uploadEvidencia = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo PDF' });
+        const doc = await Indicador.findById(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Indicador no encontrado' });
+
+        const evidencia = {
+            nombre_original: req.file.originalname,
+            filename:        req.file.filename,
+            url:             buildUrl(req.file.filename),
+            subido_por:      req.body.subido_por  ?? '',
+            periodo:         req.body.periodo     ?? '',
+            descripcion:     req.body.descripcion ?? '',
+        };
+
+        doc.evidencias.push(evidencia);
+        await doc.save();
+        res.status(201).json(doc.evidencias[doc.evidencias.length - 1]);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+ctrl.deleteEvidencia = async (req, res) => {
+    try {
+        const doc = await Indicador.findById(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Indicador no encontrado' });
+
+        const ev = doc.evidencias.id(req.params.evidenciaId);
+        if (!ev) return res.status(404).json({ error: 'Evidencia no encontrada' });
+
+        deleteFile(ev.filename);
+        ev.deleteOne();
+        await doc.save();
+        res.json({ message: 'Evidencia eliminada' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+ctrl.getEvidencias = async (req, res) => {
+    try {
+        const doc = await Indicador.findById(req.params.id).select('evidencias');
+        if (!doc) return res.status(404).json({ error: 'Indicador no encontrado' });
+        res.json(doc.evidencias);
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
     }

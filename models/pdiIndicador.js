@@ -9,6 +9,16 @@ const metaPeriodoSchema = new mongoose.Schema({
     avance:  { type: Number, default: null },
 }, { _id: false });
 
+const evidenciaSchema = new mongoose.Schema({
+    nombre_original: { type: String, required: true },
+    filename:        { type: String, required: true }, // nombre en disco
+    url:             { type: String, required: true }, // URL pública
+    subido_por:      { type: String, default: '' },
+    periodo:         { type: String, default: '' },    // periodo al que aplica (opcional)
+    descripcion:     { type: String, default: '' },
+    fecha_subida:    { type: Date, default: Date.now },
+}, { _id: true });
+
 const pdiIndicadorSchema = new mongoose.Schema({
     codigo:              { type: String, required: true },
     nombre:              { type: String, required: true },
@@ -27,6 +37,7 @@ const pdiIndicadorSchema = new mongoose.Schema({
     periodos:            { type: [metaPeriodoSchema], default: [] },
     avances_por_anio:    { type: Map, of: Number, default: {} },
     avance_total_real:   { type: mongoose.Schema.Types.Mixed, default: null }, // (avance / meta_final_2029) * 100
+    evidencias:          { type: [evidenciaSchema], default: [] },
     accion_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'pdiAccionEstrategica',

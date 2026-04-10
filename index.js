@@ -1,6 +1,7 @@
 const express = require('express');
 const morgan = require('morgan');
 const cors = require('cors');
+const path = require('path');
 const initDB = require('./config/db');
 const swaggerRouter = require('./swagger');
 const app = express();
@@ -33,6 +34,14 @@ app.use(cors({
 app.use(express.json({ limit: '500mb', charset: 'utf-8' }));
 app.use(express.urlencoded({ limit: '500mb', extended: false, charset: 'utf-8' }));
 app.use(morgan('dev'));
+
+// Servir archivos estáticos de uploads (evidencias PDI, etc.)
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
 
 // Configurar charset UTF-8 para todas las respuestas
 app.use((req, res, next) => {
