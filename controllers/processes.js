@@ -328,9 +328,7 @@ processController.activatePM = async (req, res) => {
     const sufijo = parent.tipo_proceso.toLowerCase(); // 'rc' | 'av'
     const fecha_resolucion = programa[`fecha_resolucion_${sufijo}`];
     const duracion_res     = programa[`duracion_resolucion_${sufijo}`];
-    if (!fecha_resolucion || duracion_res == null) {
-      return res.status(400).json({ error: 'El proceso padre no tiene resolución vigente con duración configurada' });
-    }
+    const tieneResolucion  = !!(fecha_resolucion && duracion_res != null);
 
     // Buscar si ya existe un PM hijo ligado a ESTE proceso específico
     let pm = await Process.findOne({
@@ -352,34 +350,48 @@ processController.activatePM = async (req, res) => {
       label_radicacion_avance_cna,
     } = req.body;
 
-    const duracion_meses = Number(duracion_res) * 12;
     const mEnvioPlan    = Number.isFinite(Number(meses_envio_plan))    ? Number(meses_envio_plan)    : 5;
     const mEntregaCNA   = Number.isFinite(Number(meses_entrega_cna))   ? Number(meses_entrega_cna)   : 6;
     const mEnvioAvance  = Number.isFinite(Number(meses_envio_avance))  ? Number(meses_envio_avance)  : 6;
     const mRadicAvance  = Number.isFinite(Number(meses_radicacion_avance)) ? Number(meses_radicacion_avance) : 0;
 
-    const fecha_envio_pm_vicerrectoria =
-      siguienteDiaHabil(sumarMeses(fecha_resolucion, mEnvioPlan));
-    const fecha_entrega_pm_cna =
-      siguienteDiaHabil(sumarMeses(fecha_resolucion, mEntregaCNA));
+    /** Sin resolución en el programa (p. ej. RC Nuevo): PM con fechas en blanco; se recalculan al registrar resolución y guardar de nuevo. */
+    let fecha_envio_pm_vicerrectoria = null;
+    let fecha_entrega_pm_cna = null;
+    let fecha_envio_avance_vicerrectoria = null;
+    let fecha_radicacion_avance_cna = null;
 
-    const mitad_meses = Math.round(duracion_meses / 2);
-    const fecha_mitad = sumarMeses(fecha_resolucion, mitad_meses);
-    const fecha_envio_avance_vicerrectoria =
-      siguienteDiaHabil(sumarMeses(fecha_mitad, -mEnvioAvance));
-    const fecha_radicacion_avance_cna =
-      siguienteDiaHabil(sumarMeses(fecha_mitad, mRadicAvance));
+    if (tieneResolucion) {
+      const duracion_meses = Number(duracion_res) * 12;
+      fecha_envio_pm_vicerrectoria =
+        siguienteDiaHabil(sumarMeses(fecha_resolucion, mEnvioPlan));
+      fecha_entrega_pm_cna =
+        siguienteDiaHabil(sumarMeses(fecha_resolucion, mEntregaCNA));
+
+      const mitad_meses = Math.round(duracion_meses / 2);
+      const fecha_mitad = sumarMeses(fecha_resolucion, mitad_meses);
+      fecha_envio_avance_vicerrectoria =
+        siguienteDiaHabil(sumarMeses(fecha_mitad, -mEnvioAvance));
+      fecha_radicacion_avance_cna =
+        siguienteDiaHabil(sumarMeses(fecha_mitad, mRadicAvance));
+    }
 
     // Subtipo automático según el tipo del proceso padre
     const subtipoAutomatico = parent.tipo_proceso === 'RC'
       ? 'Autoevaluación Registro calificado'
       : 'Autoevaluación Acreditación';
 
+    const fechasPm = tieneResolucion || !pm
+      ? {
+          fecha_envio_pm_vicerrectoria,
+          fecha_entrega_pm_cna,
+          fecha_envio_avance_vicerrectoria,
+          fecha_radicacion_avance_cna,
+        }
+      : {};
+
     const pmData = {
-      fecha_envio_pm_vicerrectoria,
-      fecha_entrega_pm_cna,
-      fecha_envio_avance_vicerrectoria,
-      fecha_radicacion_avance_cna,
+      ...fechasPm,
       // Guardar los meses de cálculo usados
       meses_envio_pm:          mEnvioPlan,
       meses_entrega_pm_cna:    mEntregaCNA,
