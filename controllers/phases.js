@@ -79,12 +79,41 @@ phaseController.updateActividad = async (req, res) => {
     if (fecha_completado  !== undefined) update['actividades.$.fecha_completado']  = fecha_completado;
     if (observaciones     !== undefined) update['actividades.$.observaciones']     = observaciones;
 
+    const phasePrev = await Phase.findOne({ _id: req.params.id, 'actividades._id': req.params.actividadId });
+    if (!phasePrev) return res.status(404).json({ error: 'Fase o actividad no encontrada' });
+    const actPrev = phasePrev.actividades.id(req.params.actividadId);
+    const prevNoAplica = !!actPrev.no_aplica;
+
     const phase = await Phase.findOneAndUpdate(
       { _id: req.params.id, 'actividades._id': req.params.actividadId },
       { $set: update },
       { new: true }
     );
     if (!phase) return res.status(404).json({ error: 'Fase o actividad no encontrada' });
+
+    /* Propagar N/A a subactividades solo si no_aplica del cuerpo cambió respecto al valor guardado.
+       Si no, ignorar (p. ej. completada:true suele ir con no_aplica:false aunque ya era false). */
+    if (no_aplica !== undefined && !!no_aplica !== prevNoAplica) {
+      const phaseCascade = await Phase.findById(req.params.id);
+      if (phaseCascade) {
+        const actC = phaseCascade.actividades.id(req.params.actividadId);
+        if (actC) {
+          if (no_aplica === true) {
+            actC.subactividades.forEach((sub) => {
+              sub.no_aplica = true;
+              sub.completada = false;
+              sub.fecha_completado = null;
+            });
+          } else {
+            actC.subactividades.forEach((sub) => {
+              sub.no_aplica = false;
+            });
+          }
+          await phaseCascade.save();
+          return res.status(200).json(phaseCascade);
+        }
+      }
+    }
 
     // Auto-crear caso al completar "Información del caso" en fase 4
     if (completada === true && phase.numero === 4) {
@@ -227,8 +256,10 @@ phaseController.completeAll = async (req, res) => {
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
 
-    // Marcar todas las actividades como completadas
-    phase.actividades.forEach(a => { a.completada = true; });
+    phase.actividades.forEach(a => {
+      a.completada = true;
+      a.no_aplica = false;
+    });
     await phase.save();
 
     // Avanzar la fase del proceso si hay siguiente
@@ -259,9 +290,11 @@ phaseController.revertAll = async (req, res) => {
     phase.actividades.forEach(a => {
       a.completada = false;
       a.fecha_completado = null;
+      a.no_aplica = false;
       a.subactividades.forEach(s => {
         s.completada = false;
         s.fecha_completado = null;
+        s.no_aplica = false;
       });
     });
     await phase.save();
