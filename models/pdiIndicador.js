@@ -31,6 +31,7 @@ const pdiIndicadorSchema = new mongoose.Schema({
     meta_final_2029:     { type: mongoose.Schema.Types.Mixed, default: null },
     entregable:          { type: String, default: '' },
     responsable:         { type: String, default: '' },
+    responsable_email:   { type: String, default: '' },
     fecha_inicio:        { type: String, default: null },
     fecha_fin:           { type: String, default: null },
     observaciones:       { type: String, default: '' },

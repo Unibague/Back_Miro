@@ -2,6 +2,7 @@ const Indicador         = require('../models/pdiIndicador');
 const { withSemaforo }  = require('../helpers/pdiSemaforo');
 const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
+const Historial         = require('../models/pdiIndicadorHistorial');
 
 async function recalcularAccion(accion_id) {
     const AccionEstrategica = require('../models/pdiAccionEstrategica');
@@ -17,11 +18,18 @@ async function recalcularAccion(accion_id) {
     if (accion) await recalcularProyecto(accion.proyecto_id);
 }
 
-// Promedia los avances de un array de periodos que tengan avance registrado
-function promediarAvances(lista) {
-    const con = lista.filter(p => p.avance !== null && p.avance !== undefined && !isNaN(Number(p.avance)));
+// Fórmula Excel: MIN(SUMA(avances) / SUMA(metas), 1) * 100
+// Si suma de metas = 0 devuelve 0. Resultado en porcentaje (0-100).
+function formulaExcel(lista) {
+    const con = lista.filter(p =>
+        p.avance !== null && p.avance !== undefined && !isNaN(Number(p.avance)) &&
+        p.meta   !== null && p.meta   !== undefined && !isNaN(Number(p.meta))
+    );
     if (!con.length) return null;
-    return Math.round(con.reduce((acc, p) => acc + Number(p.avance), 0) / con.length * 100) / 100;
+    const sumaMetas   = con.reduce((acc, p) => acc + Number(p.meta),   0);
+    const sumaAvances = con.reduce((acc, p) => acc + Number(p.avance), 0);
+    if (sumaMetas === 0) return 0;
+    return Math.round(Math.min(sumaAvances / sumaMetas, 1) * 100 * 100) / 100;
 }
 
 // Último valor registrado (orden tal como vienen los periodos)
@@ -39,7 +47,7 @@ function acumular(lista) {
 
 /*
   Calcula todos los campos derivados del indicador a partir de sus periodos:
-  - avance_YYYY: promedio de los dos semestres de ese año (A y B)
+  - avances_por_anio: fórmula Excel MIN(SUMA(avances)/SUMA(metas), 1)*100 por año
   - avance (% avance total): según tipo_calculo sobre todos los periodos
   - avance_total_real: (avance / meta_final_2029) * 100 si existe meta
   Los años se detectan dinámicamente desde los periodos registrados.
@@ -53,16 +61,24 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
         porAnio[anio].push(p);
     }
 
+    // avances_por_anio: fórmula Excel si metas numéricas, sino último valor del año
     const avances_por_anio = {};
     for (const [anio, lista] of Object.entries(porAnio)) {
-        const val = promediarAvances(lista);
+        const val = formulaExcel(lista) ?? ultimoValor(lista);
         if (val !== null) avances_por_anio[anio] = val;
     }
 
+    // avance total según tipo_calculo
     let avanceTotal = 0;
-    if (tipo_calculo === 'acumulado')         avanceTotal = acumular(periodos)         ?? 0;
-    else if (tipo_calculo === 'ultimo_valor') avanceTotal = ultimoValor(periodos)      ?? 0;
-    else                                      avanceTotal = promediarAvances(periodos) ?? 0;
+    if (tipo_calculo === 'acumulado') {
+        avanceTotal = acumular(periodos) ?? 0;
+    } else if (tipo_calculo === 'ultimo_valor') {
+        avanceTotal = ultimoValor(periodos) ?? 0;
+    } else {
+        // 'promedio' → fórmula Excel; si metas no son numéricas, usar último valor registrado
+        const porExcel = formulaExcel(periodos);
+        avanceTotal = porExcel !== null ? porExcel : (ultimoValor(periodos) ?? 0);
+    }
 
     const meta_num = typeof meta_final_2029 === 'number' ? meta_final_2029
         : !isNaN(Number(meta_final_2029)) && meta_final_2029 !== null && meta_final_2029 !== ''
@@ -76,6 +92,38 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
 }
 
 const ctrl = {};
+
+// Guarda un snapshot antes/después en el historial
+async function guardarHistorial(antes, despues, modificado_por = '') {
+    try {
+        const camposIgnorar = ['updatedAt', 'createdAt', '__v', 'avances_por_anio', 'avance', 'avance_total_real'];
+        const campos_cambiados = [];
+
+        const comparar = (a, b, prefix = '') => {
+            const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+            for (const k of keys) {
+                if (camposIgnorar.includes(k)) continue;
+                const va = JSON.stringify(a?.[k]);
+                const vb = JSON.stringify(b?.[k]);
+                if (va !== vb) campos_cambiados.push(prefix ? `${prefix}.${k}` : k);
+            }
+        };
+
+        comparar(antes, despues);
+
+        await Historial.create({
+            indicador_id:     antes._id,
+            indicador_codigo: antes.codigo,
+            indicador_nombre: antes.nombre,
+            modificado_por,
+            antes:   JSON.parse(JSON.stringify(antes)),
+            despues: JSON.parse(JSON.stringify(despues)),
+            campos_cambiados,
+        });
+    } catch (e) {
+        console.error('Error guardando historial:', e.message);
+    }
+}
 
 ctrl.getAll = async (req, res) => {
     try {
@@ -119,7 +167,8 @@ ctrl.update = async (req, res) => {
         const tipo_calculo  = body.tipo_calculo  ?? existing.tipo_calculo;
         const meta_final    = body.meta_final_2029 ?? existing.meta_final_2029;
         const calculados = calcularCamposDinamicos(periodos, tipo_calculo, meta_final);
-        const doc = await Indicador.findByIdAndUpdate(req.params.id, { ...body, ...calculados }, { new: true, runValidators: true });
+        const doc = await Indicador.findByIdAndUpdate(req.params.id, { ...body, ...calculados }, { new: true, runValidators: true }).populate('accion_id', 'codigo nombre');
+        await guardarHistorial(existing.toObject(), doc.toObject(), body.modificado_por ?? '');
         await recalcularAccion(doc.accion_id);
         res.json(withSemaforo(doc));
     } catch (e) {
@@ -133,6 +182,7 @@ ctrl.updatePeriodo = async (req, res) => {
         const { periodo, meta, avance } = req.body;
         const doc = await Indicador.findById(req.params.id);
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+        const antes = doc.toObject();
 
         const idx = doc.periodos.findIndex(p => p.periodo === periodo);
         if (idx >= 0) {
@@ -145,6 +195,8 @@ ctrl.updatePeriodo = async (req, res) => {
         const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
         Object.assign(doc, calculados);
         await doc.save();
+        await doc.populate('accion_id', 'codigo nombre');
+        await guardarHistorial(antes, doc.toObject(), req.body.modificado_por ?? '');
         await recalcularAccion(doc.accion_id);
         res.json(withSemaforo(doc));
     } catch (e) {

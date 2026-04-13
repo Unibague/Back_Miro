@@ -6,6 +6,8 @@ const pdiProyectoSchema = new mongoose.Schema({
     peso:             { type: Number, required: true, min: 0, max: 100 },
     avance:           { type: Number, default: 0, min: 0, max: 100 },
     formulador:       { type: String, required: true },
+    responsable:      { type: String, default: '' },
+    responsable_email:{ type: String, default: '' },
     macroproyecto_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'pdiMacroproyecto',
