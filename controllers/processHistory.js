@@ -57,6 +57,7 @@ processHistoryController.close = async (req, res) => {
                 return {
                   nombre:           sub.nombre,
                   completada:       sub.completada,
+                  no_aplica:        !!sub.no_aplica,
                   fecha_completado: sub.fecha_completado ?? null,
                   observaciones:    sub.observaciones ?? '',
                   documentos:       subDocs.map(mapDoc),
@@ -68,6 +69,7 @@ processHistoryController.close = async (req, res) => {
               nombre:           act.nombre,
               responsables:     act.responsables ?? '',
               completada:       act.completada,
+              no_aplica:        !!act.no_aplica,
               fecha_completado: act.fecha_completado ?? null,
               observaciones:    act.observaciones ?? '',
               documentos:       actDocs.map(mapDoc),
@@ -76,10 +78,11 @@ processHistoryController.close = async (req, res) => {
           })
         );
 
+        const actividadResueltaHist = (a) => !!a.completada || !!a.no_aplica;
         return {
           fase_numero:              f.numero,
           fase_nombre:              f.nombre,
-          actividades_completadas:  f.actividades.filter(a => a.completada).length,
+          actividades_completadas:  f.actividades.filter(actividadResueltaHist).length,
           actividades_total:        f.actividades.length,
           documentos:               faseDocs.map(mapDoc),
           actividades:              actividadesSnapshot,

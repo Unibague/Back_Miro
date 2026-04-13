@@ -20,6 +20,7 @@ const subactividadSnapshotSchema = new mongoose.Schema(
   {
     nombre:          { type: String },
     completada:      { type: Boolean, default: false },
+    no_aplica:       { type: Boolean, default: false },
     fecha_completado:{ type: String, default: null },
     observaciones:   { type: String, default: '' },
     documentos:      { type: [docSnapshotSchema], default: [] },
@@ -33,6 +34,7 @@ const actividadSnapshotSchema = new mongoose.Schema(
     nombre:          { type: String },
     responsables:    { type: String, default: '' },
     completada:      { type: Boolean, default: false },
+    no_aplica:       { type: Boolean, default: false },
     fecha_completado:{ type: String, default: null },
     observaciones:   { type: String, default: '' },
     documentos:      { type: [docSnapshotSchema], default: [] },
