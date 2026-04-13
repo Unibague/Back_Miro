@@ -48,11 +48,18 @@ jobs:
       run: sleep 10
 
     - name: Verify VPN connection
-      run: ip a
+      run: |
+        ip a
+        # Esperar hasta 30s a que la interfaz VPN aparezca
+        for i in $(seq 1 10); do
+          ip a | grep -E "tun|gpd|pan|ppp" && echo "VPN interface found" && break
+          echo "Waiting for VPN interface... ($i/10)"
+          sleep 3
+        done
 
     - name: Detect VPN interface
       run: |
-        VPN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(tun|ppp|vpn)' | head -n 1 || true)
+        VPN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(tun|ppp|vpn|gpd|pan)' | head -n 1 || true)
         if [ -z "$VPN_IFACE" ]; then
           echo "No VPN interface detected after openconnect"
           exit 1
@@ -82,15 +89,23 @@ jobs:
 
     - name: Check TCP port 22 on remote host
       run: |
-        timeout 15 bash -c "</dev/tcp/${{ secrets.INTERNAL_RESOURCE_IP }}/22" && echo "TCP 22 reachable"
+        for i in 1 2 3; do
+          timeout 15 bash -c "</dev/tcp/${{ secrets.INTERNAL_RESOURCE_IP }}/22" && echo "TCP 22 reachable" && break
+          echo "TCP attempt $i failed, retrying in 5s..."
+          sleep 5
+        done
 
     - name: Test internal connectivity with SSH
       run: |
-        sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
-          -o StrictHostKeyChecking=no \
-          -o ConnectTimeout=15 \
-          ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} \
-          'echo "SSH connection successful"'
+        for i in 1 2 3; do
+          sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            ${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }} \
+            'echo "SSH connection successful"' && break
+          echo "SSH attempt $i failed, retrying in 5s..."
+          sleep 5
+        done
 
     - name: Run Semantic Release
       env:
