@@ -100,6 +100,7 @@ apiRouter.use("/pdi/proyectos",        require('./routes/pdiProyecto'));
 apiRouter.use("/pdi/acciones",         require('./routes/pdiAccionEstrategica'));
 apiRouter.use("/pdi/indicadores",      require('./routes/pdiIndicador'));
   apiRouter.use("/pdi/historial",          require('./routes/pdiIndicadorHistorial'));
+apiRouter.use("/pdi/cortes",           require('./routes/pdiCorte'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');
