@@ -14,84 +14,134 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '24.14.0'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.14.0"
+          cache: "npm"
 
-    - name: Install dependencies
-      run: npm install
+      - name: Install dependencies
+        run: npm install
 
-    - name: Install OpenConnect and sshpass
-      run: sudo apt-get install -y openconnect sshpass
+      - name: Install VPN and SSH tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            openconnect \
+            vpnc-scripts \
+            sshpass \
+            iputils-ping \
+            netcat-openbsd
 
-    - name: Connect to VPN and deploy
-      env:
-        VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
-        VPN_USER: ${{ secrets.VPN_USER }}
-        VPN_HOST: ${{ secrets.VPN_HOST }}
-        SSH_PASS: ${{ secrets.INTERNAL_SSH_PASSWORD }}
-        SSH_USER: ${{ secrets.INTERNAL_USER }}
-        SSH_HOST: ${{ secrets.INTERNAL_RESOURCE_IP }}
-      run: |
-        # 1. Conectar VPN forzando gateway interno
-        echo "$VPN_PASSWORD" | sudo openconnect \
-          --protocol=gp \
-          --user="$VPN_USER" \
-          --passwd-on-stdin \
-          --servercert pin-sha256:+4XOhCB4GmaXr8/TMWL09EayWRbrz3X8WWAWgu79f9U= \
-          --os=win \
-          "$VPN_HOST" -b
+      - name: Connect to VPN
+        run: |
+          echo "${{ secrets.VPN_PASSWORD }}" | sudo openconnect \
+            --protocol=gp \
+            --user="${{ secrets.VPN_USER }}" \
+            --passwd-on-stdin \
+            --servercert pin-sha256:+4XOhCB4GmaXr8/TMWL09EayWRbrz3X8WWAWgu79f9U= \
+            --script /etc/vpnc/vpnc-script \
+            "${{ secrets.VPN_HOST }}" \
+            -b
 
-        # 2. Esperar que el túnel levante
-        echo "Waiting for VPN tunnel..."
-        for i in $(seq 1 15); do
-          ip a | grep -E "tun|gpd|pan|ppp" && echo "VPN interface found" && break
-          echo "  attempt $i/15..."
-          sleep 3
-        done
-        ip route
-
-        # 3. Verificar conectividad TCP con reintentos
-        echo "Checking TCP port 22..."
-        for i in 1 2 3 4 5; do
-          timeout 15 bash -c "</dev/tcp/$SSH_HOST/22" && echo "TCP 22 reachable" && break
-          echo "  TCP attempt $i failed, waiting 10s..."
-          sleep 10
-        done
-
-        # 4. Todo el trabajo SSH en una sola conexión
-        sshpass -p "$SSH_PASS" ssh \
-          -o StrictHostKeyChecking=no \
-          -o ConnectTimeout=20 \
-          -o ServerAliveInterval=20 \
-          -o ServerAliveCountMax=30 \
-          "$SSH_USER@$SSH_HOST" '
-            set -e
-            echo "=== Updating repository ==="
-            cd ~/MIRO_TEST
-            if [ ! -d "Back_Miro_Test" ]; then
-              git clone --depth=1 --branch develop https://github.com/BrayanD117/Back_Miro.git Back_Miro_Test
+      - name: Wait for VPN tunnel
+        run: |
+          for i in {1..20}; do
+            VPN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(tun|ppp|vpn)' | head -n 1 || true)
+            if [ -n "$VPN_IFACE" ]; then
+              echo "VPN interface detected: $VPN_IFACE"
+              exit 0
             fi
-            cd Back_Miro_Test
-            git fetch --depth=1 origin develop
+            echo "Waiting for VPN tunnel..."
+            sleep 2
+          done
+
+          echo "No VPN interface detected after waiting."
+          ip a
+          exit 1
+
+      - name: Verify VPN interfaces and routes
+        run: |
+          echo "=== IP ADDR ==="
+          ip a
+          echo
+          echo "=== IP ROUTE ==="
+          ip route
+          echo
+          echo "=== ROUTE TO INTERNAL HOST ==="
+          ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" || true
+
+      - name: Validate route to internal host
+        run: |
+          if ! ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" >/tmp/route_check.txt 2>&1; then
+            echo "No route to internal host"
+            cat /tmp/route_check.txt
+            exit 1
+          fi
+
+          echo "Route lookup result:"
+          cat /tmp/route_check.txt
+
+          if grep -qi "unreachable" /tmp/route_check.txt; then
+            echo "Internal host is unreachable from runner"
+            exit 1
+          fi
+
+      - name: Test ICMP connectivity to internal host
+        continue-on-error: true
+        run: |
+          ping -c 3 "${{ secrets.INTERNAL_RESOURCE_IP }}" || echo "Ping failed"
+
+      - name: Test TCP port 22 on internal host
+        run: |
+          if timeout 15 bash -c "</dev/tcp/${{ secrets.INTERNAL_RESOURCE_IP }}/22"; then
+            echo "TCP port 22 reachable"
+          else
+            echo "Cannot reach TCP port 22 on internal host"
+            exit 1
+          fi
+
+      - name: Test SSH connectivity
+        run: |
+          sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" \
+            'echo "SSH connection successful"'
+
+      - name: Run Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+      - name: Update repository on remote server
+        run: |
+          sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" << 'EOF'
+            set -e
+            cd ~/MIRO_TEST/Back_Miro_Test
+            git fetch origin develop
             git reset --hard origin/develop
             npm install
+          EOF
 
-            echo "=== Restarting PM2 ==="
-            pm2 restart Back_Dev || pm2 start index.js --name Back_Dev
-            pm2 save
+      - name: Restart PM2 for development
+        run: |
+          sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" << 'EOF'
+            set -e
+            cd ~/MIRO_TEST/Back_Miro_Test
+            pm2 restart Back_Dev
+          EOF
 
-            echo "=== Deploy complete ==="
-          '
-
-    - name: Run Semantic Release
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: npx semantic-release
-
-    - name: Post deploy
-      run: echo "Development deployment complete"
+      - name: Deployment complete
+        run: echo "Development deployment complete"
