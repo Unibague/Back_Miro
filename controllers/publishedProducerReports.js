@@ -50,7 +50,7 @@ pubProdReportController.getPublishedProducerReports = async (req, res) => {
     const {email, page, limit, search, periodId} = req.query
 
 
-    // Si no hay email, intentar obtenerlo del token/sesión o retornar error claro
+    // Si no hay email, intentar obtenerlo del token/sesión
     if (!email) {
       return res.status(400).json({ 
         message: "Email is required",

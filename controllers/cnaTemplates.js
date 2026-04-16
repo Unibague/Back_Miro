@@ -100,6 +100,7 @@ const parseFieldsInput = (value) => {
 
 const getWorkbookSheetsFromTemplate = async (template) => {
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+  assertSupportedWorkbookBuffer(templateBuffer, "La plantilla CNA");
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(templateBuffer);
 
@@ -190,7 +191,9 @@ const buildDownloadFileName = (template) => {
 
 const sanitizeWorksheetName = (value, fallback = "Hoja") => {
   const cleaned = String(value || fallback)
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
     .replace(/[\\/*?:[\]]/g, " ")
+    .replace(/^'+|'+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -219,6 +222,66 @@ const buildComparisonFileName = (template) => {
 const buildAllComparisonsFileName = () => {
   const dateTag = new Date().toISOString().slice(0, 10);
   return `cna_comparativo_campos_${dateTag}.xlsx`;
+};
+
+const OPENXML_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel.sheet.macroEnabled.12",
+]);
+
+const XLS_COMPOUND_FILE_SIGNATURE = "d0cf11e0a1b11ae1";
+const ZIP_SIGNATURE = "504b0304";
+
+const getBufferSignature = (buffer) =>
+  Buffer.isBuffer(buffer) && buffer.length >= 8
+    ? buffer.subarray(0, 8).toString("hex").toLowerCase()
+    : "";
+
+const isLegacyXlsBuffer = (buffer) => getBufferSignature(buffer).startsWith(XLS_COMPOUND_FILE_SIGNATURE);
+const isZipWorkbookBuffer = (buffer) => getBufferSignature(buffer).startsWith(ZIP_SIGNATURE);
+
+const isSupportedWorkbookExtension = (fileName = "") => {
+  const extension = path.extname(String(fileName || "").trim()).toLowerCase();
+  return extension === ".xlsx" || extension === ".xlsm";
+};
+
+const assertSupportedWorkbookFile = (file) => {
+  const originalName = String(file?.originalname || "");
+  const mimeType = String(file?.mimetype || "");
+
+  if (!isSupportedWorkbookExtension(originalName)) {
+    const error = new Error(
+      "La plantilla CNA debe estar en formato .xlsx o .xlsm. Los archivos .xls no son compatibles."
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (mimeType && !OPENXML_MIME_TYPES.has(mimeType)) {
+    const error = new Error(
+      "El archivo cargado no tiene un formato Excel Open XML valido (.xlsx o .xlsm)."
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+};
+
+const assertSupportedWorkbookBuffer = (buffer, contextLabel = "La plantilla CNA") => {
+  if (isLegacyXlsBuffer(buffer)) {
+    const error = new Error(
+      `${contextLabel} esta almacenada en formato .xls antiguo. Debes volver a cargarla como .xlsx para poder compararla o configurarla.`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!isZipWorkbookBuffer(buffer)) {
+    const error = new Error(
+      `${contextLabel} no tiene un formato Excel Open XML valido (.xlsx o .xlsm).`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
 };
 
 const normalizeComparableName = (value = "") =>
@@ -505,7 +568,8 @@ const sanitizeExcelValue = (value) => {
   }
 
   return String(normalizedValue)
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+    // Remove characters that are invalid in XML 1.0 / XLSX shared strings.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uD800-\uDFFF\uFFFE\uFFFF]/g, "")
     .trim();
 };
 
@@ -1705,6 +1769,7 @@ const buildWorkbookWithConfiguredFields = async (
   const sourceBuffer = Buffer.isBuffer(workbookInput)
     ? Buffer.from(workbookInput)
     : fs.readFileSync(workbookInput);
+  assertSupportedWorkbookBuffer(sourceBuffer, "La plantilla CNA");
   const sourceWorkbook = new ExcelJS.Workbook();
 
   await sourceWorkbook.xlsx.load(sourceBuffer);
@@ -2289,6 +2354,7 @@ const buildSniesDataset = async (template) => {
   });
 
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+  assertSupportedWorkbookBuffer(templateBuffer, "La plantilla CNA");
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(templateBuffer);
   workbook.worksheets.forEach((worksheet) => {
@@ -2409,6 +2475,7 @@ const buildSniesComparisonDataset = async (template) => {
   });
 
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+  assertSupportedWorkbookBuffer(templateBuffer, "La plantilla CNA");
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(templateBuffer);
 
@@ -2500,9 +2567,9 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
       const miroCell = worksheet.getCell(`E${excelRow}`);
 
       worksheet.getCell(`A${excelRow}`).value = sniesField ? rowIndex + 1 : "";
-      sniesCell.value = sniesField;
+      sniesCell.value = sanitizeExcelValue(sniesField);
       worksheet.getCell(`D${excelRow}`).value = miroField ? rowIndex + 1 : "";
-      miroCell.value = miroField;
+      miroCell.value = sanitizeExcelValue(miroField);
 
     }
 
@@ -2589,9 +2656,9 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
       const miroCell = worksheet.getCell(`F${excelRow}`);
 
       worksheet.getCell(`B${excelRow}`).value = sniesField ? rowIndex + 1 : "";
-      sniesCell.value = sniesField;
+      sniesCell.value = sanitizeExcelValue(sniesField);
       worksheet.getCell(`E${excelRow}`).value = miroField ? rowIndex + 1 : "";
-      miroCell.value = miroField;
+      miroCell.value = sanitizeExcelValue(miroField);
 
 
       applyFieldComparisonBorders(worksheet, excelRow, ["A", "B", "C", "E", "F"]);
@@ -2609,6 +2676,12 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
 const buildFieldComparisonWorkbook = async (template, dataset) => {
   const workbook = new ExcelJS.Workbook();
   await appendFieldComparisonSheets(workbook, template, dataset);
+
+  if (workbook.worksheets.length === 0) {
+    const worksheet = workbook.addWorksheet("Resumen");
+    worksheet.getCell("A1").value = "No se encontraron hojas comparables para esta plantilla CNA.";
+  }
+
   return workbook;
 };
 
@@ -2723,7 +2796,7 @@ controller.getConnectedData = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching CNA connected data:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error fetching CNA connected data",
       details: error.message,
     });
@@ -2786,7 +2859,7 @@ controller.downloadConnectedData = async (req, res) => {
     return res.send(outputBuffer);
   } catch (error) {
     console.error("Error downloading CNA connected data:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error downloading CNA connected data",
       details: error.message,
     });
@@ -2809,7 +2882,10 @@ controller.downloadFieldComparison = async (req, res) => {
 
     const dataset = await buildSniesComparisonDataset(template);
     const comparisonWorkbook = await buildFieldComparisonWorkbook(template, dataset);
-    const outputBuffer = await comparisonWorkbook.xlsx.writeBuffer();
+    // This workbook is generated from scratch with ExcelJS. Running the ZIP
+    // artifact sanitizer here can strip required relationships and corrupt the
+    // final XLSX file when Excel opens it.
+    const outputBuffer = Buffer.from(await comparisonWorkbook.xlsx.writeBuffer());
 
     res.setHeader(
       "Content-Disposition",
@@ -2820,10 +2896,10 @@ controller.downloadFieldComparison = async (req, res) => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
-    return res.send(Buffer.from(outputBuffer));
+    return res.send(outputBuffer);
   } catch (error) {
     console.error("Error downloading CNA field comparison:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error downloading CNA field comparison",
       details: error.message,
     });
@@ -2850,7 +2926,15 @@ controller.downloadAllFieldComparisons = async (req, res) => {
       appendConsolidatedFieldComparisonSheet(workbook, template, dataset);
     }
 
-    const outputBuffer = await workbook.xlsx.writeBuffer();
+    if (workbook.worksheets.length === 0) {
+      const worksheet = workbook.addWorksheet("Resumen");
+      worksheet.getCell("A1").value = "No se encontraron comparativos CNA para las plantillas consultadas.";
+    }
+
+    // This workbook is generated from scratch with ExcelJS. Running the ZIP
+    // artifact sanitizer here can strip required relationships and corrupt the
+    // final XLSX file when Excel opens it.
+    const outputBuffer = Buffer.from(await workbook.xlsx.writeBuffer());
 
     res.setHeader(
       "Content-Disposition",
@@ -2861,10 +2945,10 @@ controller.downloadAllFieldComparisons = async (req, res) => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
-    return res.send(Buffer.from(outputBuffer));
+    return res.send(outputBuffer);
   } catch (error) {
     console.error("Error downloading all CNA field comparisons:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error downloading all CNA field comparisons",
       details: error.message,
     });
@@ -2968,6 +3052,8 @@ controller.createTemplate = async (req, res) => {
       return res.status(400).json({ error: "No file attached" });
     }
 
+    assertSupportedWorkbookFile(req.file);
+
     if (!name?.trim()) {
       if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
@@ -3030,7 +3116,7 @@ controller.createTemplate = async (req, res) => {
     if (req.file?.path && fs.existsSync(req.file.path)) {
       fs.unlinkSync(req.file.path);
     }
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error creating CNA template",
       details: error.message,
     });
@@ -3059,6 +3145,10 @@ controller.updateTemplate = async (req, res) => {
         fs.unlinkSync(req.file.path);
       }
       return res.status(404).json({ error: "CNA template not found" });
+    }
+
+    if (req.file) {
+      assertSupportedWorkbookFile(req.file);
     }
 
     const previousFields = Array.isArray(template.fields)
@@ -3152,7 +3242,7 @@ controller.updateTemplate = async (req, res) => {
       fs.unlinkSync(req.file.path);
     }
     cleanupTemporaryExcelUpload(tempUploadFile);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       error: "Error updating CNA template",
       details: error.message,
     });

@@ -22,6 +22,49 @@ const hasMeaningfulValue = (value) => {
     return !isBlankValue(value);
 };
 
+const normalizeComparableText = (value) => {
+    if (value === null || value === undefined) return '';
+
+    return String(value)
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+};
+
+const isDescriptionColumn = (columnName = '') => {
+    const normalized = normalizeComparableText(columnName);
+    return normalized.includes('DESCRIPCION') || normalized.includes('NOMBRE') || normalized.startsWith('DESC');
+};
+
+const buildAcceptedValidatorStringSet = (validator, columnToValidate) => {
+    const acceptedValues = new Set();
+
+    if (!columnToValidate?.values) {
+        return acceptedValues;
+    }
+
+    const descriptionColumn = validator?.columns?.find((column) => {
+        return column.name !== columnToValidate.name && isDescriptionColumn(column.name);
+    });
+
+    columnToValidate.values.forEach((value, index) => {
+        const idText = normalizeComparableText(value);
+        if (!idText) return;
+
+        acceptedValues.add(idText);
+
+        const descriptionValue = descriptionColumn?.values?.[index];
+        const descriptionText = normalizeComparableText(descriptionValue);
+        if (descriptionText) {
+            acceptedValues.add(`${idText} - ${descriptionText}`);
+        }
+    });
+
+    return acceptedValues;
+};
+
 const allowedDataTypes = {
     "Entero": (value) => {
         const num = Number(value);
@@ -482,6 +525,7 @@ validatorController.validateColumn = async (column) => {
   let validator = null;
   let columnToValidate = null;
   let validValuesSet = null;
+  let acceptedStringValuesSet = null;
   const shouldValidateOptionalField = required || values.some((value) => hasMeaningfulValue(value));
 
   if (validate_with && shouldValidateOptionalField) {
@@ -562,8 +606,15 @@ validatorController.validateColumn = async (column) => {
       }
 
       validValuesSet = new Set(columnToValidate.values);
+      acceptedStringValuesSet = buildAcceptedValidatorStringSet(validator, columnToValidate);
       console.log('DEBUG - Valores válidos para', validatorName, ':', Array.from(validValuesSet).slice(0, 10), '...');
     }
+  }
+
+  if (validValuesSet && !acceptedStringValuesSet) {
+    acceptedStringValuesSet = new Set(
+      Array.from(validValuesSet).map((item) => normalizeComparableText(item)).filter(Boolean)
+    );
   }
 
   values.forEach((value, index) => {
@@ -646,11 +697,14 @@ if (columnToValidate && validValuesSet) {
         const num = Number(valueToNormalize);
         normalizedVal = isNaN(num) ? valueToNormalize : num;
       } else {
-        normalizedVal = String(valueToNormalize).trim();
+        normalizedVal = normalizeComparableText(valueToNormalize);
       }
 
       // 🚫 Si no está en el set, es inválido
-      if (!validValuesSet.has(normalizedVal)) {
+      const isValidValue = validatorHasNumbers
+        ? validValuesSet.has(normalizedVal)
+        : acceptedStringValuesSet?.has(normalizedVal);
+      if (!isValidValue) {
         result.status = false;
         result.errors.push({
           register: realIndex + 1,
@@ -679,12 +733,15 @@ if (columnToValidate && validValuesSet) {
         const num = Number(valueToNormalize);
         normalizedVal = isNaN(num) ? valueToNormalize : num;
       } else {
-        normalizedVal = String(valueToNormalize).trim();
+        normalizedVal = normalizeComparableText(valueToNormalize);
       }
       
       console.log('DEBUG - Valor original:', value, 'Valor normalizado:', normalizedVal, 'Tipo validador:', validatorHasNumbers ? 'números' : 'strings');
 
-      if (!validValuesSet.has(normalizedVal)) {
+      const isValidValue = validatorHasNumbers
+        ? validValuesSet.has(normalizedVal)
+        : acceptedStringValuesSet?.has(normalizedVal);
+      if (!isValidValue) {
         result.status = false;
         result.errors.push({
           register: realIndex + 1,
