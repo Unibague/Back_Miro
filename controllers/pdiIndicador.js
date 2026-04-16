@@ -9,9 +9,10 @@ async function recalcularAccion(accion_id) {
     const indicadores = await Indicador.find({ accion_id });
     if (!indicadores.length) return;
 
+    const avanceEfectivo = (i) => i.avance_total_real != null ? i.avance_total_real : i.avance;
     const totalPeso = indicadores.reduce((acc, i) => acc + i.peso, 0);
     const avance = totalPeso > 0
-        ? Math.round(indicadores.reduce((acc, i) => acc + (i.avance * i.peso), 0) / totalPeso)
+        ? Math.round(indicadores.reduce((acc, i) => acc + (avanceEfectivo(i) * i.peso), 0) / totalPeso)
         : 0;
 
     const accion = await AccionEstrategica.findByIdAndUpdate(accion_id, { avance }, { new: true });
@@ -32,9 +33,12 @@ function formulaExcel(lista) {
     return Math.round(Math.min(sumaAvances / sumaMetas, 1) * 100 * 100) / 100;
 }
 
-// Último valor registrado (orden tal como vienen los periodos)
+// Último valor registrado (excluye null, undefined y 0 — 0 indica "sin registrar")
 function ultimoValor(lista) {
-    const con = lista.filter(p => p.avance !== null && p.avance !== undefined && !isNaN(Number(p.avance)));
+    const con = lista.filter(p =>
+        p.avance !== null && p.avance !== undefined &&
+        !isNaN(Number(p.avance)) && Number(p.avance) !== 0
+    );
     return con.length ? Number(con[con.length - 1].avance) : null;
 }
 
@@ -129,7 +133,7 @@ ctrl.getAll = async (req, res) => {
     try {
         const query = {};
         if (req.query.accion_id) query.accion_id = req.query.accion_id;
-        const docs = await Indicador.find(query).populate('accion_id', 'codigo nombre').sort({ codigo: 1 });
+        const docs = await Indicador.find(query).populate('accion_id', 'codigo nombre responsable responsable_email').sort({ codigo: 1 });
         res.json(docs.map(withSemaforo));
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
@@ -138,7 +142,7 @@ ctrl.getAll = async (req, res) => {
 
 ctrl.getById = async (req, res) => {
     try {
-        const doc = await Indicador.findById(req.params.id).populate('accion_id', 'codigo nombre');
+        const doc = await Indicador.findById(req.params.id).populate('accion_id', 'codigo nombre responsable responsable_email');
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
         res.json(withSemaforo(doc));
     } catch (e) {
@@ -177,23 +181,66 @@ ctrl.update = async (req, res) => {
 };
 
 // PATCH para registrar o actualizar un periodo semestral específico
+// Acepta campos cuantitativos (meta, avance) y cualitativos
+// (resultados_alcanzados, logros, alertas, justificacion_retrasos, estado_reporte)
 ctrl.updatePeriodo = async (req, res) => {
     try {
-        const { periodo, meta, avance } = req.body;
+        const {
+            periodo,
+            meta,
+            avance,
+            resultados_alcanzados,
+            logros,
+            alertas,
+            justificacion_retrasos,
+            estado_reporte,
+            reportado_por,
+        } = req.body;
+
+        if (!periodo) return res.status(400).json({ error: 'El campo periodo es requerido' });
+
         const doc = await Indicador.findById(req.params.id);
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
         const antes = doc.toObject();
 
         const idx = doc.periodos.findIndex(p => p.periodo === periodo);
+
         if (idx >= 0) {
+            // Actualizar campos cuantitativos
             if (meta   !== undefined) doc.periodos[idx].meta   = meta;
             if (avance !== undefined) doc.periodos[idx].avance = avance;
+            // Actualizar campos cualitativos
+            if (resultados_alcanzados !== undefined) doc.periodos[idx].resultados_alcanzados = resultados_alcanzados;
+            if (logros                !== undefined) doc.periodos[idx].logros                = logros;
+            if (alertas               !== undefined) doc.periodos[idx].alertas               = alertas;
+            if (justificacion_retrasos !== undefined) doc.periodos[idx].justificacion_retrasos = justificacion_retrasos;
+            if (reportado_por         !== undefined) doc.periodos[idx].reportado_por         = reportado_por;
+            // Al enviar el reporte marcar fecha_envio
+            if (estado_reporte !== undefined) {
+                doc.periodos[idx].estado_reporte = estado_reporte;
+                if (estado_reporte === 'Enviado' && !doc.periodos[idx].fecha_envio) {
+                    doc.periodos[idx].fecha_envio = new Date();
+                }
+            }
         } else {
-            doc.periodos.push({ periodo, meta: meta ?? null, avance: avance ?? null });
+            doc.periodos.push({
+                periodo,
+                meta:                   meta   ?? null,
+                avance:                 avance ?? null,
+                resultados_alcanzados:  resultados_alcanzados  ?? '',
+                logros:                 logros                 ?? '',
+                alertas:                alertas                ?? '',
+                justificacion_retrasos: justificacion_retrasos ?? '',
+                estado_reporte:         estado_reporte         ?? 'Borrador',
+                reportado_por:          reportado_por          ?? '',
+                fecha_envio:            estado_reporte === 'Enviado' ? new Date() : null,
+            });
         }
 
+        doc.markModified('periodos');
         const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
         Object.assign(doc, calculados);
+        doc.markModified('avances_por_anio');
         await doc.save();
         await doc.populate('accion_id', 'codigo nombre');
         await guardarHistorial(antes, doc.toObject(), req.body.modificado_por ?? '');
@@ -259,6 +306,28 @@ ctrl.deleteEvidencia = async (req, res) => {
     }
 };
 
+ctrl.updateEvidenciaEstado = async (req, res) => {
+    try {
+        const { estado, comentario_revision } = req.body;
+        const estadosValidos = ['En Revisión', 'Aprobado', 'Rechazado'];
+        if (!estadosValidos.includes(estado)) {
+            return res.status(400).json({ error: 'Estado inválido' });
+        }
+        const doc = await Indicador.findById(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Indicador no encontrado' });
+
+        const ev = doc.evidencias.id(req.params.evidenciaId);
+        if (!ev) return res.status(404).json({ error: 'Evidencia no encontrada' });
+
+        ev.estado = estado;
+        ev.comentario_revision = comentario_revision ?? '';
+        await doc.save();
+        res.json(ev);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
 ctrl.getEvidencias = async (req, res) => {
     try {
         const doc = await Indicador.findById(req.params.id).select('evidencias');
@@ -266,6 +335,24 @@ ctrl.getEvidencias = async (req, res) => {
         res.json(doc.evidencias);
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// Recalcula avances_por_anio y avance_total_real en todos los indicadores existentes
+ctrl.recalcularTodos = async (req, res) => {
+    try {
+        const todos = await Indicador.find({});
+        let count = 0;
+        for (const doc of todos) {
+            const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
+            Object.assign(doc, calculados);
+            doc.markModified('avances_por_anio');
+            await doc.save();
+            count++;
+        }
+        res.json({ message: `Recalculados ${count} indicadores` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 };
 
