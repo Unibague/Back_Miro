@@ -10,9 +10,13 @@ router.put('/:id',                                 ctrl.update);
 router.patch('/:id/periodo',                       ctrl.updatePeriodo);
 router.delete('/:id',                              ctrl.remove);
 
+// Recálculo masivo
+router.post('/recalcular-todos', ctrl.recalcularTodos);
+
 // Evidencias
 router.get('/:id/evidencias',                      ctrl.getEvidencias);
 router.post('/:id/evidencias', upload.single('pdf'), ctrl.uploadEvidencia);
+router.patch('/:id/evidencias/:evidenciaId/estado', ctrl.updateEvidenciaEstado);
 router.delete('/:id/evidencias/:evidenciaId',      ctrl.deleteEvidencia);
 
 module.exports = router;
