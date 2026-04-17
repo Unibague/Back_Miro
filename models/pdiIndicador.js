@@ -7,6 +7,7 @@ const metaPeriodoSchema = new mongoose.Schema({
     periodo:                  { type: String, required: true },
     meta:                     { type: mongoose.Schema.Types.Mixed, default: null },
     avance:                   { type: mongoose.Schema.Types.Mixed, default: null },
+    presupuesto_ejecutado:    { type: Number, default: 0, min: 0 },
     // Campos cualitativos del reporte de avance por corte
     resultados_alcanzados:    { type: String, default: '' },
     logros:                   { type: String, default: '' },
@@ -44,6 +45,8 @@ const pdiIndicadorSchema = new mongoose.Schema({
     tipo_calculo:        { type: String, enum: TIPOS_CALCULO, default: 'promedio' },
     meta_final_2029:     { type: mongoose.Schema.Types.Mixed, default: null },
     entregable:          { type: String, default: '' },
+    presupuesto:         { type: Number, default: 0, min: 0 },
+    presupuesto_ejecutado: { type: Number, default: 0, min: 0 },
     responsable:         { type: String, default: '' },
     responsable_email:   { type: String, default: '' },
     fecha_inicio:        { type: String, default: null },

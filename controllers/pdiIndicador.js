@@ -4,6 +4,23 @@ const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
 const Historial         = require('../models/pdiIndicadorHistorial');
 
+function withCalculatedFields(doc) {
+    const base = typeof doc.toObject === 'function' ? doc.toObject() : doc;
+    return {
+        ...base,
+        ...calcularCamposDinamicos(base.periodos || [], base.tipo_calculo, base.meta_final_2029),
+    };
+}
+
+function toNumberValue(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number') return Number.isNaN(value) ? null : value;
+    const normalized = String(value).replace('%', '').replace(',', '.').trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isNaN(parsed) ? null : parsed;
+}
+
 async function recalcularAccion(accion_id) {
     const AccionEstrategica = require('../models/pdiAccionEstrategica');
     const indicadores = await Indicador.find({ accion_id });
@@ -23,30 +40,54 @@ async function recalcularAccion(accion_id) {
 // Si suma de metas = 0 devuelve 0. Resultado en porcentaje (0-100).
 function formulaExcel(lista) {
     const con = lista.filter(p =>
-        p.avance !== null && p.avance !== undefined && !isNaN(Number(p.avance)) &&
-        p.meta   !== null && p.meta   !== undefined && !isNaN(Number(p.meta))
+        toNumberValue(p.avance) !== null &&
+        toNumberValue(p.meta) !== null
     );
     if (!con.length) return null;
-    const sumaMetas   = con.reduce((acc, p) => acc + Number(p.meta),   0);
-    const sumaAvances = con.reduce((acc, p) => acc + Number(p.avance), 0);
+    const sumaMetas   = con.reduce((acc, p) => acc + toNumberValue(p.meta),   0);
+    const sumaAvances = con.reduce((acc, p) => acc + toNumberValue(p.avance), 0);
     if (sumaMetas === 0) return 0;
     return Math.round(Math.min(sumaAvances / sumaMetas, 1) * 100 * 100) / 100;
 }
 
+function ordenarPeriodos(lista = []) {
+    return [...lista].sort((a, b) => String(a.periodo ?? '').localeCompare(String(b.periodo ?? '')));
+}
+
 // Último valor registrado (excluye null, undefined y 0 — 0 indica "sin registrar")
 function ultimoValor(lista) {
-    const con = lista.filter(p =>
+    const con = ordenarPeriodos(lista).filter(p =>
         p.avance !== null && p.avance !== undefined &&
-        !isNaN(Number(p.avance)) && Number(p.avance) !== 0
+        p.avance !== '' && toNumberValue(p.avance) !== null
     );
-    return con.length ? Number(con[con.length - 1].avance) : null;
+    return con.length ? toNumberValue(con[con.length - 1].avance) : null;
+}
+
+function ultimoPeriodoConAvance(lista) {
+    const con = ordenarPeriodos(lista).filter(p =>
+        p.avance !== null && p.avance !== undefined &&
+        p.avance !== '' && toNumberValue(p.avance) !== null
+    );
+    return con.length ? con[con.length - 1] : null;
+}
+
+function porcentajePeriodo(periodo) {
+    if (!periodo) return null;
+
+    const avance = toNumberValue(periodo.avance);
+    const meta = toNumberValue(periodo.meta);
+
+    if (avance === null || meta === null) return null;
+    if (meta === 0) return 0;
+
+    return Math.round(Math.min(avance / meta, 1) * 100 * 100) / 100;
 }
 
 // Suma acumulada de avances
 function acumular(lista) {
-    const con = lista.filter(p => p.avance !== null && p.avance !== undefined && !isNaN(Number(p.avance)));
+    const con = lista.filter(p => toNumberValue(p.avance) !== null);
     if (!con.length) return null;
-    return Math.round(con.reduce((acc, p) => acc + Number(p.avance), 0) * 100) / 100;
+    return Math.round(con.reduce((acc, p) => acc + toNumberValue(p.avance), 0) * 100) / 100;
 }
 
 /*
@@ -57,9 +98,10 @@ function acumular(lista) {
   Los años se detectan dinámicamente desde los periodos registrados.
 */
 function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
+    const periodosOrdenados = ordenarPeriodos(periodos);
     // Agrupar por año
     const porAnio = {};
-    for (const p of periodos) {
+    for (const p of periodosOrdenados) {
         const anio = p.periodo.slice(0, 4);
         if (!porAnio[anio]) porAnio[anio] = [];
         porAnio[anio].push(p);
@@ -68,25 +110,25 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
     // avances_por_anio: fórmula Excel si metas numéricas, sino último valor del año
     const avances_por_anio = {};
     for (const [anio, lista] of Object.entries(porAnio)) {
-        const val = formulaExcel(lista) ?? ultimoValor(lista);
+        const val = tipo_calculo === 'ultimo_valor'
+            ? porcentajePeriodo(ultimoPeriodoConAvance(lista))
+            : (formulaExcel(lista) ?? ultimoValor(lista));
         if (val !== null) avances_por_anio[anio] = val;
     }
 
     // avance total según tipo_calculo
     let avanceTotal = 0;
     if (tipo_calculo === 'acumulado') {
-        avanceTotal = acumular(periodos) ?? 0;
+        avanceTotal = acumular(periodosOrdenados) ?? 0;
     } else if (tipo_calculo === 'ultimo_valor') {
-        avanceTotal = ultimoValor(periodos) ?? 0;
+        avanceTotal = ultimoValor(periodosOrdenados) ?? 0;
     } else {
         // 'promedio' → fórmula Excel; si metas no son numéricas, usar último valor registrado
-        const porExcel = formulaExcel(periodos);
-        avanceTotal = porExcel !== null ? porExcel : (ultimoValor(periodos) ?? 0);
+        const porExcel = formulaExcel(periodosOrdenados);
+        avanceTotal = porExcel !== null ? porExcel : (ultimoValor(periodosOrdenados) ?? 0);
     }
 
-    const meta_num = typeof meta_final_2029 === 'number' ? meta_final_2029
-        : !isNaN(Number(meta_final_2029)) && meta_final_2029 !== null && meta_final_2029 !== ''
-            ? Number(meta_final_2029) : null;
+    const meta_num = toNumberValue(meta_final_2029);
 
     const avance_total_real = (meta_num && avanceTotal !== null)
         ? Math.round((avanceTotal / meta_num) * 100)
@@ -134,7 +176,7 @@ ctrl.getAll = async (req, res) => {
         const query = {};
         if (req.query.accion_id) query.accion_id = req.query.accion_id;
         const docs = await Indicador.find(query).populate('accion_id', 'codigo nombre responsable responsable_email').sort({ codigo: 1 });
-        res.json(docs.map(withSemaforo));
+        res.json(docs.map((doc) => withSemaforo(withCalculatedFields(doc))));
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
     }
@@ -144,7 +186,7 @@ ctrl.getById = async (req, res) => {
     try {
         const doc = await Indicador.findById(req.params.id).populate('accion_id', 'codigo nombre responsable responsable_email');
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
-        res.json(withSemaforo(doc));
+        res.json(withSemaforo(withCalculatedFields(doc)));
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
     }
@@ -189,6 +231,7 @@ ctrl.updatePeriodo = async (req, res) => {
             periodo,
             meta,
             avance,
+            presupuesto_ejecutado,
             resultados_alcanzados,
             logros,
             alertas,
@@ -209,6 +252,7 @@ ctrl.updatePeriodo = async (req, res) => {
             // Actualizar campos cuantitativos
             if (meta   !== undefined) doc.periodos[idx].meta   = meta;
             if (avance !== undefined) doc.periodos[idx].avance = avance;
+            if (presupuesto_ejecutado !== undefined) doc.periodos[idx].presupuesto_ejecutado = presupuesto_ejecutado;
             // Actualizar campos cualitativos
             if (resultados_alcanzados !== undefined) doc.periodos[idx].resultados_alcanzados = resultados_alcanzados;
             if (logros                !== undefined) doc.periodos[idx].logros                = logros;
@@ -227,6 +271,7 @@ ctrl.updatePeriodo = async (req, res) => {
                 periodo,
                 meta:                   meta   ?? null,
                 avance:                 avance ?? null,
+                presupuesto_ejecutado:  presupuesto_ejecutado ?? 0,
                 resultados_alcanzados:  resultados_alcanzados  ?? '',
                 logros:                 logros                 ?? '',
                 alertas:                alertas                ?? '',
