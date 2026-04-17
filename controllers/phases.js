@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Phase = require('../models/phases');
 const Process = require('../models/processes');
 const Caso = require('../models/casos');
@@ -5,10 +6,49 @@ const { crearPMAutomaticoParaAV } = require('../helpers/pmAutoCreate');
 
 const phaseController = {};
 
-/* GET /phases?proceso_id=xxx — fases de un proceso */
+/* GET /phases?proceso_id=xxx — fases de un proceso
+ * GET /phases?proceso_ids=id1,id2,... — varios procesos (todas sus fases)
+ * GET /phases?proceso_fase_actual=id1:n1|id2:n2|... — solo la fase n de cada proceso (tablero por facultad) */
 phaseController.getByProcess = async (req, res) => {
   try {
-    if (!req.query.proceso_id) return res.status(400).json({ error: 'proceso_id es requerido' });
+    const pairsRaw = req.query.proceso_fase_actual;
+    if (pairsRaw) {
+      const parts = String(pairsRaw)
+        .split('|')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const or = [];
+      for (const part of parts) {
+        const colon = part.lastIndexOf(':');
+        if (colon <= 0) continue;
+        const idStr = part.slice(0, colon);
+        const num = Number(part.slice(colon + 1));
+        if (!mongoose.Types.ObjectId.isValid(idStr) || !Number.isFinite(num)) continue;
+        or.push({ proceso_id: idStr, numero: num });
+      }
+      if (or.length === 0) {
+        return res.status(400).json({ error: 'proceso_fase_actual vacío o inválido' });
+      }
+      const phases = await Phase.find({ $or: or })
+        .sort({ proceso_id: 1, numero: 1 })
+        .lean();
+      return res.status(200).json(phases);
+    }
+    const many = req.query.proceso_ids;
+    if (many) {
+      const ids = String(many)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (ids.length === 0) return res.status(400).json({ error: 'proceso_ids vacío' });
+      const phases = await Phase.find({ proceso_id: { $in: ids } })
+        .sort({ proceso_id: 1, numero: 1 })
+        .lean();
+      return res.status(200).json(phases);
+    }
+    if (!req.query.proceso_id) {
+      return res.status(400).json({ error: 'proceso_id, proceso_ids o proceso_fase_actual es requerido' });
+    }
     const phases = await Phase.find({ proceso_id: req.query.proceso_id }).sort({ numero: 1 });
     res.status(200).json(phases);
   } catch (error) {
@@ -250,7 +290,7 @@ phaseController.reorderActividades = async (req, res) => {
   }
 };
 
-/* PUT /phases/:id/complete-all — marcar todas las actividades como completadas y avanzar fase */
+/* PUT /phases/:id/complete-all — marcar todas las actividades como completadas (sin avanzar fase; usar finish-phase) */
 phaseController.completeAll = async (req, res) => {
   try {
     const phase = await Phase.findById(req.params.id);
@@ -262,18 +302,7 @@ phaseController.completeAll = async (req, res) => {
     });
     await phase.save();
 
-    // Avanzar la fase del proceso si hay siguiente
     const proceso = await Process.findById(phase.proceso_id);
-    if (proceso && phase.numero === proceso.fase_actual && phase.numero < 6) {
-      proceso.fase_actual = phase.numero + 1;
-      await proceso.save();
-
-      // Auto-crear PM para AV al llegar a Fase 6
-      if (proceso.fase_actual === 6 && proceso.tipo_proceso === 'AV') {
-        await crearPMAutomaticoParaAV(proceso);
-      }
-    }
-
     res.status(200).json({ fase: phase, proceso });
   } catch (error) {
     console.error('Error completando todas las actividades:', error);
@@ -281,23 +310,11 @@ phaseController.completeAll = async (req, res) => {
   }
 };
 
-/* PUT /phases/:id/revert-all — descompletar todas las actividades y retroceder fase */
+/* PUT /phases/:id/revert-all — solo retrocede el número de fase del proceso (no desmarca actividades) */
 phaseController.revertAll = async (req, res) => {
   try {
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
-
-    phase.actividades.forEach(a => {
-      a.completada = false;
-      a.fecha_completado = null;
-      a.no_aplica = false;
-      a.subactividades.forEach(s => {
-        s.completada = false;
-        s.fecha_completado = null;
-        s.no_aplica = false;
-      });
-    });
-    await phase.save();
 
     const proceso = await Process.findById(phase.proceso_id);
     if (proceso && phase.numero === proceso.fase_actual && phase.numero > 0) {
@@ -305,9 +322,78 @@ phaseController.revertAll = async (req, res) => {
       await proceso.save();
     }
 
-    res.status(200).json({ fase: phase, proceso });
+    const phaseFresh = await Phase.findById(req.params.id);
+    res.status(200).json({ fase: phaseFresh, proceso });
   } catch (error) {
     console.error('Error revirtiendo fase:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* PUT /phases/:id/mark-all-completed — marcar todas las actividades como hechas, sin avanzar de fase */
+phaseController.markAllCompleted = async (req, res) => {
+  try {
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+    phase.actividades.forEach(a => {
+      a.completada = true;
+      a.no_aplica = false;
+    });
+    await phase.save();
+    res.status(200).json({ fase: phase });
+  } catch (error) {
+    console.error('Error marcando todas las actividades:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* PUT /phases/:id/finish-phase — avanzar a la siguiente fase (sin exigir actividades completas) */
+phaseController.finishPhase = async (req, res) => {
+  try {
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+
+    const proceso = await Process.findById(phase.proceso_id);
+    if (proceso && phase.numero === proceso.fase_actual && phase.numero < 6) {
+      proceso.fase_actual = phase.numero + 1;
+      await proceso.save();
+
+      if (proceso.fase_actual === 6 && proceso.tipo_proceso === 'AV') {
+        await crearPMAutomaticoParaAV(proceso);
+      }
+    }
+
+    res.status(200).json({ fase: phase, proceso });
+  } catch (error) {
+    console.error('Error finalizando fase:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
+/* PUT /phases/:id/mark-all-no-aplica — Fase 6: marcar toda la fase como No aplica */
+phaseController.markAllNoAplicaFase6 = async (req, res) => {
+  try {
+    const phase = await Phase.findById(req.params.id);
+    if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
+    if (phase.numero !== 6) {
+      return res.status(400).json({ error: 'Solo aplica a la fase 6.' });
+    }
+
+    phase.actividades.forEach(a => {
+      a.no_aplica = true;
+      a.completada = false;
+      a.fecha_completado = null;
+      a.subactividades.forEach(s => {
+        s.no_aplica = true;
+        s.completada = false;
+        s.fecha_completado = null;
+      });
+    });
+    await phase.save();
+    res.status(200).json({ fase: phase });
+  } catch (error) {
+    console.error('Error marcando fase 6 como N/A:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

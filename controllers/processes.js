@@ -147,8 +147,12 @@ processController.create = async (req, res) => {
     let program_code = existingProgramCode;
 
     /* ── 1. Obtener o crear el programa ── */
-    if (subtipo === 'Nuevo' && program_data) {
-      // RC Nuevo: crear el programa nuevo sin resolución
+    const creaProgramaDesdeCuerpo =
+      program_data &&
+      ((subtipo === 'Nuevo' && tipo_proceso === 'RC') ||
+        (subtipo === 'Primera vez' && tipo_proceso === 'AV'));
+
+    if (creaProgramaDesdeCuerpo) {
       program = await Program.create({
         ...program_data,
         dep_code_programa: program_data.dep_code_programa || `PROG_${Date.now()}`,
@@ -159,7 +163,9 @@ processController.create = async (req, res) => {
     }
 
     if (!program_code) {
-      return res.status(400).json({ error: 'Se requiere program_code o program_data (para RC Nuevo)' });
+      return res.status(400).json({
+        error: 'Se requiere program_code o program_data (RC Nuevo o AV Primera vez creando programa)',
+      });
     }
 
     /* ── 2. Guardar resolución en el programa si se proporcionó ── */
@@ -221,6 +227,14 @@ processController.create = async (req, res) => {
       fase_actual: fase_actual_inicial,
       ...fechasCalculadas,
     });
+
+    if (tipo_proceso === 'RC' || tipo_proceso === 'AV') {
+      await Process.deleteMany({
+        program_code,
+        tipo_proceso: 'ALERTA',
+        alert_para_tipo: tipo_proceso,
+      });
+    }
 
     /* ── 6. Crear fases (excepto Fase 7 — No renovación) ── */
     if (fase_actual_inicial !== 7) {
