@@ -26,7 +26,12 @@ async function recalcularAccion(accion_id) {
     const indicadores = await Indicador.find({ accion_id });
     if (!indicadores.length) return;
 
-    const avanceEfectivo = (i) => i.avance_total_real != null ? i.avance_total_real : i.avance;
+    // Usa avance_total_real si existe (es el % respecto a meta final), sino avance.
+    // En ambos casos se capa a [0, 100] para no distorsionar la ponderación hacia arriba.
+    const avanceEfectivo = (i) => {
+        const raw = i.avance_total_real != null ? i.avance_total_real : i.avance;
+        return Math.min(Math.max(Number(raw) || 0, 0), 100);
+    };
     const totalPeso = indicadores.reduce((acc, i) => acc + i.peso, 0);
     const avance = totalPeso > 0
         ? Math.round(indicadores.reduce((acc, i) => acc + (avanceEfectivo(i) * i.peso), 0) / totalPeso)
@@ -383,19 +388,26 @@ ctrl.getEvidencias = async (req, res) => {
     }
 };
 
-// Recalcula avances_por_anio y avance_total_real en todos los indicadores existentes
+// Recalcula avances_por_anio, avance y avance_total_real en todos los indicadores
+// y propaga la cascada (accion → proyecto → macro) con los valores corregidos
 ctrl.recalcularTodos = async (req, res) => {
     try {
         const todos = await Indicador.find({});
         let count = 0;
+        const accionIds = new Set();
         for (const doc of todos) {
             const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
             Object.assign(doc, calculados);
             doc.markModified('avances_por_anio');
             await doc.save();
+            if (doc.accion_id) accionIds.add(String(doc.accion_id));
             count++;
         }
-        res.json({ message: `Recalculados ${count} indicadores` });
+        // Propagar cascada con los valores ya corregidos (capeados a 100)
+        for (const accionId of accionIds) {
+            await recalcularAccion(accionId);
+        }
+        res.json({ message: `Recalculados ${count} indicadores y ${accionIds.size} acciones en cascada` });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
