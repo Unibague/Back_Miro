@@ -3,6 +3,8 @@ const Phase          = require('../models/phases');
 const ProcessDoc     = require('../models/processDocuments');
 const Program        = require('../models/programs');
 const ProcessHistory = require('../models/processHistory');
+const Caso           = require('../models/casos');
+const { calcularFechas } = require('./processes');
 
 const processHistoryController = {};
 
@@ -13,11 +15,30 @@ processHistoryController.close = async (req, res) => {
   try {
     const proc = await Process.findById(req.params.id);
     if (!proc) return res.status(404).json({ error: 'Proceso no encontrado' });
+    if (proc.tipo_proceso === 'ALERTA') {
+      return res.status(400).json({ error: 'Las alertas no se cierran con este flujo.' });
+    }
 
     const program = await Program.findOne({ dep_code_programa: proc.program_code });
     if (!program) return res.status(404).json({ error: 'Programa asociado no encontrado' });
 
     const sufijo = proc.tipo_proceso.toLowerCase();
+    const snapFechaRes = program[`fecha_resolucion_${sufijo}`];
+    const snapCodigoRes = program[`codigo_resolucion_${sufijo}`];
+    const snapDuracionRes = program[`duracion_resolucion_${sufijo}`];
+
+    const {
+      fecha_resolucion: bodyFechaRes,
+      codigo_resolucion: bodyCodigoRes,
+      duracion_resolucion: bodyDuracionRes,
+    } = req.body || {};
+
+    const normFecha = (v) => {
+      if (!v) return null;
+      if (v instanceof Date) return v.toISOString().split('T')[0];
+      const s = String(v);
+      return s.length >= 10 ? s.slice(0, 10) : s;
+    };
 
     /* 1 — Obtener todas las fases del proceso con sus documentos, actividades y subactividades */
     const fases = await Phase.find({ proceso_id: proc._id }).sort({ numero: 1 });
@@ -39,16 +60,18 @@ processHistoryController.close = async (req, res) => {
         const faseDocs = await ProcessDoc.find({ phase_id: f._id, actividad_id: null }).lean();
 
         // Para cada actividad, capturar sus docs y los de sus subactividades
+        const actividadesArr = Array.isArray(f.actividades) ? f.actividades : [];
         const actividadesSnapshot = await Promise.all(
-          f.actividades.map(async (act) => {
+          actividadesArr.map(async (act) => {
             const actDocs = await ProcessDoc.find({
               phase_id: f._id,
               actividad_id: act._id,
               subactividad_id: null,
             }).lean();
 
+            const subsArr = Array.isArray(act.subactividades) ? act.subactividades : [];
             const subactividades = await Promise.all(
-              act.subactividades.map(async (sub) => {
+              subsArr.map(async (sub) => {
                 const subDocs = await ProcessDoc.find({
                   phase_id: f._id,
                   actividad_id: act._id,
@@ -82,8 +105,8 @@ processHistoryController.close = async (req, res) => {
         return {
           fase_numero:              f.numero,
           fase_nombre:              f.nombre,
-          actividades_completadas:  f.actividades.filter(actividadResueltaHist).length,
-          actividades_total:        f.actividades.length,
+          actividades_completadas:  actividadesArr.filter(actividadResueltaHist).length,
+          actividades_total:        actividadesArr.length,
           documentos:               faseDocs.map(mapDoc),
           actividades:              actividadesSnapshot,
         };
@@ -110,18 +133,31 @@ processHistoryController.close = async (req, res) => {
     } : null;
 
     /* 4 — Crear registro en processHistory */
-    await ProcessHistory.create({
+    const frFinal = normFecha(bodyFechaRes) || normFecha(snapFechaRes);
+    const codFinal = (bodyCodigoRes != null && String(bodyCodigoRes).trim() !== '')
+      ? String(bodyCodigoRes).trim()
+      : (snapCodigoRes ?? null);
+    const durRaw = bodyDuracionRes != null && bodyDuracionRes !== ''
+      ? Number(bodyDuracionRes)
+      : snapDuracionRes;
+    const durFinal = durRaw != null && !Number.isNaN(Number(durRaw)) ? Number(durRaw) : null;
+
+    const nombreProcesoHist = (proc.name && String(proc.name).trim())
+      ? String(proc.name).trim()
+      : `${proc.tipo_proceso} — ${program.nombre || program.dep_code_programa || proc.program_code}`;
+
+    const historyDoc = await ProcessHistory.create({
       program_code:      proc.program_code,
       dep_code_facultad: program.dep_code_facultad,
-      nombre_programa:   program.nombre,
+      nombre_programa:   program.nombre || program.dep_code_programa || 'Sin nombre',
       process_id:        proc._id,
       tipo_proceso:      proc.tipo_proceso,
-      nombre_proceso:    proc.name,
+      nombre_proceso:    nombreProcesoHist,
       subtipo:           proc.subtipo ?? null,
 
-      codigo_resolucion:   program[`codigo_resolucion_${sufijo}`] ?? null,
-      fecha_resolucion:    program[`fecha_resolucion_${sufijo}`]  ?? null,
-      duracion_resolucion: program[`duracion_resolucion_${sufijo}`] ?? null,
+      codigo_resolucion:   codFinal,
+      fecha_resolucion:    frFinal,
+      duracion_resolucion: durFinal,
 
       fecha_vencimiento:      proc.fecha_vencimiento,
       fecha_inicio:           proc.fecha_inicio,
@@ -140,9 +176,55 @@ processHistoryController.close = async (req, res) => {
       cerrado_por: req.body.cerrado_por ?? null,
     });
 
+    const faseIds = fases.map((f) => f._id);
+
+    /* 4b — Proceso tipo ALERTA (fechas congeladas al cierre; no es una fase) */
+    if (proc.tipo_proceso === 'RC' || proc.tipo_proceso === 'AV') {
+      await Process.deleteMany({
+        program_code: proc.program_code,
+        tipo_proceso: 'ALERTA',
+        alert_para_tipo: proc.tipo_proceso,
+      });
+      const defaultOffsets = proc.tipo_proceso === 'AV'
+        ? { meses_inicio_antes_venc: 33, meses_doc_par_antes_venc: 16, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 }
+        : { meses_inicio_antes_venc: 29, meses_doc_par_antes_venc: 17, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 };
+      let fechasR = {};
+      if (frFinal && durFinal != null) {
+        fechasR = calcularFechas(proc.tipo_proceso, frFinal, durFinal, defaultOffsets) || {};
+      }
+      const nombrePrograma = program.nombre ?? proc.program_code;
+      const alerta = await Process.create({
+        name: `Alerta (${proc.tipo_proceso}) — ${nombrePrograma}`,
+        program_code: proc.program_code,
+        tipo_proceso: 'ALERTA',
+        alert_para_tipo: proc.tipo_proceso,
+        cerrado_process_history_id: historyDoc._id,
+        snapshot_codigo_resolucion: codFinal,
+        snapshot_fecha_resolucion: frFinal,
+        snapshot_duracion_anos: durFinal,
+        fase_actual: 0,
+        fecha_vencimiento: fechasR.fecha_vencimiento ?? proc.fecha_vencimiento ?? null,
+        fecha_inicio: fechasR.fecha_inicio ?? proc.fecha_inicio ?? null,
+        fecha_documento_par: fechasR.fecha_documento_par ?? proc.fecha_documento_par ?? null,
+        fecha_digitacion_saces: fechasR.fecha_digitacion_saces ?? proc.fecha_digitacion_saces ?? null,
+        fecha_radicado_men: fechasR.fecha_radicado_men ?? proc.fecha_radicado_men ?? null,
+        obs_vencimiento: proc.obs_vencimiento ?? '',
+        obs_inicio: proc.obs_inicio ?? '',
+        obs_documento_par: proc.obs_documento_par ?? '',
+        obs_digitacion_saces: proc.obs_digitacion_saces ?? '',
+        obs_radicado_men: proc.obs_radicado_men ?? '',
+        ...defaultOffsets,
+      });
+      /* Documentos de actividad/fase: eliminar antes de reasignar el proceso,
+         para no borrar después los archivos ya movidos a la ALERTA. */
+      await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
+      await ProcessDoc.updateMany({ process_id: proc._id }, { $set: { process_id: alerta._id } });
+    }
+
     /* 5 — Limpiar documentos de fases y del proceso */
-    const faseIds = fases.map(f => f._id);
-    await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
+    if (proc.tipo_proceso !== 'RC' && proc.tipo_proceso !== 'AV') {
+      await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
+    }
     await ProcessDoc.deleteMany({ process_id: proc._id });
 
     /* 6 — Eliminar fases actuales */
@@ -163,13 +245,22 @@ processHistoryController.close = async (req, res) => {
     };
     await Program.findByIdAndUpdate(program._id, { $set: camposResolucion });
 
-    /* 9 — Eliminar el proceso activo (ya fue archivado en el historial) */
+    /* 9 — Caso de radicación ligado al proceso (evita huérfanos y errores de índice único al reabrir) */
+    await Caso.deleteMany({ proceso_id: proc._id });
+
+    /* 10 — Eliminar el proceso activo (ya fue archivado en el historial) */
     await Process.findByIdAndDelete(proc._id);
 
     res.status(200).json({ message: 'Proceso cerrado y archivado correctamente' });
   } catch (error) {
     console.error('Error cerrando proceso:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    let msg = error?.message || 'Error interno del servidor';
+    if (error?.name === 'ValidationError' && error.errors) {
+      msg = Object.values(error.errors).map((e) => e.message).join('; ');
+    } else if (error?.code === 11000) {
+      msg = 'Ya existe un registro con esos datos únicos (índice duplicado).';
+    }
+    res.status(500).json({ error: 'Error al cerrar el proceso', detalle: msg });
   }
 };
 

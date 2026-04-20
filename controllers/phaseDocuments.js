@@ -30,11 +30,13 @@ processDocumentsController.getByPhase = async (req, res) => {
 // GET /process-documents/by-process?process_id=...
 processDocumentsController.getByProcess = async (req, res) => {
   try {
-    const { process_id } = req.query;
+    const { process_id, caso_date_key } = req.query;
     if (!process_id) {
       return res.status(400).json({ error: 'process_id es requerido' });
     }
-    const docs = await ProcessDocument.find({ process_id }).sort({ createdAt: -1 });
+    const query = { process_id };
+    if (caso_date_key) query.caso_date_key = caso_date_key;
+    const docs = await ProcessDocument.find(query).sort({ createdAt: -1 });
     res.status(200).json(docs);
   } catch (error) {
     console.error('Error obteniendo documentos de proceso:', error);
@@ -89,15 +91,19 @@ processDocumentsController.createForProcess = async (req, res) => {
       return res.status(400).json({ error: 'No se adjuntó ningún archivo' });
     }
 
-    const destino = 'Fechas/Procesos/Resoluciones';
+    const { doc_type, caso_date_key } = req.body;
+    const isResolucion = doc_type === 'resolucion';
+    const cdk = !isResolucion && caso_date_key && String(caso_date_key).trim()
+      ? String(caso_date_key).trim()
+      : null;
+    const destino = cdk ? 'Fechas/Procesos/InformacionCaso' : 'Fechas/Procesos/Resoluciones';
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
-
-    const { doc_type } = req.body;
 
     const doc = await ProcessDocument.create({
       phase_id: null,
       process_id: processId,
-      doc_type: doc_type === 'resolucion' ? 'resolucion' : 'proceso',
+      doc_type: isResolucion ? 'resolucion' : 'proceso',
+      caso_date_key: cdk,
       name: fileData.name,
       drive_id: fileData.id,
       view_link: fileData.webViewLink,

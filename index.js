@@ -1,7 +1,7 @@
 const express = require('express');
 const morgan = require('morgan');
 const cors = require('cors');
-const initDB = require('./config/db');
+const connectDB = require('./config/db');
 const swaggerRouter = require('./swagger');
 const app = express();
 const cron = require('node-cron');
@@ -9,9 +9,10 @@ const cron = require('node-cron');
 require('dotenv').config();
 
 const allowedOrigins = [
-  'http://localhost:3000', 
+  'http://localhost:3000',
+  'http://localhost:3001',
   'https://miro.unibague.edu.co',
-  'https://mirodev.unibague.edu.co'
+  'https://mirodev.unibague.edu.co',
 ];
 
 // Configurar Express para entender que está detrás de un proxy inverso
@@ -79,6 +80,7 @@ apiRouter.use("/processes",        require('./routes/processes'));
 apiRouter.use("/phases",           require('./routes/phases'));
 apiRouter.use("/process-documents", require('./routes/phaseDocuments'));
 apiRouter.use("/process-history",  require('./routes/processHistory'));
+apiRouter.use("/process-reminders", require('./routes/processReminders'));
 apiRouter.use("/casos",            require('./routes/casos'));
 apiRouter.use("/pqr",              require('./routes/pqr'));
 apiRouter.use("/config-audit", require('./routes/configurationAudit'));
@@ -107,20 +109,28 @@ app.use('/', swaggerRouter);
 
 const PORT = process.env.PORT || 6000;
 
-const server = app.listen(PORT, () => {
-  if (process.env.NODE_ENV === 'production') {
-    console.log('Servr running in production mode on ' + PORT);
-  } else {
-    console.log('Server running in development mode on ' + PORT);
+async function start() {
+  try {
+    await connectDB();
+  } catch (err) {
+    console.error('No se pudo iniciar el API sin MongoDB:', err.message || err);
+    process.exit(1);
   }
-});
 
-// Aumentar timeout para AI Assistant y generación de informes
-server.timeout = 240000; // 4 minutos
-server.keepAliveTimeout = 240000;
-server.headersTimeout = 245000;
+  const server = app.listen(PORT, () => {
+    if (process.env.NODE_ENV === 'production') {
+      console.log('Servr running in production mode on ' + PORT);
+    } else {
+      console.log('Server running in development mode on ' + PORT);
+    }
+  });
 
-initDB();
+  server.timeout = 240000;
+  server.keepAliveTimeout = 240000;
+  server.headersTimeout = 245000;
+}
+
+start();
 
 // const { runReminderEmails } = require('./controllers/reminders');
 // cron.schedule('0 7 * * *', async () => {

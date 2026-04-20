@@ -11,6 +11,13 @@ const casoSchema = new mongoose.Schema(
     resolucion_aprobada:            { type: Boolean, default: null },
     aplica_apelacion:               { type: Boolean, default: false },
     fecha_resolucion_apelacion:     { type: String,  default: null },
+    fecha_respuesta_men:            { type: String,  default: null },
+    obs_fecha_solicitud_radicado:       { type: String, default: '' },
+    obs_fecha_notificacion_completitud: { type: String, default: '' },
+    obs_fecha_respuesta_completitud:    { type: String, default: '' },
+    obs_fecha_resolucion:               { type: String, default: '' },
+    obs_fecha_resolucion_apelacion:     { type: String, default: '' },
+    obs_fecha_respuesta_men:            { type: String, default: '' },
   },
   { timestamps: true, versionKey: false }
 );
