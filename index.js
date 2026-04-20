@@ -101,6 +101,7 @@ apiRouter.use("/pdi/acciones",         require('./routes/pdiAccionEstrategica'))
 apiRouter.use("/pdi/indicadores",      require('./routes/pdiIndicador'));
 apiRouter.use("/pdi/historial",        require('./routes/pdiIndicadorHistorial'));
 apiRouter.use("/pdi/cortes",           require('./routes/pdiCorte'));
+apiRouter.use("/pdi/formularios",      require('./routes/pdiFormulario'));
 apiRouter.use("/pdi/cambios",          require('./routes/pdiSolicitudCambio'));
 apiRouter.use("/pdi/dashboard",        require('./routes/pdiDashboard'));
 apiRouter.use("/pdi/config",           require('./routes/pdiConfig'));
