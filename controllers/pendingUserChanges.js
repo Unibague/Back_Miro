@@ -11,7 +11,7 @@ pendingChangesController.getPendingChanges = async (req, res) => {
   try {
     const { email } = req.query;
     
-    // Verificar que sea administrador
+    // Verificar que sea administrado
     await UserService.findUserByEmailAndRole(email, 'Administrador');
     
     const pendingChanges = await PendingUserChanges.find({ status: 'pending' })
