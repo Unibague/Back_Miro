@@ -8,10 +8,9 @@ const ctrl = {};
 
 ctrl.getAll = async (req, res) => {
     try {
-        const { indicador_id, accion_id, activo } = req.query;
+        const { indicador_id, activo } = req.query;
         const docs = await svc.getAll({
             indicador_id,
-            accion_id,
             activo: activo !== undefined ? activo === 'true' : undefined,
         });
         res.json(docs);

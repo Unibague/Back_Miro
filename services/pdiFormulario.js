@@ -4,31 +4,51 @@ const { deleteFile } = require('./pdiFormularioStorage');
 
 // ── Formularios ────────────────────────────────────────────────────────────
 
-const getAll = async ({ indicador_id, accion_id, activo } = {}) => {
-    const query = {};
+const ensureUniqueIndicator = async (indicador_id, excludeId = null) => {
+    if (!indicador_id) {
+        throw new Error('El formulario debe estar asociado a un indicador');
+    }
+
+    const query = { indicador_id };
+    if (excludeId) query._id = { $ne: excludeId };
+
+    const existing = await Formulario.findOne(query).select('_id');
+    if (existing) {
+        throw new Error('Ya existe un formulario para este indicador');
+    }
+};
+
+const getAll = async ({ indicador_id, activo } = {}) => {
+    const query = { indicador_id: { $exists: true, $ne: null } };
     if (indicador_id) query.indicador_id = indicador_id;
-    if (accion_id)    query.accion_id    = accion_id;
     if (activo !== undefined) query.activo = activo;
     return Formulario.find(query)
         .populate('indicador_id', 'codigo nombre')
-        .populate('accion_id', 'codigo nombre')
         .sort({ createdAt: -1 });
 };
 
 const getById = async (id) => {
     return Formulario.findById(id)
-        .populate('indicador_id', 'codigo nombre')
-        .populate('accion_id', 'codigo nombre');
+        .populate('indicador_id', 'codigo nombre');
 };
 
 const create = async (data) => {
-    return Formulario.create(data);
+    await ensureUniqueIndicator(data.indicador_id);
+    const payload = { ...data };
+    delete payload.accion_id;
+    const doc = await Formulario.create(payload);
+    return Formulario.findById(doc._id)
+        .populate('indicador_id', 'codigo nombre');
 };
 
 const update = async (id, data) => {
-    return Formulario.findByIdAndUpdate(id, data, { new: true, runValidators: true })
-        .populate('indicador_id', 'codigo nombre')
-        .populate('accion_id', 'codigo nombre');
+    await ensureUniqueIndicator(data.indicador_id, id);
+    const payload = {
+        ...data,
+        $unset: { accion_id: 1 },
+    };
+    return Formulario.findByIdAndUpdate(id, payload, { new: true, runValidators: true })
+        .populate('indicador_id', 'codigo nombre');
 };
 
 const remove = async (id) => {
