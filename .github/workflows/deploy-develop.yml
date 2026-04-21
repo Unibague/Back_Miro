@@ -34,7 +34,8 @@ jobs:
             vpnc-scripts \
             sshpass \
             iputils-ping \
-            netcat-openbsd
+            netcat-openbsd \
+            traceroute
 
       - name: Connect to VPN
         run: |
@@ -76,6 +77,20 @@ jobs:
         continue-on-error: true
         run: |
           ping -c 3 "${{ secrets.INTERNAL_RESOURCE_IP }}" || echo "Ping failed (puede estar bloqueado por firewall)"
+
+      - name: DEBUG - Network diagnostics
+        run: |
+          echo "=== IP del runner dentro de la VPN ==="
+          ip a show tun0 2>/dev/null || echo "No se encontró interfaz tun0"
+          echo ""
+          echo "=== Ruta específica al servidor ==="
+          ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" || true
+          echo ""
+          echo "=== Todas las rutas ==="
+          ip route | grep -v "linkdown"
+          echo ""
+          echo "=== Traceroute al servidor ==="
+          traceroute -m 5 "${{ secrets.INTERNAL_RESOURCE_IP }}" 2>/dev/null || true
 
       - name: Test TCP port 22 on internal host
         run: |
