@@ -6,7 +6,7 @@ const { deleteFile } = require('./pdiFormularioStorage');
 
 const ensureUniqueIndicator = async (indicador_id, excludeId = null) => {
     if (!indicador_id) {
-        throw new Error('El formulario debe estar asociado a un indicador');
+        return;
     }
 
     const query = { indicador_id };
@@ -19,8 +19,13 @@ const ensureUniqueIndicator = async (indicador_id, excludeId = null) => {
 };
 
 const getAll = async ({ indicador_id, activo } = {}) => {
-    const query = { indicador_id: { $exists: true, $ne: null } };
-    if (indicador_id) query.indicador_id = indicador_id;
+    const query = {};
+    if (indicador_id) {
+        query.$or = [
+            { indicador_id },
+            { alcance: 'general' },
+        ];
+    }
     if (activo !== undefined) query.activo = activo;
     return Formulario.find(query)
         .populate('indicador_id', 'codigo nombre')
@@ -33,19 +38,21 @@ const getById = async (id) => {
 };
 
 const create = async (data) => {
-    await ensureUniqueIndicator(data.indicador_id);
     const payload = { ...data };
-    delete payload.accion_id;
+    payload.activo = true;
+    payload.alcance = 'general';
+    payload.indicador_id = null;
     const doc = await Formulario.create(payload);
     return Formulario.findById(doc._id)
         .populate('indicador_id', 'codigo nombre');
 };
 
 const update = async (id, data) => {
-    await ensureUniqueIndicator(data.indicador_id, id);
     const payload = {
         ...data,
-        $unset: { accion_id: 1 },
+        activo: true,
+        alcance: 'general',
+        indicador_id: null,
     };
     return Formulario.findByIdAndUpdate(id, payload, { new: true, runValidators: true })
         .populate('indicador_id', 'codigo nombre');
