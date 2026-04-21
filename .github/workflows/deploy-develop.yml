@@ -37,6 +37,31 @@ jobs:
             netcat-openbsd \
             traceroute
 
+      - name: Fix vpnc-script path
+        run: |
+          VPNC_SCRIPT=$(find /usr -name "vpnc-script" 2>/dev/null | head -1)
+          if [ -z "$VPNC_SCRIPT" ]; then
+            echo "vpnc-script no encontrado en /usr, buscando en todo el sistema..."
+            VPNC_SCRIPT=$(find / -name "vpnc-script" 2>/dev/null | head -1)
+          fi
+          if [ -n "$VPNC_SCRIPT" ]; then
+            echo "vpnc-script encontrado en: $VPNC_SCRIPT"
+            sudo mkdir -p /etc/vpnc
+            sudo cp "$VPNC_SCRIPT" /etc/vpnc/vpnc-script
+            sudo chmod +x /etc/vpnc/vpnc-script
+          else
+            echo "ERROR: vpnc-script no encontrado"
+            exit 1
+          fi
+
+      - name: Bring down Docker network to avoid VPN conflict
+        run: |
+          echo "=== Bajando docker0 para evitar conflicto con red VPN 172.17.x.x ==="
+          sudo ip link set docker0 down 2>/dev/null || echo "docker0 ya estaba inactivo"
+          sudo ip route del 172.17.0.0/16 2>/dev/null || echo "Ruta 172.17.0.0/16 ya no existía"
+          echo "Rutas actuales:"
+          ip route
+
       - name: Connect to VPN
         run: |
           echo "${{ secrets.VPN_PASSWORD }}" | sudo openconnect \
@@ -51,14 +76,16 @@ jobs:
       - name: Wait for VPN route to internal host
         run: |
           for i in {1..30}; do
-            if ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" 2>/dev/null | grep -v unreachable; then
-              echo "Ruta al host detectada en intento $i — VPN lista"
+            ROUTE=$(ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" 2>/dev/null)
+            if echo "$ROUTE" | grep -q "tun0"; then
+              echo "Ruta al host detectada por tun0 en intento $i — VPN lista"
+              echo "$ROUTE"
               exit 0
             fi
-            echo "Intento $i/30: esperando ruta VPN..."
+            echo "Intento $i/30: esperando ruta VPN por tun0..."
             sleep 3
           done
-          echo "ERROR: Sin ruta al host después de 90s"
+          echo "ERROR: tun0 nunca enrutó al host después de 90s"
           ip route
           exit 1
 
@@ -77,20 +104,6 @@ jobs:
         continue-on-error: true
         run: |
           ping -c 3 "${{ secrets.INTERNAL_RESOURCE_IP }}" || echo "Ping failed (puede estar bloqueado por firewall)"
-
-      - name: DEBUG - Network diagnostics
-        run: |
-          echo "=== IP del runner dentro de la VPN ==="
-          ip a show tun0 2>/dev/null || echo "No se encontró interfaz tun0"
-          echo ""
-          echo "=== Ruta específica al servidor ==="
-          ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" || true
-          echo ""
-          echo "=== Todas las rutas ==="
-          ip route | grep -v "linkdown"
-          echo ""
-          echo "=== Traceroute al servidor ==="
-          traceroute -m 5 "${{ secrets.INTERNAL_RESOURCE_IP }}" 2>/dev/null || true
 
       - name: Test TCP port 22 on internal host
         run: |
