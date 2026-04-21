@@ -11,9 +11,24 @@ const processSchema = new mongoose.Schema({
   },
   tipo_proceso: {
     type: String,
-    enum: ['RC', 'AV', 'PM'],
+    enum: ['RC', 'AV', 'PM', 'ALERTA'],
     required: true,
   },
+  /** Solo ALERTA: a qué línea (RC/AV) pertenece la alerta post-cierre */
+  alert_para_tipo: {
+    type: String,
+    enum: ['RC', 'AV', null],
+    default: null,
+  },
+  cerrado_process_history_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'processhistory',
+    default: null,
+  },
+  /** Congelados al cierre (solo ALERTA) */
+  snapshot_codigo_resolucion: { type: String, default: null },
+  snapshot_fecha_resolucion: { type: String, default: null },
+  snapshot_duracion_anos: { type: Number, default: null },
   /* Subtipo del proceso:
      RC  → Nuevo | Renovación | No renovación | Reforma/actualización curricular
      AV  → Primera vez | Renovación

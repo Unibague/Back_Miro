@@ -1,3 +1,4 @@
+const mongoose         = require('mongoose');
 const Program          = require('../models/programs');
 const Process          = require('../models/processes');
 const Phase            = require('../models/phases');
@@ -75,11 +76,18 @@ programController.getAll = async (req, res) => {
 /* GET /programs/:id — un programa por su _id */
 programController.getById = async (req, res) => {
   try {
-    const program = await Program.findById(req.params.id);
+    const rawId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(rawId)) {
+      return res.status(400).json({ error: 'ID de programa no válido' });
+    }
+    const program = await Program.findById(rawId).lean();
     if (!program) return res.status(404).json({ error: 'Programa no encontrado' });
     res.status(200).json(program);
   } catch (error) {
-    console.error('Error obteniendo programa:', error);
+    if (error.name === 'CastError') {
+      return res.status(400).json({ error: 'ID de programa no válido' });
+    }
+    console.error('Error obteniendo programa:', error.message || error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
