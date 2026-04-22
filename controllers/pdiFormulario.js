@@ -62,8 +62,8 @@ ctrl.remove = async (req, res) => {
 
 ctrl.getRespuestas = async (req, res) => {
     try {
-        const { formulario_id, respondido_por, corte } = req.query;
-        const docs = await svc.getRespuestas({ formulario_id, respondido_por, corte });
+        const { formulario_id, indicador_id, respondido_por, corte } = req.query;
+        const docs = await svc.getRespuestas({ formulario_id, indicador_id, respondido_por, corte });
         res.json(docs);
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
@@ -84,9 +84,10 @@ ctrl.getRespuestaById = async (req, res) => {
 // Crea o actualiza la respuesta (upsert por formulario+respondido_por+corte)
 ctrl.upsertRespuesta = async (req, res) => {
     try {
-        const { respondido_por, corte, respuestas, estado } = req.body;
-        const doc = await svc.upsertRespuesta({
+        const { respondido_por, corte, respuestas, estado, indicador_id } = req.body;
+        const { doc } = await svc.upsertRespuesta({
             formulario_id: req.params.id,
+            indicador_id,
             respondido_por,
             corte,
             respuestas,
@@ -95,6 +96,56 @@ ctrl.upsertRespuesta = async (req, res) => {
         res.status(200).json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
+    }
+};
+
+// PUT /pdi/formularios/:id/respuestas/:respuestaId/aval
+ctrl.avalRespuesta = async (req, res) => {
+    try {
+        const { estado_aval, aval_por, aval_comentario } = req.body;
+        if (!['Aprobado', 'Rechazado'].includes(estado_aval)) {
+            return res.status(400).json({ error: 'estado_aval debe ser Aprobado o Rechazado' });
+        }
+        const doc = await svc.avalRespuesta(req.params.respuestaId, { estado_aval, aval_por, aval_comentario });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+// GET /pdi/formularios/respuestas/lider-email-indicador?indicador_id=xxx
+ctrl.getLiderEmailIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json({ lider_email: '' });
+        const lider_email = await svc.getLiderEmailForIndicador(indicador_id);
+        res.json({ lider_email });
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// GET /pdi/formularios/respuestas/por-indicador?indicador_id=xxx
+ctrl.getRespuestasPorIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json([]);
+        const docs = await svc.getRespuestas({ indicador_id });
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// GET /pdi/formularios/respuestas/pendientes-aval?lider_email=xxx
+ctrl.getRespuestasPendientesAval = async (req, res) => {
+    try {
+        const { lider_email } = req.query;
+        if (!lider_email) return res.json([]);
+        const docs = await svc.getRespuestasPendientesAval(lider_email);
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
     }
 };
 
