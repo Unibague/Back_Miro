@@ -34,7 +34,33 @@ jobs:
             vpnc-scripts \
             sshpass \
             iputils-ping \
-            netcat-openbsd
+            netcat-openbsd \
+            traceroute
+
+      - name: Fix vpnc-script path
+        run: |
+          VPNC_SCRIPT=$(find /usr -name "vpnc-script" 2>/dev/null | head -1)
+          if [ -z "$VPNC_SCRIPT" ]; then
+            echo "vpnc-script no encontrado en /usr, buscando en todo el sistema..."
+            VPNC_SCRIPT=$(find / -name "vpnc-script" 2>/dev/null | head -1)
+          fi
+          if [ -n "$VPNC_SCRIPT" ]; then
+            echo "vpnc-script encontrado en: $VPNC_SCRIPT"
+            sudo mkdir -p /etc/vpnc
+            sudo cp "$VPNC_SCRIPT" /etc/vpnc/vpnc-script
+            sudo chmod +x /etc/vpnc/vpnc-script
+          else
+            echo "ERROR: vpnc-script no encontrado"
+            exit 1
+          fi
+
+      - name: Bring down Docker network to avoid VPN conflict
+        run: |
+          echo "=== Bajando docker0 para evitar conflicto con red VPN 172.17.x.x ==="
+          sudo ip link set docker0 down 2>/dev/null || echo "docker0 ya estaba inactivo"
+          sudo ip route del 172.17.0.0/16 2>/dev/null || echo "Ruta 172.17.0.0/16 ya no existía"
+          echo "Rutas actuales:"
+          ip route
 
       - name: Connect to VPN
         run: |
@@ -47,20 +73,20 @@ jobs:
             "${{ secrets.VPN_HOST }}" \
             -b
 
-      - name: Wait for VPN tunnel
+      - name: Wait for VPN route to internal host
         run: |
-          for i in {1..20}; do
-            VPN_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(tun|ppp|vpn)' | head -n 1 || true)
-            if [ -n "$VPN_IFACE" ]; then
-              echo "VPN interface detected: $VPN_IFACE"
+          for i in {1..30}; do
+            ROUTE=$(ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" 2>/dev/null)
+            if echo "$ROUTE" | grep -q "tun0"; then
+              echo "Ruta al host detectada por tun0 en intento $i — VPN lista"
+              echo "$ROUTE"
               exit 0
             fi
-            echo "Waiting for VPN tunnel..."
-            sleep 2
+            echo "Intento $i/30: esperando ruta VPN por tun0..."
+            sleep 3
           done
-
-          echo "No VPN interface detected after waiting."
-          ip a
+          echo "ERROR: tun0 nunca enrutó al host después de 90s"
+          ip route
           exit 1
 
       - name: Verify VPN interfaces and routes
@@ -74,43 +100,31 @@ jobs:
           echo "=== ROUTE TO INTERNAL HOST ==="
           ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" || true
 
-      - name: Validate route to internal host
-        run: |
-          if ! ip route get "${{ secrets.INTERNAL_RESOURCE_IP }}" >/tmp/route_check.txt 2>&1; then
-            echo "No route to internal host"
-            cat /tmp/route_check.txt
-            exit 1
-          fi
-
-          echo "Route lookup result:"
-          cat /tmp/route_check.txt
-
-          if grep -qi "unreachable" /tmp/route_check.txt; then
-            echo "Internal host is unreachable from runner"
-            exit 1
-          fi
-
       - name: Test ICMP connectivity to internal host
         continue-on-error: true
         run: |
-          ping -c 3 "${{ secrets.INTERNAL_RESOURCE_IP }}" || echo "Ping failed"
+          ping -c 3 "${{ secrets.INTERNAL_RESOURCE_IP }}" || echo "Ping failed (puede estar bloqueado por firewall)"
 
       - name: Test TCP port 22 on internal host
         run: |
-          if timeout 15 bash -c "</dev/tcp/${{ secrets.INTERNAL_RESOURCE_IP }}/22"; then
-            echo "TCP port 22 reachable"
-          else
-            echo "Cannot reach TCP port 22 on internal host"
-            exit 1
-          fi
+          for i in {1..20}; do
+            if nc -z -w 5 "${{ secrets.INTERNAL_RESOURCE_IP }}" 22 2>/dev/null; then
+              echo "Puerto 22 accesible en intento $i"
+              exit 0
+            fi
+            echo "Intento $i/20: puerto 22 no disponible, reintentando en 3s..."
+            sleep 3
+          done
+          echo "ERROR: Puerto 22 no accesible después de 60s"
+          exit 1
 
       - name: Test SSH connectivity
         run: |
           sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=15 \
-            -o ServerAliveInterval=10 \
-            -o ServerAliveCountMax=3 \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
             "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" \
             'echo "SSH connection successful"'
 
@@ -123,7 +137,9 @@ jobs:
         run: |
           sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=15 \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
             "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" << 'EOF'
             set -e
             cd ~/MIRO_TEST/Back_Miro_Test
@@ -136,7 +152,9 @@ jobs:
         run: |
           sshpass -p "${{ secrets.INTERNAL_SSH_PASSWORD }}" ssh \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=15 \
+            -o ConnectTimeout=30 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=5 \
             "${{ secrets.INTERNAL_USER }}@${{ secrets.INTERNAL_RESOURCE_IP }}" << 'EOF'
             set -e
             cd ~/MIRO_TEST/Back_Miro_Test
