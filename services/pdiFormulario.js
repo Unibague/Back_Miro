@@ -266,5 +266,5 @@ const getRespuestasPendientesAval = async (lider_email) => {
 module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
-    avalRespuesta, getRespuestasPendientesAval,
+    avalRespuesta, getRespuestasPendientesAval, getLiderEmailForIndicador,
 };
