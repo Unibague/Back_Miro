@@ -24,7 +24,7 @@ pendingChangesController.getPendingChanges = async (req, res) => {
   }
 };
 
-// Aprobar cambios seleccionados
+// Aproba cambios seleccionados
 pendingChangesController.approveChanges = async (req, res) => {
   try {
     const { email, changeIds } = req.body;
