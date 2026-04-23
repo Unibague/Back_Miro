@@ -6,7 +6,7 @@ const dependencyController = require('./dependencies');
 
 const pendingChangesController = {};
 
-// Obtener todos los cambios pendientes
+// Obtener todos cambio pendientes
 pendingChangesController.getPendingChanges = async (req, res) => {
   try {
     const { email } = req.query;
