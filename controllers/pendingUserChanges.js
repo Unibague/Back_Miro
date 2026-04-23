@@ -6,7 +6,7 @@ const dependencyController = require('./dependencies');
 
 const pendingChangesController = {};
 
-// Obtener todos los cambios pendientes
+// Obtener todos cambio pendientes
 pendingChangesController.getPendingChanges = async (req, res) => {
   try {
     const { email } = req.query;
@@ -24,12 +24,12 @@ pendingChangesController.getPendingChanges = async (req, res) => {
   }
 };
 
-// Aprobar cambios seleccionados
+// Aproba cambios seleccionados
 pendingChangesController.approveChanges = async (req, res) => {
   try {
     const { email, changeIds } = req.body;
     
-    // Verificar que sea administrador
+    // Verificar que sea administra
     const admin = await UserService.findUserByEmailAndRole(email, 'Administrador');
     
     const changes = await PendingUserChanges.find({ 
