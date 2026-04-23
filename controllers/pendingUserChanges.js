@@ -29,7 +29,7 @@ pendingChangesController.approveChanges = async (req, res) => {
   try {
     const { email, changeIds } = req.body;
     
-    // Verificar que sea administrador
+    // Verificar que sea administra
     const admin = await UserService.findUserByEmailAndRole(email, 'Administrador');
     
     const changes = await PendingUserChanges.find({ 
