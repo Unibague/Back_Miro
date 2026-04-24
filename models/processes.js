@@ -31,11 +31,16 @@ const processSchema = new mongoose.Schema({
   snapshot_duracion_anos: { type: Number, default: null },
   /* Subtipo del proceso:
      RC  → Nuevo | Renovación | No renovación | Reforma/actualización curricular
-     AV  → Primera vez | Renovación
+     AV  → Nuevo | Renovación
      PM  → Autoevaluación Registro calificado | Autoevaluación Acreditación */
   subtipo: {
     type: String,
     default: null,
+  },
+  /** Solo AV: al cerrar, si es true, se pide además resolución de RC de oficio (dos alertas). */
+  av_espera_rc_oficio: {
+    type: Boolean,
+    default: false,
   },
   // Si es un plan de mejoramiento hijo, referencia al proceso padre (RC o AV)
   parent_process_id: {

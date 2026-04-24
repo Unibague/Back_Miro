@@ -46,7 +46,7 @@ const processDocumentSchema = new mongoose.Schema(
     },
     doc_type: {
       type: String,
-      enum: ['resolucion', 'proceso'],
+      enum: ['resolucion', 'resolucion_rc_oficio', 'proceso'],
       default: 'proceso',
     },
     /* Clave del campo de fecha en el caso (información del caso), ej. fecha_solicitud_radicado */

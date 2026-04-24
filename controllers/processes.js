@@ -123,7 +123,7 @@ processController.getById = async (req, res) => {
    Body esperado:
    - tipo_proceso:      'RC' | 'AV'
    - subtipo:           'Nuevo'|'Renovación'|'No renovación'|'Renovación + reforma'|'Reforma curricular'  (RC)
-                        'Primera vez'|'Renovación'                                                         (AV)
+                        'Nuevo'|'Renovación'                                                               (AV)
    - program_code:      código del programa existente (todos excepto RC Nuevo)
    - program_data:      datos del programa a crear  (solo RC Nuevo)
    - fecha_resolucion:  YYYY-MM-DD  (subtipos con resolución)
@@ -134,13 +134,20 @@ processController.create = async (req, res) => {
   try {
     const {
       tipo_proceso,
-      subtipo,
+      subtipo: subtipoBody,
       program_code: existingProgramCode,
       program_data,
       fecha_resolucion,
       codigo_resolucion,
       duracion_resolucion,
+      av_espera_rc_oficio,
     } = req.body;
+
+    /* Compatibilidad: acreditación antigua «Primera vez» → mismo criterio que RC «Nuevo» */
+    let subtipo = subtipoBody;
+    if (tipo_proceso === 'AV' && subtipo === 'Primera vez') {
+      subtipo = 'Nuevo';
+    }
 
     const Program = require('../models/programs');
     let program;
@@ -149,8 +156,8 @@ processController.create = async (req, res) => {
     /* ── 1. Obtener o crear el programa ── */
     const creaProgramaDesdeCuerpo =
       program_data &&
-      ((subtipo === 'Nuevo' && tipo_proceso === 'RC') ||
-        (subtipo === 'Primera vez' && tipo_proceso === 'AV'));
+      subtipo === 'Nuevo' &&
+      (tipo_proceso === 'RC' || tipo_proceso === 'AV');
 
     if (creaProgramaDesdeCuerpo) {
       program = await Program.create({
@@ -164,7 +171,7 @@ processController.create = async (req, res) => {
 
     if (!program_code) {
       return res.status(400).json({
-        error: 'Se requiere program_code o program_data (RC Nuevo o AV Primera vez creando programa)',
+        error: 'Se requiere program_code o program_data (RC/AV Nuevo creando programa)',
       });
     }
 
@@ -208,7 +215,7 @@ processController.create = async (req, res) => {
       fechasCalculadas = { fecha_vencimiento: vencimiento };
       // fase_actual queda en 0
     }
-    // Para 'Nuevo', 'Primera vez': sin resolución ni fechas
+    // RC/AV 'Nuevo': sin resolución ni fechas
 
     /* ── 4. Nombre del proceso ── */
     if (!program) program = await Program.findOne({ dep_code_programa: program_code });
@@ -225,6 +232,7 @@ processController.create = async (req, res) => {
       tipo_proceso,
       subtipo: subtipo || null,
       fase_actual: fase_actual_inicial,
+      av_espera_rc_oficio: tipo_proceso === 'AV' ? !!av_espera_rc_oficio : false,
       ...fechasCalculadas,
     });
 
@@ -236,18 +244,28 @@ processController.create = async (req, res) => {
       });
     }
 
-    /* ── 6. Crear fases (excepto Fase 7 — No renovación) ── */
+    /* ── 6. Crear fases (excepto Fase 7; RC de oficio: una fase 0 vacía para la UI) ── */
+    const esRcDeOficio = subtipo === 'Registro calificado de oficio' && tipo_proceso === 'RC';
     if (fase_actual_inicial !== 7) {
-      const fases = getFasesParaTipo(tipo_proceso);
-      if (fases.length > 0) {
-        await Phase.insertMany(
-          fases.map(f => ({
-            proceso_id:  newProcess._id,
-            numero:      f.numero,
-            nombre:      f.nombre,
-            actividades: f.actividades.map(a => ({ ...a, completada: false })),
-          }))
-        );
+      if (esRcDeOficio) {
+        await Phase.insertMany([{
+          proceso_id: newProcess._id,
+          numero: 0,
+          nombre: 'Registro calificado de oficio',
+          actividades: [],
+        }]);
+      } else {
+        const fases = getFasesParaTipo(tipo_proceso);
+        if (fases.length > 0) {
+          await Phase.insertMany(
+            fases.map(f => ({
+              proceso_id:  newProcess._id,
+              numero:      f.numero,
+              nombre:      f.nombre,
+              actividades: f.actividades.map(a => ({ ...a, completada: false })),
+            }))
+          );
+        }
       }
     }
 

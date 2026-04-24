@@ -16,9 +16,14 @@ pqrController.getAll = async (req, res) => {
 /* POST /pqr */
 pqrController.create = async (req, res) => {
   try {
-    const { nombre_solicitud, programa_id } = req.body;
+    const { nombre_solicitud, programa_id, cedula_encargado } = req.body;
     if (!nombre_solicitud) return res.status(400).json({ error: 'nombre_solicitud es requerido' });
-    const pqr = await PQR.create({ nombre_solicitud, programa_id: programa_id || null });
+    const ced = typeof cedula_encargado === "string" ? cedula_encargado.trim() || null : cedula_encargado || null;
+    const pqr = await PQR.create({
+      nombre_solicitud,
+      programa_id: programa_id || null,
+      cedula_encargado: ced,
+    });
     res.status(201).json(pqr);
   } catch { res.status(500).json({ error: 'Error interno' }); }
 };
