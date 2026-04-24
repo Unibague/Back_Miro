@@ -108,6 +108,30 @@ const processHistorySchema = new mongoose.Schema(
     /* Metadatos del cierre */
     cerrado_en:  { type: Date, default: Date.now },
     cerrado_por: { type: String, default: null },
+
+    /** Resultado de la solicitud MEN (solo aplica a cierres con evaluación) */
+    estado_solicitud: {
+      type: String,
+      enum: ['APROBADO', 'NEGADO'],
+      default: 'APROBADO',
+    },
+
+    /**
+     * Solo cierre AV con av_espera_rc_oficio: copia de la resolución de RC de oficio
+     * y sus documentos, para historial.
+     */
+    rc_oficio: {
+      type: new mongoose.Schema(
+        {
+          codigo_resolucion:  { type: String, default: null },
+          fecha_resolucion:   { type: String, default: null },
+          duracion_resolucion:{ type: Number, default: null },
+          documentos:         { type: [docSnapshotSchema], default: [] },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
   },
   {
     versionKey: false,

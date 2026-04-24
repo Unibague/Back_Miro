@@ -31,7 +31,13 @@ processHistoryController.close = async (req, res) => {
       fecha_resolucion: bodyFechaRes,
       codigo_resolucion: bodyCodigoRes,
       duracion_resolucion: bodyDuracionRes,
+      rc_oficio: bodyRcOficio,
     } = req.body || {};
+
+    const estadoSolicitud = (req.body && req.body.estado_solicitud != null
+      && String(req.body.estado_solicitud).toUpperCase() === 'NEGADO')
+      ? 'NEGADO' : 'APROBADO';
+    const esNegado = estadoSolicitud === 'NEGADO';
 
     const normFecha = (v) => {
       if (!v) return null;
@@ -117,6 +123,34 @@ processHistoryController.close = async (req, res) => {
     const docsDirectos = await ProcessDoc.find({ process_id: proc._id, phase_id: null }).lean();
     const docResolucionSnapshot = docsDirectos.map(mapDoc);
 
+    /* Cierre dual AV+RC de oficio: lo decide el cliente al cerrar (body), no solo el flag al crear */
+    const incluirRcDeOficio = req.body && (
+      req.body.incluir_rc_de_oficio === true
+      || req.body.incluir_rc_de_oficio === 'true'
+    );
+    const esDualCierre = !esNegado && proc.tipo_proceso === 'AV' && incluirRcDeOficio === true;
+    if (!esNegado && (proc.tipo_proceso === 'RC' || proc.tipo_proceso === 'AV')) {
+      const resMain = await ProcessDoc.findOne({ process_id: proc._id, doc_type: 'resolucion' });
+      if (!resMain) {
+        return res.status(400).json({ error: 'Debe cargar el PDF de resolución vigente antes de cerrar con estado Aprobado.' });
+      }
+      if (esDualCierre) {
+        const rco = bodyRcOficio || {};
+        const f = normFecha(rco.fecha_resolucion);
+        const c = (rco.codigo_resolucion != null && String(rco.codigo_resolucion).trim() !== '')
+          ? String(rco.codigo_resolucion).trim() : null;
+        const dRaw = rco.duracion_resolucion;
+        const d = dRaw != null && dRaw !== '' && !Number.isNaN(Number(dRaw)) ? Number(dRaw) : null;
+        if (!f || !c || d == null) {
+          return res.status(400).json({ error: 'Indique fecha, código y duración (años) de la resolución de Registro calificado de oficio.' });
+        }
+        const rcoDoc = await ProcessDoc.findOne({ process_id: proc._id, doc_type: 'resolucion_rc_oficio' });
+        if (!rcoDoc) {
+          return res.status(400).json({ error: 'Debe cargar el PDF de resolución de Registro calificado de oficio.' });
+        }
+      }
+    }
+
     /* 3 — Capturar snapshot del PM hijo si existe (antes de eliminarlo) */
     const pmHijo = await Process.findOne({
       program_code: proc.program_code,
@@ -141,6 +175,23 @@ processHistoryController.close = async (req, res) => {
       ? Number(bodyDuracionRes)
       : snapDuracionRes;
     const durFinal = durRaw != null && !Number.isNaN(Number(durRaw)) ? Number(durRaw) : null;
+
+    let rcOficioSnapshot = null;
+    if (esDualCierre) {
+      const rco = bodyRcOficio || {};
+      const frR = normFecha(rco.fecha_resolucion);
+      const codR = (rco.codigo_resolucion != null && String(rco.codigo_resolucion).trim() !== '')
+        ? String(rco.codigo_resolucion).trim() : null;
+      const dRawR = rco.duracion_resolucion;
+      const durR = dRawR != null && !Number.isNaN(Number(dRawR)) ? Number(dRawR) : null;
+      const docsRco = await ProcessDoc.find({ process_id: proc._id, doc_type: 'resolucion_rc_oficio' }).lean();
+      rcOficioSnapshot = {
+        codigo_resolucion: codR,
+        fecha_resolucion: frR,
+        duracion_resolucion: durR,
+        documentos: docsRco.map(mapDoc),
+      };
+    }
 
     const nombreProcesoHist = (proc.name && String(proc.name).trim())
       ? String(proc.name).trim()
@@ -174,25 +225,28 @@ processHistoryController.close = async (req, res) => {
       fases: fasesSnapshot,
       documentos_proceso: docResolucionSnapshot,
       cerrado_por: req.body.cerrado_por ?? null,
+      estado_solicitud: estadoSolicitud,
+      rc_oficio:        rcOficioSnapshot,
     });
 
     const faseIds = fases.map((f) => f._id);
 
-    /* 4b — Proceso tipo ALERTA (fechas congeladas al cierre; no es una fase) */
-    if (proc.tipo_proceso === 'RC' || proc.tipo_proceso === 'AV') {
+    const defaultOffsetsAv = { meses_inicio_antes_venc: 33, meses_doc_par_antes_venc: 16, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 };
+    const defaultOffsetsRc = { meses_inicio_antes_venc: 29, meses_doc_par_antes_venc: 17, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 };
+    const nombrePrograma = program.nombre ?? proc.program_code;
+
+    /* 4b — ALERTA post-cierre (no si Negado; AV+RC oficio = dos alertas) */
+    if (!esNegado && (proc.tipo_proceso === 'RC' || proc.tipo_proceso === 'AV') && !esDualCierre) {
       await Process.deleteMany({
         program_code: proc.program_code,
         tipo_proceso: 'ALERTA',
         alert_para_tipo: proc.tipo_proceso,
       });
-      const defaultOffsets = proc.tipo_proceso === 'AV'
-        ? { meses_inicio_antes_venc: 33, meses_doc_par_antes_venc: 16, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 }
-        : { meses_inicio_antes_venc: 29, meses_doc_par_antes_venc: 17, meses_digitacion_antes_venc: 15, meses_radicado_antes_venc: 12 };
+      const defaultOffsets = proc.tipo_proceso === 'AV' ? defaultOffsetsAv : defaultOffsetsRc;
       let fechasR = {};
       if (frFinal && durFinal != null) {
         fechasR = calcularFechas(proc.tipo_proceso, frFinal, durFinal, defaultOffsets) || {};
       }
-      const nombrePrograma = program.nombre ?? proc.program_code;
       const alerta = await Process.create({
         name: `Alerta (${proc.tipo_proceso}) — ${nombrePrograma}`,
         program_code: proc.program_code,
@@ -215,10 +269,74 @@ processHistoryController.close = async (req, res) => {
         obs_radicado_men: proc.obs_radicado_men ?? '',
         ...defaultOffsets,
       });
-      /* Documentos de actividad/fase: eliminar antes de reasignar el proceso,
-         para no borrar después los archivos ya movidos a la ALERTA. */
       await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
       await ProcessDoc.updateMany({ process_id: proc._id }, { $set: { process_id: alerta._id } });
+    } else if (!esNegado && esDualCierre) {
+      const rco = bodyRcOficio || {};
+      const frR = normFecha(rco.fecha_resolucion);
+      const codR = (rco.codigo_resolucion != null && String(rco.codigo_resolucion).trim() !== '')
+        ? String(rco.codigo_resolucion).trim() : null;
+      const dRawR = rco.duracion_resolucion;
+      const durR = dRawR != null && !Number.isNaN(Number(dRawR)) ? Number(dRawR) : null;
+
+      await Process.deleteMany({ program_code: proc.program_code, tipo_proceso: 'ALERTA', alert_para_tipo: 'AV' });
+      await Process.deleteMany({ program_code: proc.program_code, tipo_proceso: 'ALERTA', alert_para_tipo: 'RC' });
+
+      let fechasAv = {};
+      if (frFinal && durFinal != null) {
+        fechasAv = calcularFechas('AV', frFinal, durFinal, defaultOffsetsAv) || {};
+      }
+      const alertaAv = await Process.create({
+        name: `Alerta (AV) — ${nombrePrograma}`,
+        program_code: proc.program_code,
+        tipo_proceso: 'ALERTA',
+        alert_para_tipo: 'AV',
+        cerrado_process_history_id: historyDoc._id,
+        snapshot_codigo_resolucion: codFinal,
+        snapshot_fecha_resolucion: frFinal,
+        snapshot_duracion_anos: durFinal,
+        fase_actual: 0,
+        fecha_vencimiento: fechasAv.fecha_vencimiento ?? proc.fecha_vencimiento ?? null,
+        fecha_inicio: fechasAv.fecha_inicio ?? proc.fecha_inicio ?? null,
+        fecha_documento_par: fechasAv.fecha_documento_par ?? proc.fecha_documento_par ?? null,
+        fecha_digitacion_saces: fechasAv.fecha_digitacion_saces ?? proc.fecha_digitacion_saces ?? null,
+        fecha_radicado_men: fechasAv.fecha_radicado_men ?? proc.fecha_radicado_men ?? null,
+        obs_vencimiento: '', obs_inicio: '', obs_documento_par: '', obs_digitacion_saces: '', obs_radicado_men: '',
+        ...defaultOffsetsAv,
+      });
+
+      let fechasRco = {};
+      if (frR && durR != null) {
+        fechasRco = calcularFechas('RC', frR, durR, defaultOffsetsRc) || {};
+      }
+      const alertaRc = await Process.create({
+        name: `Alerta (RC) — ${nombrePrograma}`,
+        program_code: proc.program_code,
+        tipo_proceso: 'ALERTA',
+        alert_para_tipo: 'RC',
+        cerrado_process_history_id: historyDoc._id,
+        snapshot_codigo_resolucion: codR,
+        snapshot_fecha_resolucion: frR,
+        snapshot_duracion_anos: durR,
+        fase_actual: 0,
+        fecha_vencimiento: fechasRco.fecha_vencimiento ?? null,
+        fecha_inicio: fechasRco.fecha_inicio ?? null,
+        fecha_documento_par: fechasRco.fecha_documento_par ?? null,
+        fecha_digitacion_saces: fechasRco.fecha_digitacion_saces ?? null,
+        fecha_radicado_men: fechasRco.fecha_radicado_men ?? null,
+        obs_vencimiento: '', obs_inicio: '', obs_documento_par: '', obs_digitacion_saces: '', obs_radicado_men: '',
+        ...defaultOffsetsRc,
+      });
+
+      await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
+      const docsPend = await ProcessDoc.find({ process_id: proc._id });
+      for (const d of docsPend) {
+        const t = d.doc_type || 'proceso';
+        const dest = t === 'resolucion_rc_oficio' ? alertaRc._id : alertaAv._id;
+        await ProcessDoc.findByIdAndUpdate(d._id, { $set: { process_id: dest } });
+      }
+    } else if (esNegado && (proc.tipo_proceso === 'RC' || proc.tipo_proceso === 'AV')) {
+      await ProcessDoc.deleteMany({ phase_id: { $in: faseIds } });
     }
 
     /* 5 — Limpiar documentos de fases y del proceso */
@@ -237,13 +355,20 @@ processHistoryController.close = async (req, res) => {
       await Process.findByIdAndDelete(pmHijo._id);
     }
 
-    /* 8 — Limpiar los campos de resolución del programa para este tipo */
-    const camposResolucion = {
-      [`fecha_resolucion_${sufijo}`]:    null,
-      [`codigo_resolucion_${sufijo}`]:   null,
-      [`duracion_resolucion_${sufijo}`]: null,
-    };
-    await Program.findByIdAndUpdate(program._id, { $set: camposResolucion });
+    /* 8 — Limpiar resolución vigente en el programa (AV+RC oficio: ambas) */
+    if (esDualCierre) {
+      await Program.findByIdAndUpdate(program._id, { $set: {
+        fecha_resolucion_av:    null, codigo_resolucion_av:   null, duracion_resolucion_av: null,
+        fecha_resolucion_rc:    null, codigo_resolucion_rc:   null, duracion_resolucion_rc: null,
+      } });
+    } else {
+      const camposResolucion = {
+        [`fecha_resolucion_${sufijo}`]:    null,
+        [`codigo_resolucion_${sufijo}`]:   null,
+        [`duracion_resolucion_${sufijo}`]: null,
+      };
+      await Program.findByIdAndUpdate(program._id, { $set: camposResolucion });
+    }
 
     /* 9 — Caso de radicación ligado al proceso (evita huérfanos y errores de índice único al reabrir) */
     await Caso.deleteMany({ proceso_id: proc._id });

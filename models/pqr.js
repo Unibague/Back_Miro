@@ -10,6 +10,7 @@ const pqrSchema = new mongoose.Schema(
     medio_realizado:       { type: String, default: null },
     fecha_respuesta:       { type: String, default: null },
     observacion_respuesta: { type: String, default: null },
+    cedula_encargado:     { type: String, default: null },
     cerrado:               { type: Boolean, default: false },
   },
   { timestamps: true, versionKey: false }
