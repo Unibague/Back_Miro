@@ -161,6 +161,37 @@ const getRespuestaById = async (id) => {
     return hydrateWordDocuments(doc);
 };
 
+const normalizePeriodo = (value) => String(value ?? '').trim().toUpperCase();
+
+const syncPeriodoReporte = async ({
+    indicador_id,
+    corte,
+    estado_reporte,
+    reportado_por,
+    fecha_envio,
+}) => {
+    if (!indicador_id || !corte) return;
+
+    const indicador = await Indicador.findById(indicador_id);
+    if (!indicador) return;
+
+    let idx = (indicador.periodos ?? []).findIndex(
+        (p) => normalizePeriodo(p.periodo) === normalizePeriodo(corte)
+    );
+
+    if (idx < 0) {
+        indicador.periodos = indicador.periodos ?? [];
+        indicador.periodos.push({ periodo: normalizePeriodo(corte) });
+        idx = indicador.periodos.length - 1;
+    }
+
+    if (estado_reporte) indicador.periodos[idx].estado_reporte = estado_reporte;
+    if (reportado_por !== undefined) indicador.periodos[idx].reportado_por = reportado_por;
+    if (fecha_envio !== undefined) indicador.periodos[idx].fecha_envio = fecha_envio;
+
+    await indicador.save();
+};
+
 // Crea o actualiza la respuesta de un responsable para un formulario+corte
 const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, corte, respuestas, estado }) => {
     const existing = await Respuesta.findOne({ formulario_id, indicador_id: indicador_id || null, respondido_por, corte });
@@ -193,12 +224,14 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
                     aval_comentario: '',
                     aval_fecha: null,
                 };
-        } else if (wasRejected) {
+        } else {
+            // No hay líder configurado → aprobación automática
             avalData = {
-                estado_aval: 'Pendiente',
-                aval_por: '',
+                lider_email_aval: '',
+                estado_aval: 'Aprobado',
+                aval_por: respondido_por,
                 aval_comentario: '',
-                aval_fecha: null,
+                aval_fecha: new Date(),
             };
         }
     }
@@ -214,6 +247,15 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
         }
         Object.assign(existing, avalData);
         await existing.save();
+        if (estado === 'Enviado') {
+            await syncPeriodoReporte({
+                indicador_id,
+                corte,
+                estado_reporte: avalData.estado_aval === 'Aprobado' ? 'Aprobado' : 'Enviado',
+                reportado_por: respondido_por,
+                fecha_envio: existing.fecha_envio ?? new Date(),
+            });
+        }
         const hydrated = await ensureWordDocumentIfSent(existing);
         return { doc: hydrated, justSent: existing.estado === 'Enviado' && (!wasAlreadySent || wasRejected) };
     }
@@ -228,6 +270,15 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
         fecha_envio:   estado === 'Enviado' ? new Date() : null,
         ...avalData,
     });
+    if (estado === 'Enviado') {
+        await syncPeriodoReporte({
+            indicador_id,
+            corte,
+            estado_reporte: avalData.estado_aval === 'Aprobado' ? 'Aprobado' : 'Enviado',
+            reportado_por: respondido_por,
+            fecha_envio: created.fecha_envio ?? new Date(),
+        });
+    }
     const hydrated = await ensureWordDocumentIfSent(created);
     return { doc: hydrated, justSent: created.estado === 'Enviado' };
 };
@@ -252,6 +303,13 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     doc.aval_comentario = aval_comentario ?? '';
     doc.aval_fecha     = new Date();
     await doc.save();
+    await syncPeriodoReporte({
+        indicador_id: doc.indicador_id,
+        corte: doc.corte,
+        estado_reporte: estado_aval === 'Aprobado' ? 'Aprobado' : 'Rechazado',
+        reportado_por: doc.respondido_por,
+        fecha_envio: doc.fecha_envio ?? new Date(),
+    });
     return doc;
 };
 

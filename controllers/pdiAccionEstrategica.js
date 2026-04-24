@@ -3,17 +3,28 @@ const Proyecto          = require('../models/pdiProyecto');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularMacroproyecto } = require('./pdiProyecto');
 
-// Recalcula el avance del proyecto como promedio ponderado de sus acciones
+function normalizePeso(peso) {
+    const value = Number(peso) || 0;
+    return value <= 1 ? value * 100 : value;
+}
+
+// Recalcula el avance y los presupuestos del proyecto a partir de sus acciones
 async function recalcularProyecto(proyecto_id) {
     const acciones = await AccionEstrategica.find({ proyecto_id });
     if (!acciones.length) return;
 
-    const totalPeso = acciones.reduce((acc, a) => acc + a.peso, 0);
-    const avance = totalPeso > 0
-        ? Math.round(acciones.reduce((acc, a) => acc + (a.avance * a.peso), 0) / totalPeso)
-        : 0;
+    const avance = Math.round(
+        acciones.reduce((acc, a) => acc + ((Number(a.avance) || 0) * normalizePeso(a.peso)), 0) / 100
+    );
 
-    const proyecto = await Proyecto.findByIdAndUpdate(proyecto_id, { avance }, { new: true });
+    const presupuesto = acciones.reduce((acc, a) => acc + (a.presupuesto || 0), 0);
+    const presupuesto_ejecutado = acciones.reduce((acc, a) => acc + (a.presupuesto_ejecutado || 0), 0);
+
+    const proyecto = await Proyecto.findByIdAndUpdate(
+        proyecto_id,
+        { avance, presupuesto, presupuesto_ejecutado },
+        { new: true }
+    );
     if (proyecto) await recalcularMacroproyecto(proyecto.macroproyecto_id);
 }
 

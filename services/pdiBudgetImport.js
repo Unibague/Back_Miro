@@ -4,6 +4,7 @@ const DEFAULT_SHEET_NAME = '4. PRESUPUESTO';
 const ACTION_CODE_REGEX = /^M\d+-P\d+-AE\d+$/i;
 const PROJECT_CODE_REGEX = /^(M\d+-P\d+)/i;
 const EXECUTED_COLUMN_INDEXES = [5, 7, 9, 11, 13, 15, 17, 19];
+
 function toNumber(value) {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (value == null) return 0;
@@ -24,6 +25,83 @@ function normalizeCode(value) {
         .toUpperCase()
         .replace(/[^A-Z0-9-]/g, '')
         .trim();
+}
+
+function normalizeText(value) {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+}
+
+function extractProjectCodeFromLabel(value) {
+    const match = String(value || '').match(/(\d+)\.(\d+)/);
+    if (!match) return null;
+    return `M${Number(match[1])}-P${Number(match[2])}`;
+}
+
+function resolveWorksheet(workbook, options = {}) {
+    const requestedSheetName = String(options.sheetName || '').trim();
+    if (requestedSheetName && workbook.Sheets[requestedSheetName]) {
+        return { worksheet: workbook.Sheets[requestedSheetName], sheetName: requestedSheetName };
+    }
+
+    const candidateText = normalizeText(options.sheetMatchText);
+    if (candidateText) {
+        const candidateTokens = candidateText.split(' ').filter((token) => token.length > 2);
+        const rankedMatches = workbook.SheetNames
+            .map((name) => {
+                const normalizedName = normalizeText(name);
+                const matchedTokens = candidateTokens.filter((token) => normalizedName.includes(token));
+
+                if (normalizedName.includes(candidateText) || candidateText.includes(normalizedName)) {
+                    return { name, score: Number.MAX_SAFE_INTEGER };
+                }
+
+                return { name, score: matchedTokens.length };
+            })
+            .sort((a, b) => b.score - a.score);
+
+        const matchedSheetName = rankedMatches.find(({ score }) => {
+            if (score === Number.MAX_SAFE_INTEGER) return true;
+            const minimumScore = candidateTokens.length >= 3 ? 2 : 1;
+            return score >= minimumScore;
+        })?.name;
+
+        if (matchedSheetName) {
+            return { worksheet: workbook.Sheets[matchedSheetName], sheetName: matchedSheetName };
+        }
+    }
+
+    if (workbook.Sheets[DEFAULT_SHEET_NAME]) {
+        return { worksheet: workbook.Sheets[DEFAULT_SHEET_NAME], sheetName: DEFAULT_SHEET_NAME };
+    }
+
+    const detectedSheetName = workbook.SheetNames.find((name) => {
+        const worksheet = workbook.Sheets[name];
+        const rows = xlsx.utils.sheet_to_json(worksheet, {
+            header: 1,
+            defval: null,
+            raw: true,
+            blankrows: false,
+            range: 0,
+        });
+
+        return rows.some((row = []) => normalizeText(row[0]).includes('acciones estrategicas'))
+            && rows.some((row = []) => normalizeText(row[0]).startsWith('proyecto '));
+    });
+
+    if (detectedSheetName) {
+        return { worksheet: workbook.Sheets[detectedSheetName], sheetName: detectedSheetName };
+    }
+
+    const availableSheets = workbook.SheetNames.join(', ');
+    const suffix = requestedSheetName
+        ? `No se encontro la hoja "${requestedSheetName}" en el archivo Excel.`
+        : 'No se pudo identificar una hoja de presupuesto valida en el archivo Excel.';
+    throw new Error(`${suffix} Hojas disponibles: ${availableSheets}.`);
 }
 
 function buildProjectAggregate() {
@@ -120,13 +198,8 @@ function buildExecutedProjectAggregate() {
 }
 
 function parseExecutedWorkbook(filePath, options = {}) {
-    const sheetName = options.sheetName || DEFAULT_SHEET_NAME;
     const workbook = xlsx.readFile(filePath, { cellDates: false });
-    const worksheet = workbook.Sheets[sheetName];
-
-    if (!worksheet) {
-        throw new Error(`No se encontro la hoja "${sheetName}" en el archivo Excel.`);
-    }
+    const { worksheet, sheetName } = resolveWorksheet(workbook, options);
 
     const rows = xlsx.utils.sheet_to_json(worksheet, {
         header: 1,
@@ -134,6 +207,11 @@ function parseExecutedWorkbook(filePath, options = {}) {
         raw: true,
         blankrows: false,
     });
+
+    const usesSummaryFormat = rows.some((row = []) => /^Proyecto:/i.test(String(row[0] || '').trim()));
+    if (usesSummaryFormat) {
+        return parseExecutedSummaryRows(rows, sheetName, workbook);
+    }
 
     const aggregatedByProject = new Map();
     const actionsByCode = new Map();
@@ -202,5 +280,71 @@ function parseExecutedWorkbook(filePath, options = {}) {
             }))
             .sort((a, b) => a.codigo.localeCompare(b.codigo)),
         actions: Array.from(actionsByCode.values()),
+    };
+}
+
+function parseExecutedSummaryRows(rows, sheetName, workbook) {
+    const aggregatedByProject = new Map();
+    const actions = [];
+    let currentProjectCode = null;
+    let currentProjectName = '';
+
+    for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index] || [];
+        const firstCell = String(row[0] || '').trim();
+
+        if (!firstCell) continue;
+
+        if (/^Proyecto:/i.test(firstCell)) {
+            currentProjectName = firstCell.replace(/^Proyecto:\s*/i, '').trim();
+            currentProjectCode = extractProjectCodeFromLabel(currentProjectName);
+
+            if (!aggregatedByProject.has(currentProjectCode || currentProjectName)) {
+                aggregatedByProject.set(currentProjectCode || currentProjectName, {
+                    codigo: currentProjectCode,
+                    nombre_proyecto: currentProjectName,
+                    presupuesto_ejecutado: 0,
+                    acciones: 0,
+                });
+            }
+            continue;
+        }
+
+        if (/^Totales$/i.test(firstCell) || /^Actividad:/i.test(firstCell)) {
+            break;
+        }
+
+        if (!currentProjectName || /^Total Proyecto$/i.test(firstCell)) {
+            continue;
+        }
+
+        const presupuestoEjecutado = toNumber(row[6]);
+        const projectKey = currentProjectCode || currentProjectName;
+        const project = aggregatedByProject.get(projectKey);
+        if (!project) continue;
+
+        project.presupuesto_ejecutado += presupuestoEjecutado;
+        project.acciones += 1;
+
+        actions.push({
+            fila: index + 1,
+            codigo_accion: null,
+            codigo_proyecto: currentProjectCode,
+            nombre_proyecto: currentProjectName,
+            nombre_accion: firstCell,
+            presupuesto_ejecutado: presupuestoEjecutado,
+            observacion: row[5] || '',
+        });
+    }
+
+    return {
+        fileName: workbook?.Props?.Title || null,
+        sheetName,
+        projectTitle: rows[1]?.[0] || null,
+        rowsRead: rows.length,
+        actionsDetected: actions.length,
+        projects: Array.from(aggregatedByProject.values())
+            .sort((a, b) => String(a.codigo || a.nombre_proyecto).localeCompare(String(b.codigo || b.nombre_proyecto))),
+        actions,
     };
 }
