@@ -4,7 +4,6 @@ const ctrl    = require('../controllers/pdiProyecto');
 const upload  = require('../config/fileReceive');
 
 router.get('/',     ctrl.getAll);
-router.post('/importar-presupuesto', upload.single('file'), ctrl.importBudget);
 router.post('/importar-ejecutado', upload.single('file'), ctrl.importExecuted);
 router.get('/:id',  ctrl.getById);
 router.post('/',    ctrl.create);
