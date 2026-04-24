@@ -19,6 +19,17 @@ function contarSemaforos(docs) {
     }, { verde: 0, amarillo: 0, rojo: 0 });
 }
 
+function clampAvance(value) {
+    return Math.min(Math.max(Number(value) || 0, 0), 100);
+}
+
+function promedioAvance(docs) {
+    if (!docs.length) return 0;
+    return Math.round(
+        docs.reduce((acc, doc) => acc + clampAvance(doc.avance_total_real != null ? doc.avance_total_real : doc.avance), 0) / docs.length
+    );
+}
+
 const ctrl = {};
 
 /*
@@ -70,6 +81,12 @@ ctrl.resumen = async (req, res) => {
         res.json({
             avance_global: avanceGlobal,
             semaforo_global: getSemaforo(avanceGlobal),
+            avances_por_nivel: {
+                macroproyectos: promedioAvance(macros),
+                proyectos: promedioAvance(proyectos),
+                acciones: promedioAvance(acciones),
+                indicadores: promedioAvance(indicadores),
+            },
             estructura: {
                 macroproyectos: macros.length,
                 proyectos:      proyectos.length,
@@ -141,6 +158,12 @@ ctrl.macroproyecto = async (req, res) => {
 
         res.json({
             macroproyecto: { ...macro.toObject(), semaforo: semaforoDoc(macro) },
+            avances_por_nivel: {
+                macroproyecto: clampAvance(macro.avance),
+                proyectos: promedioAvance(proyectos),
+                acciones: promedioAvance(acciones),
+                indicadores: promedioAvance(indicadores),
+            },
             estructura: {
                 proyectos:   proyectos.length,
                 acciones:    acciones.length,
