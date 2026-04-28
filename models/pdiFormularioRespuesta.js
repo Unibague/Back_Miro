@@ -23,6 +23,11 @@ const pdiFormularioRespuestaSchema = new mongoose.Schema({
     fecha_envio:    { type: Date, default: null },
     word_filename:  { type: String, default: '' },
     word_url:       { type: String, default: '' },
+    word_nombre_original: { type: String, default: '' },
+    documento_nombre_original: { type: String, default: '' },
+    documento_filename:        { type: String, default: '' },
+    documento_url:             { type: String, default: '' },
+    documento_mimetype:        { type: String, default: '' },
     // Flujo de aval del lider de macroproyecto
     estado_aval:       { type: String, enum: ['Pendiente', 'Aprobado', 'Rechazado'], default: null },
     lider_email_aval:  { type: String, default: '' },

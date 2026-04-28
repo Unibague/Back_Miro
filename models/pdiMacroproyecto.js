@@ -7,6 +7,8 @@ const pdiMacroproyectoSchema = new mongoose.Schema({
     lider_email: { type: String, default: '' },
     peso:   { type: Number, required: true, min: 0, max: 100 },
     avance: { type: Number, default: 0, min: 0, max: 100 },
+    presupuesto:          { type: Number, default: 0 },
+    presupuesto_ejecutado: { type: Number, default: 0 },
 },
 {
     versionKey: false,

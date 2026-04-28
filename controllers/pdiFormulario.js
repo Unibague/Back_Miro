@@ -199,6 +199,55 @@ ctrl.uploadArchivo = async (req, res) => {
     }
 };
 
+// POST /pdi/formularios/:id/respuestas/:respuestaId/documento-final
+ctrl.uploadDocumentoFinal = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+        const doc = await svc.getRespuestaById(req.params.respuestaId);
+        if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
+
+        if (doc.estado_aval === 'Aprobado') {
+            if (req.file?.filename) deleteFile(req.file.filename);
+            return res.status(400).json({ error: 'No se puede reemplazar una evidencia aprobada' });
+        }
+
+        if (doc.documento_filename) deleteFile(doc.documento_filename);
+        doc.documento_filename        = req.file.filename;
+        doc.documento_url             = buildUrl(req.file.filename);
+        doc.documento_nombre_original = req.file.originalname;
+        doc.documento_mimetype        = req.file.mimetype;
+        await doc.save();
+        res.status(201).json({
+            documento_filename:        doc.documento_filename,
+            documento_url:             doc.documento_url,
+            documento_nombre_original: doc.documento_nombre_original,
+            documento_mimetype:        doc.documento_mimetype,
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// DELETE /pdi/formularios/:id/respuestas/:respuestaId/documento-final
+ctrl.deleteDocumentoFinal = async (req, res) => {
+    try {
+        const doc = await svc.getRespuestaById(req.params.respuestaId);
+        if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
+        if (doc.estado_aval === 'Aprobado') {
+            return res.status(400).json({ error: 'No se puede eliminar una evidencia aprobada' });
+        }
+        if (doc.documento_filename) deleteFile(doc.documento_filename);
+        doc.documento_filename        = '';
+        doc.documento_url             = '';
+        doc.documento_nombre_original = '';
+        doc.documento_mimetype        = '';
+        await doc.save();
+        res.json({ message: 'Documento eliminado' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
 // DELETE /pdi/formularios/:id/respuestas/:respuestaId/archivos/:campoId
 ctrl.deleteArchivo = async (req, res) => {
     try {
