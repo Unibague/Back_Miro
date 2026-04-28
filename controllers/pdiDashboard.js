@@ -37,7 +37,7 @@ const ctrl = {};
   Resumen institucional del PDI:
   - Avance ponderado global
   - Conteo y semáforo de cada nivel
-  - Presupuesto total asignado vs ejecutado (proyectos + acciones)
+  - Presupuesto total asignado vs ejecutado (proyectos)
   - Indicadores con alertas en el último periodo reportado
 */
 ctrl.resumen = async (req, res) => {
@@ -55,11 +55,9 @@ ctrl.resumen = async (req, res) => {
             ? Math.round(macros.reduce((a, m) => a + (m.avance * m.peso), 0) / totalPesoMacro)
             : 0;
 
-        // Presupuesto
-        const presupuestoTotal    = proyectos.reduce((a, p) => a + (p.presupuesto || 0), 0)
-                                  + acciones.reduce((a, p) => a + (p.presupuesto || 0), 0);
-        const presupuestoEjecutado = proyectos.reduce((a, p) => a + (p.presupuesto_ejecutado || 0), 0)
-                                   + acciones.reduce((a, p) => a + (p.presupuesto_ejecutado || 0), 0);
+        // Presupuesto — suma desde macroproyectos (cada uno agrega sus proyectos)
+        const presupuestoTotal = macros.reduce((a, m) => a + (m.presupuesto || 0), 0);
+        const presupuestoEjecutado = macros.reduce((a, m) => a + (m.presupuesto_ejecutado || 0), 0);
 
         // Indicadores con alertas activas en cualquier periodo
         const conAlertas = indicadores.filter(ind =>
