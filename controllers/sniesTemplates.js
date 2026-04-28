@@ -3014,6 +3014,14 @@ controller.updateTemplate = async (req, res) => {
     if (req.body.producers !== undefined) {
       template.producers = producers;
     }
+    if (req.body.field_equivalences !== undefined) {
+      try {
+        template.field_equivalences = typeof req.body.field_equivalences === 'string'
+          ? JSON.parse(req.body.field_equivalences)
+          : req.body.field_equivalences;
+        template.markModified('field_equivalences');
+      } catch (_) {}
+    }
     if (sourcePublishedTemplateIds.length > 0) {
       const sourceTemplates = await getPublishedTemplateSources(sourcePublishedTemplateIds);
       template.source_published_template_id = sourceTemplates[0]._id;
