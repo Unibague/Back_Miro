@@ -19,11 +19,17 @@ const storage = multer.diskStorage({
     },
 });
 
+const ALLOWED_MIMETYPES = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+]);
+
 const fileFilter = (_req, file, cb) => {
-    if (file.mimetype === 'application/pdf') {
+    if (ALLOWED_MIMETYPES.has(file.mimetype)) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten archivos PDF'), false);
+        cb(new Error('Solo se permiten archivos PDF o Word'), false);
     }
 };
 

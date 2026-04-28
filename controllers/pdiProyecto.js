@@ -18,8 +18,10 @@ async function recalcularMacroproyecto(macroproyecto_id) {
     const avance = Math.round(
         proyectos.reduce((acc, p) => acc + ((Number(p.avance) || 0) * normalizePeso(p.peso)), 0) / 100
     );
+    const presupuesto = proyectos.reduce((acc, p) => acc + (p.presupuesto || 0), 0);
+    const presupuesto_ejecutado = proyectos.reduce((acc, p) => acc + (p.presupuesto_ejecutado || 0), 0);
 
-    await Macroproyecto.findByIdAndUpdate(macroproyecto_id, { avance });
+    await Macroproyecto.findByIdAndUpdate(macroproyecto_id, { avance, presupuesto, presupuesto_ejecutado });
 }
 
 const ctrl = {};
@@ -40,7 +42,8 @@ async function recalcularPresupuestoEjecutadoProyecto(proyectoId) {
         0
     );
 
-    await Proyecto.findByIdAndUpdate(proyectoId, { presupuesto_ejecutado });
+    const proyecto = await Proyecto.findByIdAndUpdate(proyectoId, { presupuesto_ejecutado }, { new: true });
+    if (proyecto) await recalcularMacroproyecto(proyecto.macroproyecto_id);
     return presupuesto_ejecutado;
 }
 
@@ -77,7 +80,10 @@ ctrl.create = async (req, res) => {
 
 ctrl.update = async (req, res) => {
     try {
-        const doc = await Proyecto.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+        // presupuesto y presupuesto_ejecutado son campos calculados desde acciones;
+        // no se permiten sobrescribir directamente desde este endpoint
+        const { presupuesto, presupuesto_ejecutado, ...updateData } = req.body;
+        const doc = await Proyecto.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
         await recalcularMacroproyecto(doc.macroproyecto_id);
         res.json(withSemaforo(doc));

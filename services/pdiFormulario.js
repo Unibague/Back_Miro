@@ -69,6 +69,8 @@ const remove = async (id) => {
         for (const resp of r.respuestas) {
             if (resp.filename) deleteFile(resp.filename);
         }
+        if (r.word_filename) deleteFile(r.word_filename);
+        if (r.documento_filename) deleteFile(r.documento_filename);
     }
     await Respuesta.deleteMany({ formulario_id: id });
     return Formulario.findByIdAndDelete(id);
@@ -290,6 +292,7 @@ const deleteRespuesta = async (id) => {
         if (r.filename) deleteFile(r.filename);
     }
     if (doc.word_filename) deleteFile(doc.word_filename);
+    if (doc.documento_filename) deleteFile(doc.documento_filename);
     return Respuesta.findByIdAndDelete(id);
 };
 

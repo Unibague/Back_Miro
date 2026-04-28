@@ -96,6 +96,7 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
 
     respuesta.word_filename = generated.filename;
     respuesta.word_url = generated.url;
+    respuesta.word_nombre_original = generated.filename;
     await respuesta.save();
 
     return respuesta;

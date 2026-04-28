@@ -20,6 +20,17 @@ router.post('/:id/respuestas',                   ctrl.upsertRespuesta);
 router.put('/:id/respuestas/:respuestaId/aval',  ctrl.avalRespuesta);
 router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 
+// ── Documento de evidencia (PDF o Word) ligado a la respuesta ─────────────
+router.post(
+    '/:id/respuestas/:respuestaId/documento-final',
+    upload.single('archivo'),
+    ctrl.uploadDocumentoFinal
+);
+router.delete(
+    '/:id/respuestas/:respuestaId/documento-final',
+    ctrl.deleteDocumentoFinal
+);
+
 // ── Archivos PDF por campo ─────────────────────────────────────────────────
 router.post(
     '/:id/respuestas/:respuestaId/archivos/:campoId',

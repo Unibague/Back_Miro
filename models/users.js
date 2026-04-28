@@ -23,6 +23,10 @@
             type: String,   
             default: "Usuario",
         },
+        profiles: {
+            type: [String],
+            default: []
+        },
         email: {
             type: String,
             required: true,

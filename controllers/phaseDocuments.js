@@ -69,15 +69,24 @@ processDocumentsController.create = async (req, res) => {
       return res.status(400).json({ error: 'No se adjuntó ningún archivo' });
     }
 
-    const { actividad_id, subactividad_id } = req.body;
+    const { actividad_id, subactividad_id, caso_date_key, process_id: bodyProcessId } = req.body;
 
-    const destino = 'Fechas/Procesos/Fases';
+    const cdk =
+      caso_date_key && String(caso_date_key).trim() ? String(caso_date_key).trim() : null;
+    let processId = bodyProcessId && String(bodyProcessId).trim() ? String(bodyProcessId).trim() : null;
+    if (cdk && !processId) {
+      const ph = await Phase.findById(phaseId).select('proceso_id').lean();
+      if (ph && ph.proceso_id) processId = String(ph.proceso_id);
+    }
+    const destino = cdk ? 'Fechas/Procesos/InformacionCaso' : 'Fechas/Procesos/Fases';
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
 
     const doc = await ProcessDocument.create({
       phase_id: phaseId,
-      actividad_id:    actividad_id    || null,
+      process_id: cdk && processId ? processId : null,
+      actividad_id: actividad_id || null,
       subactividad_id: subactividad_id || null,
+      caso_date_key: cdk || null,
       name: fileData.name,
       drive_id: fileData.id,
       view_link: fileData.webViewLink,
@@ -105,8 +114,10 @@ processDocumentsController.createForProcess = async (req, res) => {
     }
 
     const { doc_type, caso_date_key } = req.body;
-    const isResolucion = doc_type === 'resolucion';
-    const cdk = !isResolucion && caso_date_key && String(caso_date_key).trim()
+    const ds = String(doc_type || '');
+    const dtRaw = ds === 'resolucion_rc_oficio' ? 'resolucion_rc_oficio' : ds === 'resolucion' ? 'resolucion' : 'proceso';
+    const esResOderivado = dtRaw === 'resolucion' || dtRaw === 'resolucion_rc_oficio';
+    const cdk = !esResOderivado && caso_date_key && String(caso_date_key).trim()
       ? String(caso_date_key).trim()
       : null;
     const destino = cdk ? 'Fechas/Procesos/InformacionCaso' : 'Fechas/Procesos/Resoluciones';
@@ -115,7 +126,7 @@ processDocumentsController.createForProcess = async (req, res) => {
     const doc = await ProcessDocument.create({
       phase_id: null,
       process_id: processId,
-      doc_type: isResolucion ? 'resolucion' : 'proceso',
+      doc_type: esResOderivado ? dtRaw : 'proceso',
       caso_date_key: cdk,
       name: fileData.name,
       drive_id: fileData.id,
