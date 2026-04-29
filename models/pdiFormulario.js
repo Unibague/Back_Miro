@@ -13,13 +13,18 @@ const pdiFormularioSchema = new mongoose.Schema({
     descripcion:  { type: String, default: '' },
     activo:       { type: Boolean, default: true },
     // Asociación: indicador o acción (solo uno de los dos)
+    alcance:      { type: String, enum: ['indicador', 'general'], default: 'indicador' },
     indicador_id: { type: mongoose.Schema.Types.ObjectId, ref: 'pdiIndicador', default: null },
-    accion_id:    { type: mongoose.Schema.Types.ObjectId, ref: 'pdiAccionEstrategica', default: null },
     campos:       { type: [campoPdiSchema], default: [] },
     creado_por:   { type: String, default: '' },
 }, {
     versionKey: false,
     timestamps: true,
 });
+
+pdiFormularioSchema.index(
+    { indicador_id: 1 },
+    { unique: true, partialFilterExpression: { indicador_id: { $exists: true, $ne: null } } }
+);
 
 module.exports = mongoose.model('pdiFormulario', pdiFormularioSchema);

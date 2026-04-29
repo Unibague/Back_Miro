@@ -17,7 +17,7 @@ const allowedOrigins = [
   'https://mirodev.unibague.edu.co',
 ];
 
-// Configurar Express para entender que está detrás de un proxy inverso
+// Configurar Express para entender que está detrás de  proxy
 app.set('trust proxy', true); 
 
 app.use(cors({

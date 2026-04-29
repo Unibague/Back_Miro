@@ -42,7 +42,7 @@ const uniqObjectIds = (...groups) => {
 
 ambitReportsController.generateAmbitReportWithAI = async (req, res) => {
   // Aumentar timeout para esta operación
-  req.setTimeout(240000); // 4 minutos
+  req.setTimeout(240000); // 4 
   res.setTimeout(240000);
   
   try {

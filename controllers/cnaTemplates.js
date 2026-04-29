@@ -98,6 +98,19 @@ const parseFieldsInput = (value) => {
     .filter((field) => field.name && field.datatype);
 };
 
+const parseFieldEquivalencesInput = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return {};
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      return {};
+    }
+  }
+  return value && typeof value === "object" ? value : {};
+};
+
 const getWorkbookSheetsFromTemplate = async (template) => {
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
   assertSupportedWorkbookBuffer(templateBuffer, "La plantilla CNA");
@@ -177,6 +190,66 @@ const normalizeFieldName = (fieldName = "") =>
     .replace(/[^A-Z0-9]/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "");
+
+const normalizeEquivalenceItems = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value.miro_fields)) return value.miro_fields;
+  if (Array.isArray(value.fields)) return value.fields;
+  return [];
+};
+
+const getEquivalenceItemFieldName = (item) => {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return "";
+  return item.field_name || item.fieldName || item.name || item.value || "";
+};
+
+const buildFieldEquivalenceLookup = (fieldEquivalences = {}) => {
+  const lookup = new Map();
+
+  Object.entries(fieldEquivalences || {}).forEach(([rawKey, rawValue]) => {
+    const equivalence = rawValue && typeof rawValue === "object" ? rawValue : {};
+    const worksheetName = equivalence.worksheet_name || equivalence.worksheetName || "";
+    const fieldName = equivalence.field_name || equivalence.fieldName || rawKey;
+    const normalizedFieldName = normalizeFieldName(fieldName);
+    const normalizedWorksheetName = normalizeFieldName(worksheetName);
+    const miroFieldNames = normalizeEquivalenceItems(rawValue)
+      .map(getEquivalenceItemFieldName)
+      .map(normalizeFieldName)
+      .filter(Boolean);
+
+    if (!normalizedFieldName || miroFieldNames.length === 0) {
+      return;
+    }
+
+    const keys = normalizedWorksheetName
+      ? [`${normalizedWorksheetName}::${normalizedFieldName}`]
+      : [normalizedFieldName];
+
+    keys.push(normalizedFieldName);
+
+    keys.forEach((key) => {
+      const current = lookup.get(key) || [];
+      lookup.set(key, [...current, ...miroFieldNames]);
+    });
+  });
+
+  return lookup;
+};
+
+const getEquivalentFieldNames = (lookup, worksheetName, fieldName) => {
+  const normalizedWorksheetName = normalizeFieldName(worksheetName);
+  const normalizedFieldName = normalizeFieldName(fieldName);
+  if (!normalizedFieldName) return [];
+
+  return [
+    ...(lookup.get(`${normalizedWorksheetName}::${normalizedFieldName}`) || []),
+    ...(lookup.get(normalizedFieldName) || []),
+  ];
+};
+
+const hasUsableValue = (value) => value !== undefined && value !== null && value !== "";
 
 const buildDownloadFileName = (template) => {
   const templateName = String(template?.name || "").trim();
@@ -548,12 +621,16 @@ const convertCellValue = (value) => {
   if (value === null || value === undefined) return "";
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(convertCellValue).join(", ");
-  if (value.hyperlink || value.text) return value.text || value.hyperlink || "";
-  if (value.result !== undefined) return value.result;
-  if (value.value !== undefined) return value.value;
+  if (Array.isArray(value.richText)) {
+    return value.richText.map((item) => convertCellValue(item?.text)).join("");
+  }
+  if (value.hyperlink || value.text) return convertCellValue(value.text || value.hyperlink || "");
+  if (value.result !== undefined) return convertCellValue(value.result);
+  if (value.value !== undefined) return convertCellValue(value.value);
   if (value.$numberInt !== undefined) return value.$numberInt;
   if (value.$numberDouble !== undefined) return value.$numberDouble;
-  return String(value);
+  if (value.error !== undefined) return "";
+  return "";
 };
 
 const sanitizeExcelValue = (value) => {
@@ -2371,6 +2448,7 @@ const buildSniesDataset = async (template) => {
 
   const useWorksheetMapping = worksheets.length > 1;
   const mergedRows = enrichedSourceDatasets.flatMap((sourceTemplate) => sourceTemplate.rows);
+  const equivalenceLookup = buildFieldEquivalenceLookup(template.field_equivalences);
 
   const sheetDatasets = worksheets.map((worksheet) => {
     const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
@@ -2416,11 +2494,16 @@ const buildSniesDataset = async (template) => {
       return headers.reduce((acc, header, index) => {
         const normalizedHeader = normalizedHeaders[index];
         const directValue = normalizedRow[normalizedHeader];
+        const equivalentValue = getEquivalentFieldNames(equivalenceLookup, worksheet.name, header)
+          .map((fieldName) => normalizedRow[fieldName])
+          .find(hasUsableValue);
         const periodFallback = periodYear
           ? getPeriodValueForHeader(normalizedHeader, periodValues)
           : undefined;
 
-        acc[header] = directValue ?? periodFallback ?? "";
+        acc[header] = hasUsableValue(directValue)
+          ? directValue
+          : equivalentValue ?? periodFallback ?? "";
         return acc;
       }, {});
     });
@@ -3024,6 +3107,10 @@ controller.getTemplateById = async (req, res) => {
       })),
       dimensions: (template.dimensions || []).map((item) => String(item)),
       producers: (template.producers || []).map((item) => String(item)),
+      source_published_template_id: template.source_published_template_id,
+      source_published_template_name: template.source_published_template_name,
+      source_published_templates: template.source_published_templates || [],
+      field_equivalences: template.field_equivalences || {},
       created_by: template.created_by,
       period: template.period,
       workbook_sheets: workbookSheets,
@@ -3047,6 +3134,7 @@ controller.createTemplate = async (req, res) => {
     const fields = parseFieldsInput(req.body.fields);
     const dimensions = parseIdArray(req.body.dimensions);
     const producers = parseIdArray(req.body.producers);
+    const fieldEquivalences = parseFieldEquivalencesInput(req.body.field_equivalences);
 
     if (!req.file) {
       return res.status(400).json({ error: "No file attached" });
@@ -3098,6 +3186,7 @@ controller.createTemplate = async (req, res) => {
       fields,
       dimensions,
       producers,
+      ...(fieldEquivalences !== undefined && { field_equivalences: fieldEquivalences }),
     });
 
     await template.save();
@@ -3136,6 +3225,7 @@ controller.updateTemplate = async (req, res) => {
     const fields = parseFieldsInput(req.body.fields);
     const dimensions = parseIdArray(req.body.dimensions);
     const producers = parseIdArray(req.body.producers);
+    const fieldEquivalences = parseFieldEquivalencesInput(req.body.field_equivalences);
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
@@ -3178,6 +3268,10 @@ controller.updateTemplate = async (req, res) => {
     }
     if (req.body.producers !== undefined) {
       template.producers = producers;
+    }
+    if (fieldEquivalences !== undefined) {
+      template.field_equivalences = fieldEquivalences;
+      template.markModified("field_equivalences");
     }
     if (sourcePublishedTemplateIds.length > 0) {
       const sourceTemplates = await getPublishedTemplateSources(sourcePublishedTemplateIds);

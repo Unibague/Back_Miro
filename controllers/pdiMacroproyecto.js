@@ -1,10 +1,14 @@
 const Macroproyecto = require('../models/pdiMacroproyecto');
 const { getSemaforo, withSemaforo } = require('../helpers/pdiSemaforo');
+const { recalcularMacroproyecto } = require('./pdiProyecto');
 
 const ctrl = {};
 
 ctrl.getAll = async (req, res) => {
     try {
+        const Proyecto = require('../models/pdiProyecto');
+        const macroIds = await Proyecto.distinct('macroproyecto_id');
+        await Promise.all(macroIds.map((id) => recalcularMacroproyecto(id)));
         const docs = await Macroproyecto.find().sort({ codigo: 1 });
         res.json(docs.map(withSemaforo));
     } catch (e) {
@@ -14,6 +18,7 @@ ctrl.getAll = async (req, res) => {
 
 ctrl.getById = async (req, res) => {
     try {
+        await recalcularMacroproyecto(req.params.id);
         const doc = await Macroproyecto.findById(req.params.id);
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
         res.json(withSemaforo(doc));

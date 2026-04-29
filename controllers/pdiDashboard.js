@@ -19,6 +19,17 @@ function contarSemaforos(docs) {
     }, { verde: 0, amarillo: 0, rojo: 0 });
 }
 
+function clampAvance(value) {
+    return Math.min(Math.max(Number(value) || 0, 0), 100);
+}
+
+function promedioAvance(docs) {
+    if (!docs.length) return 0;
+    return Math.round(
+        docs.reduce((acc, doc) => acc + clampAvance(doc.avance_total_real != null ? doc.avance_total_real : doc.avance), 0) / docs.length
+    );
+}
+
 const ctrl = {};
 
 /*
@@ -26,7 +37,7 @@ const ctrl = {};
   Resumen institucional del PDI:
   - Avance ponderado global
   - Conteo y semáforo de cada nivel
-  - Presupuesto total asignado vs ejecutado (proyectos + acciones)
+  - Presupuesto total asignado vs ejecutado (proyectos)
   - Indicadores con alertas en el último periodo reportado
 */
 ctrl.resumen = async (req, res) => {
@@ -44,11 +55,9 @@ ctrl.resumen = async (req, res) => {
             ? Math.round(macros.reduce((a, m) => a + (m.avance * m.peso), 0) / totalPesoMacro)
             : 0;
 
-        // Presupuesto
-        const presupuestoTotal    = proyectos.reduce((a, p) => a + (p.presupuesto || 0), 0)
-                                  + acciones.reduce((a, p) => a + (p.presupuesto || 0), 0);
-        const presupuestoEjecutado = proyectos.reduce((a, p) => a + (p.presupuesto_ejecutado || 0), 0)
-                                   + acciones.reduce((a, p) => a + (p.presupuesto_ejecutado || 0), 0);
+        // Presupuesto — suma desde macroproyectos (cada uno agrega sus proyectos)
+        const presupuestoTotal = macros.reduce((a, m) => a + (m.presupuesto || 0), 0);
+        const presupuestoEjecutado = macros.reduce((a, m) => a + (m.presupuesto_ejecutado || 0), 0);
 
         // Indicadores con alertas activas en cualquier periodo
         const conAlertas = indicadores.filter(ind =>
@@ -70,6 +79,12 @@ ctrl.resumen = async (req, res) => {
         res.json({
             avance_global: avanceGlobal,
             semaforo_global: getSemaforo(avanceGlobal),
+            avances_por_nivel: {
+                macroproyectos: promedioAvance(macros),
+                proyectos: promedioAvance(proyectos),
+                acciones: promedioAvance(acciones),
+                indicadores: promedioAvance(indicadores),
+            },
             estructura: {
                 macroproyectos: macros.length,
                 proyectos:      proyectos.length,
@@ -141,6 +156,12 @@ ctrl.macroproyecto = async (req, res) => {
 
         res.json({
             macroproyecto: { ...macro.toObject(), semaforo: semaforoDoc(macro) },
+            avances_por_nivel: {
+                macroproyecto: clampAvance(macro.avance),
+                proyectos: promedioAvance(proyectos),
+                acciones: promedioAvance(acciones),
+                indicadores: promedioAvance(indicadores),
+            },
             estructura: {
                 proyectos:   proyectos.length,
                 acciones:    acciones.length,

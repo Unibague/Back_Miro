@@ -8,10 +8,9 @@ const ctrl = {};
 
 ctrl.getAll = async (req, res) => {
     try {
-        const { indicador_id, accion_id, activo } = req.query;
+        const { indicador_id, activo } = req.query;
         const docs = await svc.getAll({
             indicador_id,
-            accion_id,
             activo: activo !== undefined ? activo === 'true' : undefined,
         });
         res.json(docs);
@@ -63,8 +62,8 @@ ctrl.remove = async (req, res) => {
 
 ctrl.getRespuestas = async (req, res) => {
     try {
-        const { formulario_id, respondido_por, corte } = req.query;
-        const docs = await svc.getRespuestas({ formulario_id, respondido_por, corte });
+        const { formulario_id, indicador_id, respondido_por, corte } = req.query;
+        const docs = await svc.getRespuestas({ formulario_id, indicador_id, respondido_por, corte });
         res.json(docs);
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
@@ -85,9 +84,10 @@ ctrl.getRespuestaById = async (req, res) => {
 // Crea o actualiza la respuesta (upsert por formulario+respondido_por+corte)
 ctrl.upsertRespuesta = async (req, res) => {
     try {
-        const { respondido_por, corte, respuestas, estado } = req.body;
-        const doc = await svc.upsertRespuesta({
+        const { respondido_por, corte, respuestas, estado, indicador_id } = req.body;
+        const { doc } = await svc.upsertRespuesta({
             formulario_id: req.params.id,
+            indicador_id,
             respondido_por,
             corte,
             respuestas,
@@ -96,6 +96,56 @@ ctrl.upsertRespuesta = async (req, res) => {
         res.status(200).json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
+    }
+};
+
+// PUT /pdi/formularios/:id/respuestas/:respuestaId/aval
+ctrl.avalRespuesta = async (req, res) => {
+    try {
+        const { estado_aval, aval_por, aval_comentario } = req.body;
+        if (!['Aprobado', 'Rechazado'].includes(estado_aval)) {
+            return res.status(400).json({ error: 'estado_aval debe ser Aprobado o Rechazado' });
+        }
+        const doc = await svc.avalRespuesta(req.params.respuestaId, { estado_aval, aval_por, aval_comentario });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+// GET /pdi/formularios/respuestas/lider-email-indicador?indicador_id=xxx
+ctrl.getLiderEmailIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json({ lider_email: '' });
+        const lider_email = await svc.getLiderEmailForIndicador(indicador_id);
+        res.json({ lider_email });
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// GET /pdi/formularios/respuestas/por-indicador?indicador_id=xxx
+ctrl.getRespuestasPorIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json([]);
+        const docs = await svc.getRespuestas({ indicador_id });
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+// GET /pdi/formularios/respuestas/pendientes-aval?lider_email=xxx
+ctrl.getRespuestasPendientesAval = async (req, res) => {
+    try {
+        const { lider_email } = req.query;
+        if (!lider_email) return res.json([]);
+        const docs = await svc.getRespuestasPendientesAval(lider_email);
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
     }
 };
 
@@ -144,6 +194,55 @@ ctrl.uploadArchivo = async (req, res) => {
         doc.markModified('respuestas');
         await doc.save();
         res.status(201).json(archivoData);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /pdi/formularios/:id/respuestas/:respuestaId/documento-final
+ctrl.uploadDocumentoFinal = async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+        const doc = await svc.getRespuestaById(req.params.respuestaId);
+        if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
+
+        if (doc.estado_aval === 'Aprobado') {
+            if (req.file?.filename) deleteFile(req.file.filename);
+            return res.status(400).json({ error: 'No se puede reemplazar una evidencia aprobada' });
+        }
+
+        if (doc.documento_filename) deleteFile(doc.documento_filename);
+        doc.documento_filename        = req.file.filename;
+        doc.documento_url             = buildUrl(req.file.filename);
+        doc.documento_nombre_original = req.file.originalname;
+        doc.documento_mimetype        = req.file.mimetype;
+        await doc.save();
+        res.status(201).json({
+            documento_filename:        doc.documento_filename,
+            documento_url:             doc.documento_url,
+            documento_nombre_original: doc.documento_nombre_original,
+            documento_mimetype:        doc.documento_mimetype,
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// DELETE /pdi/formularios/:id/respuestas/:respuestaId/documento-final
+ctrl.deleteDocumentoFinal = async (req, res) => {
+    try {
+        const doc = await svc.getRespuestaById(req.params.respuestaId);
+        if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
+        if (doc.estado_aval === 'Aprobado') {
+            return res.status(400).json({ error: 'No se puede eliminar una evidencia aprobada' });
+        }
+        if (doc.documento_filename) deleteFile(doc.documento_filename);
+        doc.documento_filename        = '';
+        doc.documento_url             = '';
+        doc.documento_nombre_original = '';
+        doc.documento_mimetype        = '';
+        await doc.save();
+        res.json({ message: 'Documento eliminado' });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

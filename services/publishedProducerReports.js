@@ -61,7 +61,7 @@ static async hydrateReportExample(pubReport) {
 
   if (!base) return;
 
-  // Mantener el snapshot de publicación sincronizado con el informe base actual
+  // Mantener el snapshot de publicación sincronizado con el inforactualme base 
   // para que nombres renombrados (ej. "Egresados") se reflejen en listados.
   pubReport.report.name = base.name ?? pubReport.report.name;
   pubReport.report.description = base.description ?? pubReport.report.description;

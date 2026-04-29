@@ -168,6 +168,11 @@ const sniesTemplateSchema = new Schema(
       default: [],
       required: false,
     },
+    field_equivalences: {
+      type: Schema.Types.Mixed,
+      default: {},
+      required: false,
+    },
   },
   {
     versionKey: false,

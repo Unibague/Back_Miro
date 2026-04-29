@@ -1,6 +1,8 @@
 //const { loadEnvFile } = require("process");
 const axios = require('axios');
 const User = require('../models/users');
+const PositionViewPermission = require('../models/positionViewPermissions');
+const AccessProfile = require('../models/accessProfiles');
 const Dependency = require('../models/dependencies');
 const dependencyController = require('./dependencies.js');
 const { default: mongoose } = require('mongoose');
@@ -13,6 +15,42 @@ const userController = {}
 USERS_ENDPOINT = process.env.USERS_ENDPOINT;
 
 const roles = ["Administrador", "Responsable", "Productor","Usuario"];
+const profiles = ["Ver", "Administrar", "Gestionar"];
+const viewPermissionOptions = [
+    { key: "dashboard", label: "Inicio", path: "/dashboard", group: "General" },
+    { key: "adminTemplates", label: "Configurar plantillas", path: "/admin/templates", group: "Plantillas" },
+    { key: "publishedTemplates", label: "Plantillas publicadas", path: "/templates/published", group: "Plantillas" },
+    { key: "producerTemplates", label: "Plantillas pendientes", path: "/producer/templates", group: "Plantillas" },
+    { key: "templatesWithFilters", label: "Plantillas con filtros", path: "/templates-with-filters", group: "Plantillas" },
+    { key: "adminReports", label: "Configurar reportes", path: "/admin/reports", group: "Reportes" },
+    { key: "publishedReports", label: "Reportes publicados", path: "/admin/reports/uploaded", group: "Reportes" },
+    { key: "producerReportsConfig", label: "Configurar informes productores", path: "/admin/reports/producers", group: "Reportes" },
+    { key: "producerReportsManagement", label: "Gestionar informes productores", path: "/reportproducers", group: "Reportes" },
+    { key: "producerReports", label: "Reportes de productor", path: "/producer/reports", group: "Reportes" },
+    { key: "responsibleReports", label: "Reportes de responsable", path: "/responsible/reports", group: "Reportes" },
+    { key: "periods", label: "Periodos", path: "/admin/periods", group: "Administracion" },
+    { key: "dimensions", label: "Ambitos", path: "/admin/dimensions", group: "Administracion" },
+    { key: "dependencies", label: "Dependencias", path: "/admin/dependencies", group: "Administracion" },
+    { key: "validations", label: "Validaciones", path: "/admin/validations", group: "Administracion" },
+    { key: "users", label: "Usuarios", path: "/admin/users", group: "Administracion" },
+    { key: "configuration", label: "Configuracion", path: "/configuracion", group: "Administracion" },
+    { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", group: "Administracion" },
+    { key: "snies", label: "SNIES", path: "/snies/templates", group: "Modulos" },
+    { key: "cna", label: "CNA", path: "/cna/templates", group: "Modulos" },
+    { key: "dateReview", label: "Gestion de procesos", path: "/date-review", group: "Gestion de procesos" },
+    { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/date-review", group: "Gestion de procesos" },
+    { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/date-review?section=alertas", group: "Gestion de procesos" },
+    { key: "dateReviewHistory", label: "Historial de procesos", path: "/date-review?section=historial", group: "Gestion de procesos" },
+    { key: "dateReviewProgram", label: "Ficha de programa", path: "/date-review/program/:programId", group: "Gestion de procesos" },
+    { key: "dateReviewProgramProcess", label: "Gestionar proceso por programa", path: "/date-review?programId=:programId&gestionar=1", group: "Gestion de procesos" },
+    { key: "dateReviewRc", label: "Procesos Registro calificado", path: "/date-review?tipo=registro-calificado", group: "Gestion de procesos" },
+    { key: "dateReviewAv", label: "Procesos Acreditacion voluntaria", path: "/date-review?tipo=acreditacion-voluntaria", group: "Gestion de procesos" },
+    { key: "pdi", label: "PDI", path: "/pdi", group: "PDI" },
+    { key: "pdiMine", label: "Mis indicadores PDI", path: "/pdi/mis-indicadores", group: "PDI" },
+    { key: "pdiDashboard", label: "Tablero PDI", path: "/pdi/dashboard", group: "PDI" },
+    { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", group: "PDI" },
+    { key: "pdiCharts", label: "Graficas PDI", path: "/pdi/graficas", group: "PDI" }
+];
 
 userController.addExternalUser = async (req, res) => {
     const dep_code = req.body.dep_code;
@@ -236,7 +274,8 @@ userController.getUsersPagination = async (req, res) => {
                     { full_name: { $regex: search, $options: 'i' } },
                     { position: { $regex: search, $options: 'i' } },
                     { email: { $regex: search, $options: 'i' } },
-                    { roles: { $regex: search, $options: 'i' } }
+                    { roles: { $regex: search, $options: 'i' } },
+                    { profiles: { $regex: search, $options: 'i' } }
                 ].filter(condition => condition !== undefined)
             }
             : {};
@@ -304,7 +343,14 @@ userController.getUserRoles = async (req, res) => {
     try {
         const user = await User.findOne({ email, isActive: true });
         if (user) {
-            res.status(200).json({ roles: user.roles, activeRole: user.activeRole });
+            const positionPermissions = await PositionViewPermission.findOne({ position: normalizePosition(user.position) });
+            res.status(200).json({
+                roles: user.roles,
+                activeRole: user.activeRole,
+                profiles: user.profiles || [],
+                position: user.position,
+                viewPermissions: normalizeViewPermissions(positionPermissions?.permissions || {})
+            });
         } else {
             res.status(404).json({ error: "User not found" });
         }
@@ -331,7 +377,7 @@ userController.getProducers = async (req, res) => {
     }
   };
 
-  userController.updateUserRoles = async (req, res) => {
+userController.updateUserRoles = async (req, res) => {
     const email = req.body.email;
     const roles = Array.from(req.body.roles);
     const adminEmail = req.body.adminEmail;
@@ -367,6 +413,45 @@ userController.getProducers = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
     
+}
+
+userController.updateUserProfiles = async (req, res) => {
+    const { email, profiles: userProfiles = [], adminEmail } = req.body;
+
+    try {
+        const normalizedProfiles = Array.isArray(userProfiles)
+            ? userProfiles
+            : [userProfiles].filter(Boolean);
+
+        if (!validateProfiles(normalizedProfiles)) {
+            return res.status(400).json({ error: "Invalid profiles" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const user = await User.findOneAndUpdate(
+            { email },
+            { profiles: normalizedProfiles },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            userId: user._id,
+            userEmail: email,
+            newProfiles: normalizedProfiles
+        });
+
+        res.status(200).json({ user });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 }
 
 userController.updateUsersToProducer = async (req, res) => {
@@ -513,8 +598,626 @@ userController.getAvailableRoles = async (req, res) => {
     }
 };
 
+userController.getAvailableProfiles = async (req, res) => {
+    try {
+        res.status(200).json({ profiles });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.getAccessProfiles = async (req, res) => {
+    try {
+        const accessProfiles = await AccessProfile.find().sort({ name: 1 }).lean();
+        res.status(200).json({ profiles: accessProfiles });
+    } catch (error) {
+        console.error('Error fetching access profiles:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.createAccessProfile = async (req, res) => {
+    const { name, positions = [], adminEmail } = req.body;
+
+    try {
+        const normalizedName = normalizeProfileName(name);
+        const normalizedPositions = normalizePositions(positions);
+
+        if (!normalizedName) {
+            return res.status(400).json({ error: "Profile name is required" });
+        }
+
+        if (normalizedPositions.length === 0) {
+            return res.status(400).json({ error: "At least one position is required" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail, isActive: true });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const existingProfile = await AccessProfile.findOne({
+            name: { $regex: `^${escapeRegex(normalizedName)}$`, $options: 'i' }
+        });
+
+        if (existingProfile) {
+            return res.status(409).json({ error: "A profile with that name already exists" });
+        }
+
+        const accessProfile = await AccessProfile.create({
+            name: normalizedName,
+            positions: normalizedPositions,
+            createdBy: adminEmail,
+            updatedBy: adminEmail
+        });
+
+        await auditLogger.logCreate(req, adminUser, 'user', {
+            sectionTitle: `Perfil ${normalizedName}`,
+            positions: normalizedPositions
+        });
+
+        res.status(201).json({ profile: accessProfile });
+    } catch (error) {
+        console.error('Error creating access profile:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.updateAccessProfile = async (req, res) => {
+    const { id } = req.params;
+    const { name, positions = [], adminEmail } = req.body;
+
+    try {
+        const normalizedName = normalizeProfileName(name);
+        const normalizedPositions = normalizePositions(positions);
+
+        if (!normalizedName) {
+            return res.status(400).json({ error: "Profile name is required" });
+        }
+
+        if (normalizedPositions.length === 0) {
+            return res.status(400).json({ error: "At least one position is required" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail, isActive: true });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const existingProfile = await AccessProfile.findOne({
+            _id: { $ne: id },
+            name: { $regex: `^${escapeRegex(normalizedName)}$`, $options: 'i' }
+        });
+
+        if (existingProfile) {
+            return res.status(409).json({ error: "A profile with that name already exists" });
+        }
+
+        const accessProfile = await AccessProfile.findByIdAndUpdate(
+            id,
+            {
+                name: normalizedName,
+                positions: normalizedPositions,
+                updatedBy: adminEmail
+            },
+            { new: true }
+        );
+
+        if (!accessProfile) {
+            return res.status(404).json({ error: "Profile not found" });
+        }
+
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            sectionTitle: `Perfil ${normalizedName}`,
+            positions: normalizedPositions
+        });
+
+        res.status(200).json({ profile: accessProfile });
+    } catch (error) {
+        console.error('Error updating access profile:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.deleteAccessProfile = async (req, res) => {
+    const { id } = req.params;
+    const { adminEmail } = req.body;
+
+    try {
+        const adminUser = await User.findOne({ email: adminEmail, isActive: true });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const accessProfile = await AccessProfile.findByIdAndDelete(id);
+
+        if (!accessProfile) {
+            return res.status(404).json({ error: "Profile not found" });
+        }
+
+        await auditLogger.logDelete(req, adminUser, 'user', {
+            sectionTitle: `Perfil ${accessProfile.name}`,
+            positions: accessProfile.positions || []
+        });
+
+        res.status(200).json({ deleted: true });
+    } catch (error) {
+        console.error('Error deleting access profile:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.getPositionViewPermissions = async (req, res) => {
+    try {
+        const requestedProfileId = req.query.profileId ? String(req.query.profileId).trim() : null;
+        let requestedProfile = null;
+        let requestedPositions = [];
+
+        if (requestedProfileId) {
+            if (!mongoose.Types.ObjectId.isValid(requestedProfileId)) {
+                return res.status(400).json({ error: "Invalid profile id" });
+            }
+
+            requestedProfile = await AccessProfile.findById(requestedProfileId).lean();
+            if (!requestedProfile) {
+                return res.status(404).json({ error: "Profile not found" });
+            }
+
+            requestedPositions = normalizePositions(requestedProfile.positions || []);
+        } else if (req.query.position) {
+            requestedPositions = [normalizePosition(req.query.position)];
+        }
+
+        const users = await User.find(
+            { isActive: true },
+            { identification: 1, full_name: 1, email: 1, position: 1, dep_code: 1, isActive: 1 }
+        )
+            .sort({ position: 1, full_name: 1 })
+            .lean();
+        const depCodes = Array.from(new Set(users.map((user) => user.dep_code).filter(Boolean)));
+        const dependencies = await Dependency.find(
+            { dep_code: { $in: depCodes } },
+            { dep_code: 1, name: 1 }
+        ).lean();
+        const dependencyByCode = new Map(
+            dependencies.map((dependency) => [dependency.dep_code, dependency.name])
+        );
+
+        const positionsByName = users.reduce((groupedPositions, user) => {
+            const positionName = normalizePosition(user.position);
+
+            if (!groupedPositions.has(positionName)) {
+                groupedPositions.set(positionName, {
+                    position: positionName,
+                    usersCount: 0,
+                    users: []
+                });
+            }
+
+            const position = groupedPositions.get(positionName);
+            position.usersCount += 1;
+            position.users.push({
+                _id: user._id,
+                identification: user.identification,
+                full_name: user.full_name,
+                email: user.email,
+                dep_code: user.dep_code,
+                dependencyName: dependencyByCode.get(user.dep_code) || user.dep_code || "Sin dependencia",
+                isActive: user.isActive
+            });
+
+            return groupedPositions;
+        }, new Map());
+
+        const positions = Array.from(positionsByName.values())
+            .sort((firstPosition, secondPosition) => firstPosition.position.localeCompare(secondPosition.position));
+        requestedPositions.forEach((requestedPosition) => {
+            if (!positions.some((position) => normalizePosition(position.position) === requestedPosition)) {
+                positions.push({
+                    position: requestedPosition,
+                    usersCount: 0,
+                    users: []
+                });
+            }
+        });
+
+        const requestedPositionsSet = new Set(requestedPositions);
+        const filteredPositions = requestedPositions.length > 0
+            ? positions
+                .filter((position) => requestedPositionsSet.has(normalizePosition(position.position)))
+                .sort(
+                    (firstPosition, secondPosition) =>
+                        requestedPositions.indexOf(normalizePosition(firstPosition.position)) -
+                        requestedPositions.indexOf(normalizePosition(secondPosition.position))
+                )
+            : positions;
+        const positionNames = filteredPositions.map((position) => position.position);
+        const savedPermissions = await PositionViewPermission.find({
+            position: { $in: positionNames }
+        });
+        const permissionsByPosition = new Map(
+            savedPermissions.map((permission) => [permission.position, permission])
+        );
+
+        res.status(200).json({
+            levels: profiles,
+            views: viewPermissionOptions,
+            profile: requestedProfile
+                ? {
+                    _id: requestedProfile._id,
+                    name: requestedProfile.name,
+                    positions: requestedPositions,
+                    createdBy: requestedProfile.createdBy || null,
+                    updatedBy: requestedProfile.updatedBy || null,
+                    createdAt: requestedProfile.createdAt || null,
+                    updatedAt: requestedProfile.updatedAt || null
+                }
+                : null,
+            positions: filteredPositions.map((position) => {
+                const positionName = normalizePosition(position.position);
+                const saved = permissionsByPosition.get(positionName);
+
+                return {
+                    position: positionName,
+                    usersCount: position.usersCount,
+                    users: position.users,
+                    permissions: normalizeViewPermissions(saved?.permissions || {}),
+                    updatedBy: saved?.updatedBy || null,
+                    updatedAt: saved?.updatedAt || null
+                };
+            })
+        });
+    } catch (error) {
+        console.error('Error fetching position view permissions:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.addUserToPosition = async (req, res) => {
+    const { position, profileId, identification, adminEmail } = req.body;
+
+    try {
+        const normalizedIdentification = normalizeIdentification(identification);
+
+        if (!normalizedIdentification) {
+            return res.status(400).json({ error: "Identification is required" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail, isActive: true });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const user = await User.findOne({ identification: normalizedIdentification, isActive: true });
+        if (!user) {
+            return res.status(404).json({ error: "No active user was found with that identification" });
+        }
+
+        if (profileId) {
+            const normalizedProfileId = String(profileId).trim();
+            if (!mongoose.Types.ObjectId.isValid(normalizedProfileId)) {
+                return res.status(400).json({ error: "Invalid profile id" });
+            }
+
+            const accessProfile = await AccessProfile.findById(normalizedProfileId);
+            if (!accessProfile) {
+                return res.status(404).json({ error: "Profile not found" });
+            }
+
+            const currentPosition = normalizePosition(user.position);
+            const currentPositions = normalizePositions(accessProfile.positions || []);
+            const wasAlreadyLinked = currentPositions.includes(currentPosition);
+
+            if (!wasAlreadyLinked) {
+                accessProfile.positions = [...currentPositions, currentPosition];
+                accessProfile.updatedBy = adminEmail;
+                await accessProfile.save();
+            }
+
+            await auditLogger.logUpdate(req, adminUser, 'user', {
+                sectionTitle: `Usuario agregado al perfil ${accessProfile.name}`,
+                userId: user._id,
+                userEmail: user.email,
+                identification: user.identification,
+                profileId: accessProfile._id,
+                profileName: accessProfile.name,
+                position: currentPosition,
+                wasAlreadyLinked
+            });
+
+            return res.status(200).json({
+                user: formatPositionUser(user),
+                profile: {
+                    _id: accessProfile._id,
+                    name: accessProfile.name,
+                    positions: accessProfile.positions || []
+                },
+                position: currentPosition,
+                wasAlreadyLinked
+            });
+        }
+
+        const normalizedPosition = normalizePosition(position);
+        if (!position) {
+            return res.status(400).json({ error: "Position is required" });
+        }
+
+        const previousPosition = user.position;
+        user.position = normalizedPosition;
+        await user.save();
+
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            sectionTitle: `Usuario agregado al cargo ${normalizedPosition}`,
+            userId: user._id,
+            userEmail: user.email,
+            identification: user.identification,
+            previousPosition,
+            position: normalizedPosition
+        });
+
+        res.status(200).json({
+            user: formatPositionUser(user),
+            previousPosition,
+            position: normalizedPosition
+        });
+    } catch (error) {
+        console.error('Error adding user to position:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.removeUserFromPosition = async (req, res) => {
+    const { position, profileId, identification, adminEmail } = req.body;
+
+    try {
+        const normalizedIdentification = normalizeIdentification(identification);
+
+        if (!normalizedIdentification) {
+            return res.status(400).json({ error: "Identification is required" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail, isActive: true });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const user = await User.findOne({ identification: normalizedIdentification, isActive: true });
+        if (!user) {
+            return res.status(404).json({ error: "No active user was found with that identification" });
+        }
+
+        if (profileId) {
+            const normalizedProfileId = String(profileId).trim();
+            if (!mongoose.Types.ObjectId.isValid(normalizedProfileId)) {
+                return res.status(400).json({ error: "Invalid profile id" });
+            }
+
+            const accessProfile = await AccessProfile.findById(normalizedProfileId);
+            if (!accessProfile) {
+                return res.status(404).json({ error: "Profile not found" });
+            }
+
+            const currentPosition = normalizePosition(user.position);
+            const currentPositions = normalizePositions(accessProfile.positions || []);
+            accessProfile.positions = currentPositions.filter((profilePosition) => profilePosition !== currentPosition);
+            accessProfile.updatedBy = adminEmail;
+            await accessProfile.save();
+
+            await auditLogger.logUpdate(req, adminUser, 'user', {
+                sectionTitle: `Cargo removido del perfil ${accessProfile.name}`,
+                userId: user._id,
+                userEmail: user.email,
+                identification: user.identification,
+                profileId: accessProfile._id,
+                profileName: accessProfile.name,
+                position: currentPosition
+            });
+
+            return res.status(200).json({
+                user: formatPositionUser(user),
+                profile: {
+                    _id: accessProfile._id,
+                    name: accessProfile.name,
+                    positions: accessProfile.positions || []
+                },
+                position: currentPosition
+            });
+        }
+
+        const normalizedPosition = normalizePosition(position);
+        if (!position) {
+            return res.status(400).json({ error: "Position is required" });
+        }
+
+        if (normalizePosition(user.position) !== normalizedPosition) {
+            return res.status(400).json({ error: "The user does not belong to this position" });
+        }
+
+        const previousPosition = user.position;
+        user.position = "N/A";
+        await user.save();
+
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            sectionTitle: `Usuario removido del cargo ${normalizedPosition}`,
+            userId: user._id,
+            userEmail: user.email,
+            identification: user.identification,
+            previousPosition,
+            position: user.position
+        });
+
+        res.status(200).json({
+            user: formatPositionUser(user),
+            previousPosition,
+            position: normalizedPosition
+        });
+    } catch (error) {
+        console.error('Error removing user from position:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+userController.updatePositionViewPermissions = async (req, res) => {
+    const { position, positions = [], profileId, permissions = {}, adminEmail } = req.body;
+
+    try {
+        let accessProfile = null;
+        let normalizedPositions = [];
+
+        if (profileId) {
+            const normalizedProfileId = String(profileId).trim();
+            if (!mongoose.Types.ObjectId.isValid(normalizedProfileId)) {
+                return res.status(400).json({ error: "Invalid profile id" });
+            }
+
+            accessProfile = await AccessProfile.findById(normalizedProfileId).lean();
+            if (!accessProfile) {
+                return res.status(404).json({ error: "Profile not found" });
+            }
+
+            normalizedPositions = normalizePositions(accessProfile.positions || []);
+        } else {
+            normalizedPositions = normalizePositions(
+                Array.isArray(positions) && positions.length > 0 ? positions : position ? [position] : []
+            );
+        }
+
+        if (normalizedPositions.length === 0) {
+            return res.status(400).json({ error: "At least one position is required" });
+        }
+
+        const adminUser = await User.findOne({ email: adminEmail });
+        if (!adminUser) {
+            return res.status(404).json({ error: "Admin user not found" });
+        }
+
+        const normalizedPermissions = normalizeViewPermissions(permissions);
+
+        const permissionConfigs = await Promise.all(
+            normalizedPositions.map((normalizedPosition) =>
+                PositionViewPermission.findOneAndUpdate(
+                    { position: normalizedPosition },
+                    {
+                        position: normalizedPosition,
+                        permissions: normalizedPermissions,
+                        updatedBy: adminEmail
+                    },
+                    { new: true, upsert: true, setDefaultsOnInsert: true }
+                )
+            )
+        );
+
+        await auditLogger.logUpdate(req, adminUser, 'user', {
+            sectionTitle: accessProfile
+                ? `Permisos perfil ${accessProfile.name}`
+                : normalizedPositions.length === 1
+                    ? `Permisos cargo ${normalizedPositions[0]}`
+                    : `Permisos cargos ${normalizedPositions.length}`,
+            userEmail: adminEmail,
+            profile: accessProfile
+                ? {
+                    id: accessProfile._id,
+                    name: accessProfile.name
+                }
+                : null,
+            positions: normalizedPositions,
+            viewPermissions: normalizedPermissions
+        });
+
+        const formattedPositions = permissionConfigs.map((permissionConfig) => ({
+            position: permissionConfig.position,
+            permissions: normalizeViewPermissions(permissionConfig.permissions || {}),
+            updatedBy: permissionConfig.updatedBy,
+            updatedAt: permissionConfig.updatedAt
+        }));
+        const primaryPermissionConfig = formattedPositions[0];
+
+        res.status(200).json({
+            profile: accessProfile
+                ? {
+                    _id: accessProfile._id,
+                    name: accessProfile.name,
+                    positions: normalizedPositions
+                }
+                : null,
+            positions: formattedPositions,
+            position: primaryPermissionConfig?.position,
+            permissions: primaryPermissionConfig?.permissions || normalizedPermissions,
+            updatedBy: primaryPermissionConfig?.updatedBy || adminEmail,
+            updatedAt: primaryPermissionConfig?.updatedAt || null
+        });
+    } catch (error) {
+        console.error('Error updating position view permissions:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 const validateRoles = (userRoles) => {
     return userRoles.every(role => roles.includes(role));
+}
+
+const validateProfiles = (userProfiles) => {
+    return userProfiles.every(profile => profiles.includes(profile));
+}
+
+const normalizePosition = (position) => {
+    return typeof position === "string" && position.trim()
+        ? position.trim()
+        : "Sin cargo";
+}
+
+const normalizeIdentification = (identification) => {
+    if (identification === undefined || identification === null) return null;
+
+    const normalized = Number(String(identification).trim());
+    return Number.isFinite(normalized) ? normalized : null;
+}
+
+const normalizeProfileName = (name) => {
+    return typeof name === "string" ? name.trim() : "";
+}
+
+const normalizePositions = (positions) => {
+    const source = Array.isArray(positions) ? positions : [positions].filter(Boolean);
+    return Array.from(new Set(source.map(normalizePosition).filter(Boolean)));
+}
+
+const escapeRegex = (value) => {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const formatPositionUser = (user) => ({
+    _id: user._id,
+    identification: user.identification,
+    full_name: user.full_name,
+    email: user.email,
+    dep_code: user.dep_code,
+    position: user.position,
+    isActive: user.isActive
+});
+
+const normalizeViewPermissions = (rawPermissions) => {
+    const validViews = new Set(viewPermissionOptions.map((view) => view.key));
+    const validProfiles = new Set(profiles);
+    const source = rawPermissions && typeof rawPermissions.toObject === "function"
+        ? rawPermissions.toObject()
+        : rawPermissions || {};
+
+    return Object.entries(source).reduce((normalized, [viewKey, values]) => {
+        if (!validViews.has(viewKey)) {
+            return normalized;
+        }
+
+        const permissionValues = Array.isArray(values) ? values : [];
+        const cleanValues = Array.from(new Set(permissionValues))
+            .filter((profile) => validProfiles.has(profile));
+
+        if (cleanValues.length > 0) {
+            normalized[viewKey] = cleanValues;
+        }
+
+        return normalized;
+    }, {});
 }
 
 module.exports = userController
