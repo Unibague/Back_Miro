@@ -203,7 +203,8 @@ ctrl.uploadArchivo = async (req, res) => {
 ctrl.uploadDocumentoFinal = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo' });
-        const doc = await svc.getRespuestaById(req.params.respuestaId);
+
+        const doc = await Respuesta.findById(req.params.respuestaId);
         if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
 
         if (doc.estado_aval === 'Aprobado') {
@@ -212,16 +213,23 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
         }
 
         if (doc.documento_filename) deleteFile(doc.documento_filename);
-        doc.documento_filename        = req.file.filename;
-        doc.documento_url             = buildUrl(req.file.filename);
-        doc.documento_nombre_original = req.file.originalname;
-        doc.documento_mimetype        = req.file.mimetype;
-        await doc.save();
+
+        const updated = await Respuesta.findByIdAndUpdate(
+            req.params.respuestaId,
+            {
+                documento_filename:        req.file.filename,
+                documento_url:             buildUrl(req.file.filename),
+                documento_nombre_original: req.file.originalname,
+                documento_mimetype:        req.file.mimetype,
+            },
+            { new: true }
+        );
+
         res.status(201).json({
-            documento_filename:        doc.documento_filename,
-            documento_url:             doc.documento_url,
-            documento_nombre_original: doc.documento_nombre_original,
-            documento_mimetype:        doc.documento_mimetype,
+            documento_filename:        updated.documento_filename,
+            documento_url:             updated.documento_url,
+            documento_nombre_original: updated.documento_nombre_original,
+            documento_mimetype:        updated.documento_mimetype,
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -231,17 +239,18 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
 // DELETE /pdi/formularios/:id/respuestas/:respuestaId/documento-final
 ctrl.deleteDocumentoFinal = async (req, res) => {
     try {
-        const doc = await svc.getRespuestaById(req.params.respuestaId);
+        const doc = await Respuesta.findById(req.params.respuestaId);
         if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
         if (doc.estado_aval === 'Aprobado') {
             return res.status(400).json({ error: 'No se puede eliminar una evidencia aprobada' });
         }
         if (doc.documento_filename) deleteFile(doc.documento_filename);
-        doc.documento_filename        = '';
-        doc.documento_url             = '';
-        doc.documento_nombre_original = '';
-        doc.documento_mimetype        = '';
-        await doc.save();
+        await Respuesta.findByIdAndUpdate(req.params.respuestaId, {
+            documento_filename:        '',
+            documento_url:             '',
+            documento_nombre_original: '',
+            documento_mimetype:        '',
+        });
         res.json({ message: 'Documento eliminado' });
     } catch (e) {
         res.status(500).json({ error: e.message });
