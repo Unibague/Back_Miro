@@ -118,22 +118,25 @@ const getWorkbookSheetsFromTemplate = async (template) => {
   await workbook.xlsx.load(templateBuffer);
 
   return workbook.worksheets.map((worksheet) => {
-    const { headers } = extractDetailedWorksheetHeaders(worksheet);
+    const detailedHeaders = extractDetailedWorksheetHeaders(worksheet);
+    const { headers } = detailedHeaders;
+    const dropdownOptionsByField = extractWorksheetDropdownOptions(workbook, worksheet, detailedHeaders);
     const configuredExtraFieldNames = new Set(
       (template.fields || [])
         .filter((field) => field?.field_origin !== "snies_original" && field?.worksheet_name === worksheet.name)
-        .map((field) => normalizeFieldName(field.name))
+        .map((field) => normalizeDropdownFieldKey(field.name))
         .filter(Boolean)
     );
 
     const originalHeaders = headers.filter(
-      (header) => !configuredExtraFieldNames.has(normalizeFieldName(header))
+      (header) => !configuredExtraFieldNames.has(normalizeDropdownFieldKey(header))
     );
     const visualFields = originalHeaders.map((header) => ({
       name: header,
       field_origin: "snies_original",
       visible_for_producer: true,
       export_to_snies: true,
+      validator_options: dropdownOptionsByField.get(normalizeDropdownFieldKey(header)) || [],
     }));
 
     const additionalFields = (template.fields || [])
@@ -144,22 +147,23 @@ const getWorkbookSheetsFromTemplate = async (template) => {
         field_origin: "snies_extra",
         visible_for_producer: field.visible_for_producer ?? true,
         export_to_snies: field.export_to_snies ?? false,
+        validate_with: field.validate_with || "",
       }));
 
     additionalFields.forEach((field) => {
-      const normalizedName = normalizeFieldName(field.name);
+      const normalizedName = normalizeDropdownFieldKey(field.name);
       if (!normalizedName) {
         return;
       }
 
-      const currentIndex = visualFields.findIndex((item) => normalizeFieldName(item.name) === normalizedName);
+      const currentIndex = visualFields.findIndex((item) => normalizeDropdownFieldKey(item.name) === normalizedName);
       if (currentIndex >= 0) {
         visualFields.splice(currentIndex, 1);
       }
 
-      const insertAfter = normalizeFieldName(field.insert_after);
+      const insertAfter = normalizeDropdownFieldKey(field.insert_after);
       const insertAfterIndex = insertAfter
-        ? visualFields.findIndex((item) => normalizeFieldName(item.name) === insertAfter)
+        ? visualFields.findIndex((item) => normalizeDropdownFieldKey(item.name) === insertAfter)
         : -1;
 
       if (insertAfterIndex >= 0) {
@@ -1409,16 +1413,66 @@ const sanitizeWorkbookZipArtifacts = (buffer) => {
 const extractWorksheetHeaders = (worksheet) => {
   let bestRowNumber = 1;
   let bestHeaders = [];
+  let bestScore = -1;
+  const mergeLookup = buildWorksheetMergeLookup(worksheet);
+  const maxScanRows = Math.min(120, worksheet.rowCount || 120);
+  const maxColumnNumber = Math.min(200, Math.max(worksheet.columnCount || 0, 1));
 
-  for (let rowNumber = 1; rowNumber <= Math.min(20, worksheet.rowCount || 20); rowNumber += 1) {
-    const row = worksheet.getRow(rowNumber);
-    const values = Array.isArray(row.values) ? row.values.slice(1) : [];
-    const headers = values
-      .map((value) => String(convertCellValue(value) || "").trim())
-      .filter(Boolean);
+  for (let rowNumber = 1; rowNumber <= maxScanRows; rowNumber += 1) {
+    const rowHeaders = [];
+    const seen = new Set();
+    let styleCueCount = 0;
+    let validationCueCount = 0;
 
-    if (headers.length > bestHeaders.length) {
-      bestHeaders = headers;
+    for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
+      const { text, sourceRow, sourceColumn, spanColumns } = getMergedAwareCellValue(
+        worksheet,
+        mergeLookup,
+        rowNumber,
+        columnNumber
+      );
+      if (sourceRow !== rowNumber || sourceColumn !== columnNumber) {
+        continue;
+      }
+
+      const label = cleanFieldLabel(text);
+      if (!isLikelyHeaderLabel(label, spanColumns)) {
+        continue;
+      }
+
+      const normalizedLabel = normalizeDropdownFieldKey(label);
+      if (!normalizedLabel || seen.has(normalizedLabel)) {
+        continue;
+      }
+
+      const cell = worksheet.getRow(sourceRow).getCell(sourceColumn);
+      const hasBorder = Object.values(cell.border || {}).some(Boolean);
+      const hasFill = Boolean(cell.fill?.type);
+      const hasStyleCue = Boolean(cell.font?.bold || hasBorder || hasFill);
+
+      if (hasStyleCue) styleCueCount += 1;
+      if (cell.dataValidation?.type === "list") validationCueCount += 1;
+
+      seen.add(normalizedLabel);
+      rowHeaders.push(label);
+    }
+
+    if (rowHeaders.length === 0) {
+      continue;
+    }
+
+    const longTextPenalty = rowHeaders.filter((header) => header.length > 80).length * 20;
+    const singleCellPenalty = rowHeaders.length === 1 ? 10 : 0;
+    const score =
+      rowHeaders.length * 10 +
+      styleCueCount * 3 +
+      validationCueCount * 4 -
+      longTextPenalty -
+      singleCellPenalty;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestHeaders = rowHeaders;
       bestRowNumber = rowNumber;
     }
   }
@@ -1430,7 +1484,7 @@ const extractWorksheetHeaders = (worksheet) => {
 };
 
 const parseRangeReference = (rangeRef = "") => {
-  const [startRef, endRef] = String(rangeRef).split(":");
+  const [startRef, endRef] = String(rangeRef).replace(/\$/g, "").split(":");
   const start = parseCellReference(startRef);
   const end = parseCellReference(endRef || startRef);
 
@@ -1444,6 +1498,215 @@ const parseRangeReference = (rangeRef = "") => {
     startColumn: Math.min(start.columnNumber, end.columnNumber),
     endColumn: Math.max(start.columnNumber, end.columnNumber),
   };
+};
+
+const normalizeDropdownFieldKey = (fieldName = "") =>
+  normalizeFieldName(fieldName).replace(/^_+|_+$/g, "").replace(/_+/g, "_");
+
+const cleanFieldLabel = (value = "") =>
+  String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/^[_\s]+/g, "")
+    .replace(/\s*:\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const splitInlineValidationList = (formula = "") => {
+  const text = String(formula || "")
+    .trim()
+    .replace(/^=/, "")
+    .replace(/^"|"$/g, "")
+    .replace(/""/g, '"');
+
+  if (!text || /^[A-Z_][A-Z0-9_]*$/i.test(text) || /!?\$?[A-Z]+\$?\d+/i.test(text)) {
+    return [];
+  }
+
+  return text
+    .split(/[;,]/)
+    .map((item) => cleanFieldLabel(item))
+    .filter(Boolean);
+};
+
+const parseFormulaRangeReference = (formula = "", fallbackSheetName = "") => {
+  let text = String(formula || "").trim().replace(/^=/, "");
+  if (!text || text.startsWith('"')) return null;
+
+  let worksheetName = fallbackSheetName;
+  let rangeRef = text;
+  const bangIndex = text.lastIndexOf("!");
+  if (bangIndex >= 0) {
+    const rawSheetName = text.slice(0, bangIndex).trim();
+    worksheetName = rawSheetName.replace(/^'|'$/g, "").replace(/''/g, "'");
+    rangeRef = text.slice(bangIndex + 1);
+  }
+
+  rangeRef = rangeRef.replace(/\$/g, "").trim();
+  if (!/^[A-Z]+\d+(:[A-Z]+\d+)?$/i.test(rangeRef)) return null;
+
+  return { worksheetName, rangeRef };
+};
+
+const getFormulaRangeReferences = (workbook, worksheet, formula = "") => {
+  const directRange = parseFormulaRangeReference(formula, worksheet.name);
+  if (directRange) return [directRange];
+
+  const definedName = String(formula || "").trim().replace(/^=/, "");
+  if (!definedName || !workbook?.definedNames?.getRanges) return [];
+
+  try {
+    const definedRanges = workbook.definedNames.getRanges(definedName)?.ranges || [];
+    return definedRanges
+      .map((rangeRef) => parseFormulaRangeReference(rangeRef, worksheet.name))
+      .filter(Boolean);
+  } catch (error) {
+    return [];
+  }
+};
+
+const readOptionsFromRange = (workbook, worksheet, formula = "") => {
+  const seen = new Set();
+  const options = [];
+
+  getFormulaRangeReferences(workbook, worksheet, formula).forEach(({ worksheetName, rangeRef }) => {
+    const sourceWorksheet = workbook.getWorksheet(worksheetName);
+    const parsedRange = parseRangeReference(rangeRef);
+    if (!sourceWorksheet || !parsedRange) return;
+
+    for (let row = parsedRange.startRow; row <= parsedRange.endRow; row += 1) {
+      for (let column = parsedRange.startColumn; column <= parsedRange.endColumn; column += 1) {
+        const label = cleanFieldLabel(convertCellValue(sourceWorksheet.getCell(row, column).value));
+        if (!label || seen.has(label)) continue;
+        seen.add(label);
+        options.push(label);
+      }
+    }
+  });
+
+  return options;
+};
+
+const getValidationOptions = (workbook, worksheet, validation = {}) => {
+  if (validation?.type !== "list") return [];
+
+  const formulas = Array.isArray(validation.formulae) ? validation.formulae : [];
+  const seen = new Set();
+  const options = [];
+
+  formulas.forEach((formula) => {
+    const values = [
+      ...splitInlineValidationList(formula),
+      ...readOptionsFromRange(workbook, worksheet, formula),
+    ];
+
+    values.forEach((value) => {
+      const label = cleanFieldLabel(value);
+      if (!label || seen.has(label)) return;
+      seen.add(label);
+      options.push({ value: label, label });
+    });
+  });
+
+  return options;
+};
+
+const getWorksheetListValidations = (worksheet) => {
+  const validations = [];
+  const model = worksheet.dataValidations?.model || {};
+
+  Object.entries(model).forEach(([rangeRef, validation]) => {
+    if (validation?.type !== "list") return;
+    String(rangeRef)
+      .split(/\s+/)
+      .filter(Boolean)
+      .forEach((singleRangeRef) => {
+        const parsedRange = parseRangeReference(singleRangeRef);
+        if (parsedRange) validations.push({ range: parsedRange, validation });
+      });
+  });
+
+  worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+    row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+      if (!cell.dataValidation || cell.dataValidation.type !== "list") return;
+      const key = `${rowNumber}:${columnNumber}`;
+      const alreadyIncluded = validations.some(
+        ({ range }) =>
+          range.startRow <= rowNumber &&
+          range.endRow >= rowNumber &&
+          range.startColumn <= columnNumber &&
+          range.endColumn >= columnNumber
+      );
+      if (alreadyIncluded) return;
+
+      validations.push({
+        range: {
+          startRow: rowNumber,
+          endRow: rowNumber,
+          startColumn: columnNumber,
+          endColumn: columnNumber,
+        },
+        validation: cell.dataValidation,
+        key,
+      });
+    });
+  });
+
+  return validations;
+};
+
+const getNearbyValidationLabel = (worksheet, mergeLookup, rowNumber, columnNumber) => {
+  for (let offset = 1; offset <= 5; offset += 1) {
+    if (columnNumber - offset < 1) break;
+    const { text } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber, columnNumber - offset);
+    const label = cleanFieldLabel(text);
+    if (label && isLikelyHeaderLabel(label)) return label;
+  }
+
+  for (let offset = 1; offset <= 3; offset += 1) {
+    if (rowNumber - offset < 1) break;
+    const { text } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber - offset, columnNumber);
+    const label = cleanFieldLabel(text);
+    if (label && isLikelyHeaderLabel(label)) return label;
+  }
+
+  return "";
+};
+
+const extractWorksheetDropdownOptions = (workbook, worksheet, detailedHeaders) => {
+  const mergeLookup = buildWorksheetMergeLookup(worksheet);
+  const optionsByField = new Map();
+  const validations = getWorksheetListValidations(worksheet);
+
+  const addOptions = (fieldName, options) => {
+    const key = normalizeDropdownFieldKey(fieldName);
+    if (!key || !Array.isArray(options) || options.length === 0) return;
+    if (!optionsByField.has(key)) optionsByField.set(key, options);
+  };
+
+  validations.forEach(({ range, validation }) => {
+    const options = getValidationOptions(workbook, worksheet, validation);
+    if (options.length === 0) return;
+
+    const sameColumnHeader = (detailedHeaders.fields || [])
+      .filter(
+        (field) =>
+          field.columnNumber >= range.startColumn &&
+          field.columnNumber <= range.endColumn &&
+          field.rowNumber < range.startRow
+      )
+      .sort((a, b) => b.rowNumber - a.rowNumber)[0];
+    if (sameColumnHeader?.name) addOptions(sameColumnHeader.name, options);
+
+    const nearbyLabel = getNearbyValidationLabel(
+      worksheet,
+      mergeLookup,
+      range.startRow,
+      range.startColumn
+    );
+    if (nearbyLabel) addOptions(nearbyLabel, options);
+  });
+
+  return optionsByField;
 };
 
 const buildWorksheetMergeLookup = (worksheet) => {
@@ -1475,17 +1738,51 @@ const getMergedAwareCellValue = (worksheet, mergeLookup, rowNumber, columnNumber
 
   return {
     text,
+    sourceRow,
+    sourceColumn,
     spanColumns: mergeRange ? mergeRange.endColumn - mergeRange.startColumn + 1 : 1,
   };
 };
 
-const isLikelyHeaderLabel = (text = "") => {
-  const normalizedText = String(text).trim();
+const isLikelyHeaderLabel = (text = "", spanColumns = 1) => {
+  const normalizedText = cleanFieldLabel(text);
   if (!normalizedText) {
     return false;
   }
 
-  if (/^\d{1,4}([.,]\d+)?%?$/.test(normalizedText)) {
+  if (/^[-\u2013\u2014]+$/.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^[-\u2013\u2014]\s+/.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^tabla\s+\d+$/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^ejemplo\b/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^nota\s*\d*\s*[:.]/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^\d+\s*[-.]\s+/.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^(esta plantilla|defina)\b/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (normalizedText.length > 140) {
+    return false;
+  }
+
+  if (/^[\d.,\s]+%?$/.test(normalizedText)) {
     return false;
   }
 
@@ -1493,63 +1790,74 @@ const isLikelyHeaderLabel = (text = "") => {
     return false;
   }
 
+  const normalizedToken = normalizeToken(normalizedText);
+  if (/^NOTA[\s_]*\d*/.test(normalizedToken)) {
+    return false;
+  }
+
+  if (
+    normalizedToken.includes("NO_DEBE_APARECER") ||
+    normalizedToken.includes("SE_REFIERE_A") ||
+    normalizedToken.includes("DILIGENCIA_EN_LA_PLATAFORMA")
+  ) {
+    return false;
+  }
+
+  if (spanColumns > 3 && normalizedToken.startsWith("INFORMACION")) {
+    return false;
+  }
+
   return true;
 };
 
 const extractDetailedWorksheetHeaders = (worksheet) => {
-  const maxHeaderScanRows = Math.min(10, worksheet.rowCount || 10);
+  const maxHeaderScanRows = Math.min(120, worksheet.rowCount || 120);
   const mergeLookup = buildWorksheetMergeLookup(worksheet);
-  let bestRowNumber = 1;
-  let bestScore = 0;
-  let maxColumnNumber = 0;
+  const headers = [];
+  const fields = [];
+  const seen = new Set();
+  const maxColumnNumber = Math.min(200, Math.max(worksheet.columnCount || 0, 1));
 
   for (let rowNumber = 1; rowNumber <= maxHeaderScanRows; rowNumber += 1) {
-    const row = worksheet.getRow(rowNumber);
-    maxColumnNumber = Math.max(maxColumnNumber, row.cellCount || row.actualCellCount || 0);
-
-    let rowScore = 0;
     for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
-      const { text, spanColumns } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber, columnNumber);
-      if (!text || spanColumns > 3 || !isLikelyHeaderLabel(text)) {
+      const { text, sourceRow, sourceColumn, spanColumns } = getMergedAwareCellValue(
+        worksheet,
+        mergeLookup,
+        rowNumber,
+        columnNumber
+      );
+      if (sourceRow !== rowNumber || sourceColumn !== columnNumber) {
         continue;
       }
 
-      rowScore += 1;
-    }
-
-    if (rowScore > bestScore) {
-      bestScore = rowScore;
-      bestRowNumber = rowNumber;
-    }
-  }
-
-  const windowStart = Math.max(1, bestRowNumber - 2);
-  const windowEnd = Math.min(maxHeaderScanRows, bestRowNumber + 1);
-  const headers = [];
-
-  for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
-    const parts = [];
-
-    for (let rowNumber = windowStart; rowNumber <= windowEnd; rowNumber += 1) {
-      const { text, spanColumns } = getMergedAwareCellValue(worksheet, mergeLookup, rowNumber, columnNumber);
-      if (!text || spanColumns > 3 || !isLikelyHeaderLabel(text)) {
+      const label = cleanFieldLabel(text);
+      if (!isLikelyHeaderLabel(label, spanColumns)) {
         continue;
       }
 
-      if (!parts.includes(text)) {
-        parts.push(text);
+      const sourceCell = worksheet.getRow(sourceRow).getCell(sourceColumn);
+      const hasBorder = Object.values(sourceCell.border || {}).some(Boolean);
+      const hasFill = Boolean(sourceCell.fill?.type);
+      const hasFieldCue = Boolean(sourceCell.font?.bold || hasBorder || hasFill || /:\s*$/.test(String(text)));
+      if (!hasFieldCue && label.length > 60) {
+        continue;
       }
-    }
 
-    const combinedHeader = parts.join(" - ").trim();
-    if (combinedHeader) {
-      headers.push(combinedHeader);
+      const normalizedLabel = normalizeDropdownFieldKey(label);
+      if (!normalizedLabel || seen.has(normalizedLabel)) {
+        continue;
+      }
+
+      seen.add(normalizedLabel);
+      headers.push(label);
+      fields.push({ name: label, rowNumber, columnNumber });
     }
   }
 
   return {
-    headerRowNumber: bestRowNumber,
+    headerRowNumber: fields[0]?.rowNumber || 1,
     headers,
+    fields,
   };
 };
 
@@ -1611,6 +1919,9 @@ const cloneWorkbookWithoutLegacyArtifacts = (sourceWorkbook) => {
         targetCell.value = cloneCellValue(sourceCell.value);
         targetCell.style = cloneExcelStyle(sourceCell.style || {});
         if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+        if (sourceCell.dataValidation && Object.keys(sourceCell.dataValidation).length > 0) {
+          targetCell.dataValidation = JSON.parse(JSON.stringify(sourceCell.dataValidation));
+        }
         if (sourceCell.note) {
           targetCell.note = cloneNoteValue(sourceCell.note);
         }
@@ -2451,7 +2762,12 @@ const buildSniesDataset = async (template) => {
   const equivalenceLookup = buildFieldEquivalenceLookup(template.field_equivalences);
 
   const sheetDatasets = worksheets.map((worksheet) => {
-    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const exportHeaderInfo = extractWorksheetHeaders(worksheet);
+    const detailedHeaderInfo = extractDetailedWorksheetHeaders(worksheet);
+    const headers = detailedHeaderInfo.headers.length
+      ? detailedHeaderInfo.headers
+      : exportHeaderInfo.headers;
+    const headerRowNumber = detailedHeaderInfo.headerRowNumber || exportHeaderInfo.headerRowNumber;
 
     if (isInfoWorksheet(worksheet.name)) {
       return {
@@ -2459,6 +2775,8 @@ const buildSniesDataset = async (template) => {
         worksheetName: worksheet.name,
         headerRowNumber,
         headers,
+        exportHeaderRowNumber: exportHeaderInfo.headerRowNumber,
+        exportHeaders: exportHeaderInfo.headers,
         rows: [],
         sourceTemplate: null,
         preserveOriginalContent: true,
@@ -2471,6 +2789,8 @@ const buildSniesDataset = async (template) => {
         worksheetName: worksheet.name,
         headerRowNumber,
         headers: [],
+        exportHeaderRowNumber: exportHeaderInfo.headerRowNumber,
+        exportHeaders: exportHeaderInfo.headers,
         rows: [],
         sourceTemplate: null,
         preserveOriginalContent: false,
@@ -2513,6 +2833,8 @@ const buildSniesDataset = async (template) => {
       worksheetName: worksheet.name,
       headerRowNumber,
       headers,
+      exportHeaderRowNumber: exportHeaderInfo.headerRowNumber,
+      exportHeaders: exportHeaderInfo.headers,
       rows: finalRows,
       sourceTemplate: matchedSourceTemplate
         ? {
@@ -2904,8 +3226,21 @@ controller.downloadConnectedData = async (req, res) => {
     const zip = new PizZip(templateBuffer);
     const worksheetXmlPathMap = getWorksheetXmlPathMap(zip);
 
-    sheetDatasets.forEach(({ worksheetName, headers, rows, headerRowNumber, preserveOriginalContent }) => {
-      if (preserveOriginalContent || !headers.length) {
+    sheetDatasets.forEach(({
+      worksheetName,
+      headers,
+      rows,
+      headerRowNumber,
+      exportHeaders,
+      exportHeaderRowNumber,
+      preserveOriginalContent,
+    }) => {
+      const headersForExport = Array.isArray(exportHeaders) && exportHeaders.length
+        ? exportHeaders
+        : headers;
+      const headerRowForExport = exportHeaderRowNumber || headerRowNumber;
+
+      if (preserveOriginalContent || !headersForExport.length) {
         return;
       }
 
@@ -2917,9 +3252,9 @@ controller.downloadConnectedData = async (req, res) => {
 
       const updatedWorksheetXml = rewriteWorksheetXml(
         worksheetFile.asText(),
-        headers,
+        headersForExport,
         rows,
-        headerRowNumber
+        headerRowForExport
       );
 
       zip.file(worksheetPath, updatedWorksheetXml);
