@@ -2,6 +2,7 @@ const Macroproyecto   = require('../models/pdiMacroproyecto');
 const Proyecto        = require('../models/pdiProyecto');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const Indicador       = require('../models/pdiIndicador');
+const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
 
 // Calcula el semáforo a partir del avance efectivo de un documento
@@ -59,16 +60,17 @@ ctrl.resumen = async (req, res) => {
         const presupuestoTotal = macros.reduce((a, m) => a + (m.presupuesto || 0), 0);
         const presupuestoEjecutado = macros.reduce((a, m) => a + (m.presupuesto_ejecutado || 0), 0);
 
-        // Indicadores con alertas activas en cualquier periodo
-        const conAlertas = indicadores.filter(ind =>
-            ind.periodos.some(p => p.alertas && p.alertas.trim() !== '')
-        ).map(ind => ({
-            _id:    ind._id,
-            codigo: ind.codigo,
-            nombre: ind.nombre,
-            avance: ind.avance_total_real ?? ind.avance,
+        // Reportes pendientes: indicadores sin avance registrado
+        const conAlertas = indicadores.filter(ind => {
+            const avance = ind.avance_total_real ?? ind.avance ?? 0;
+            return Number(avance) === 0;
+        }).map(ind => ({
+            _id:     ind._id,
+            codigo:  ind.codigo,
+            nombre:  ind.nombre,
+            avance:  0,
             semaforo: semaforoDoc(ind),
-            alertas: ind.periodos.filter(p => p.alertas).map(p => ({ periodo: p.periodo, alertas: p.alertas })),
+            alertas: [],
         }));
 
         // Indicadores con retrasos justificados
