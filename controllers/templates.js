@@ -12,6 +12,8 @@ const AuditLogger = require('../services/auditLogger');
 
 const { ObjectId } = mongoose.Types;
 
+const escapeRegExp = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const datetime_now = () => {
   const now = new Date();
 
@@ -48,7 +50,7 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
       templates.map(async (template) => {
         const validators = await Promise.all(
           template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with);
+            return Validator.giveValidatorToExcel(field.validate_with, periodId);
           })
         );
 
@@ -80,17 +82,46 @@ templateController.getPlantillas = async (req, res) => {
   const search = req.query.search || "";
   const skip = (page - 1) * limit;
   const periodId = req.query.periodId;
+  const onlyPublishedInPeriod = req.query.onlyPublishedInPeriod === "true";
 
   try {
     const query = search
       ? {
-          $or: [
-            { name: { $regex: search, $options: "i" } },
-            { file_name: { $regex: search, $options: "i" } },
-            { file_description: { $regex: search, $options: "i" } },
+          $and: [
+            {
+              $or: [
+                { name: { $regex: search, $options: "i" } },
+                { file_name: { $regex: search, $options: "i" } },
+                { file_description: { $regex: search, $options: "i" } },
+              ],
+            },
           ],
         }
       : {};
+
+    if (periodId && onlyPublishedInPeriod) {
+      const publishedTemplates = await PubTemplate.find(
+        { period: periodId },
+        { "template._id": 1 }
+      ).lean();
+
+      const publishedTemplateIds = [
+        ...new Set(
+          publishedTemplates
+            .map((publishedTemplate) => String(publishedTemplate.template?._id || ""))
+            .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        ),
+      ].map((id) => new ObjectId(id));
+
+      const periodFilters = [{ _id: { $in: publishedTemplateIds } }];
+      if (mongoose.Types.ObjectId.isValid(periodId)) {
+        periodFilters.push({ period: new ObjectId(periodId) });
+      }
+
+      if (!query.$and) query.$and = [];
+      query.$and.push({ $or: periodFilters });
+    }
+
     const templates = await Template.find(query)
       .collation({ locale: 'es', strength: 1 })
       .populate('dimensions')
@@ -103,7 +134,7 @@ templateController.getPlantillas = async (req, res) => {
       templates.map(async (template) => {
         const validators = await Promise.all(
           template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with);
+            return Validator.giveValidatorToExcel(field.validate_with, periodId);
           })
         );
 
@@ -144,6 +175,7 @@ templateController.getPlantillasByCreator = async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || "";
   const email = req.query.email;
+  const periodId = req.query.periodId;
   const skip = (page - 1) * limit;
 
   try {
@@ -196,7 +228,7 @@ templateController.getPlantillasByCreator = async (req, res) => {
       templates.map(async (template) => {
         const validators = await Promise.all(
           template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with);
+            return Validator.giveValidatorToExcel(field.validate_with, periodId);
           })
         );
 
@@ -235,9 +267,27 @@ templateController.getPlantilla = async (req, res) => {
 
 templateController.createPlantilla = async (req, res) => {
   try {
-    const existingTemplate = await Template.findOne({
-      name: new RegExp(`^${req.body.name}$`, "i"),
+    const autoRename = req.body.auto_rename === true || req.body.auto_rename === "true";
+    const requestedName = String(req.body.name || "").trim();
+    let templateName = requestedName;
+    let existingTemplate = await Template.findOne({
+      name: new RegExp(`^${escapeRegExp(templateName)}$`, "i"),
     });
+
+    if (existingTemplate && autoRename) {
+      const baseName = requestedName || "Plantilla base";
+      let counter = 2;
+      do {
+        templateName = `${baseName} (${counter})`;
+        existingTemplate = await Template.findOne({
+          name: new RegExp(`^${escapeRegExp(templateName)}$`, "i"),
+        });
+        counter += 1;
+      } while (existingTemplate);
+
+      req.body.name = templateName;
+    }
+
     if (existingTemplate) {
       return res
         .status(400)
@@ -258,7 +308,7 @@ templateController.createPlantilla = async (req, res) => {
     const user = await UserService.findUserByEmailAndRole(req.body.email, "Administrador");
     const plantilla = new Template({ ...req.body, created_by: user });
     await plantilla.save();
-    
+
     // Registrar en auditoría (non-blocking)
     try {
       await AuditLogger.logCreate(req, user, 'template', {
@@ -269,8 +319,15 @@ templateController.createPlantilla = async (req, res) => {
     } catch (auditError) {
       console.warn('Audit logging failed (non-critical):', auditError.message);
     }
-    
-    res.status(200).json({ status: "Plantilla creada" });
+
+    // Crear validadores automáticamente para campos con opciones desplegables
+    try {
+      await Validator.createValidatorsFromDropdownOptions(req.body.fields, req.body.period);
+    } catch (autoValidatorError) {
+      console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
+    }
+
+    res.status(200).json({ status: "Plantilla creada", _id: plantilla._id, template: plantilla });
   } catch (error) {
     console.error("Error al crear la plantilla:", error);
     if (error.name === "ValidationError") {
@@ -364,6 +421,8 @@ templateController.updatePlantilla = async (req, res) => {
       "template.file_name": updatedTemplate.file_name,
       "template.file_description": updatedTemplate.file_description,
       "template.fields": updatedTemplate.fields,
+      "template.workbook_sheets": updatedTemplate.workbook_sheets,
+      "template.original_workbook_base64": updatedTemplate.original_workbook_base64,
       "template.producers": newProducersAsObjectIds,
       "template.dimensions": updatedTemplate.dimensions,
       "template.active": updatedTemplate.active,
@@ -401,7 +460,7 @@ templateController.updatePlantilla = async (req, res) => {
 
 templateController.syncAllPublishedTemplates = async (req, res) => {
   try {
-    const templates = await Template.find({}, "_id name file_name file_description fields producers dimensions active");
+    const templates = await Template.find({}, "_id name file_name file_description fields workbook_sheets original_workbook_base64 producers dimensions active");
 
     let totalUpdated = 0;
     const logs = [];
@@ -416,6 +475,8 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
         file_name: template.file_name,
         file_description: template.file_description,
         fields: template.fields,
+        workbook_sheets: template.workbook_sheets,
+        original_workbook_base64: template.original_workbook_base64,
         producers: template.producers,
         dimensions: template.dimensions,
         active: template.active,

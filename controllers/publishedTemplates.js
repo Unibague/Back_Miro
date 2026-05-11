@@ -6,7 +6,6 @@ const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
 const User = require('../models/users.js')
-const ValidatorModel = require('../models/validators');
 const Validator = require('./validators.js');
 const Log = require('../models/logs');
 const UserService = require('../services/users.js');
@@ -51,10 +50,14 @@ const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
   const latestTemplateId = String(latestTemplate._id);
   const currentFields = JSON.stringify(publishedTemplate.template.fields || []);
   const latestFields = JSON.stringify(latestTemplate.fields || []);
+  const currentWorkbookSheets = JSON.stringify(publishedTemplate.template.workbook_sheets || []);
+  const latestWorkbookSheets = JSON.stringify(latestTemplate.workbook_sheets || []);
 
   if (
     currentTemplateId !== latestTemplateId ||
     currentFields !== latestFields ||
+    currentWorkbookSheets !== latestWorkbookSheets ||
+    String(publishedTemplate.template.original_workbook_base64 || "") !== String(latestTemplate.original_workbook_base64 || "") ||
     JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
     JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
   ) {
@@ -145,7 +148,7 @@ const idToDescriptiveValue = {
 };
 
 // Función para convertir IDs a valores descriptivos
-const convertIdToDescriptive = async (fieldName, value, templateField = null) => {
+const convertIdToDescriptive = async (fieldName, value, templateField = null, periodId = null) => {
   if (!fieldName || !value) return value;
   
   const fieldNameLower = fieldName.toLowerCase();
@@ -181,7 +184,7 @@ const convertIdToDescriptive = async (fieldName, value, templateField = null) =>
   if (templateField && templateField.validate_with) {
     try {
       const [validatorName, columnName] = templateField.validate_with.split(' - ');
-      const validator = await ValidatorModel.findOne({ name: validatorName });
+      const validator = await Validator.findValidatorByName(validatorName, periodId);
       
       if (validator) {
         const column = validator.columns.find(col => col.name === columnName);
@@ -579,7 +582,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     const updated_templates = await Promise.all(published_templates.map(async template => {
       const validators = await Promise.all(
         template.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with);
+          return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
         })
       );
 
@@ -691,7 +694,7 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
       
       const validators = await Promise.all(
         t.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with);
+          return Validator.giveValidatorToExcel(field.validate_with, t.period?._id || t.period);
         })
       );
 
@@ -1041,7 +1044,7 @@ if (field.multiple) {
       // 🚀 NUEVO: si tiene validate_with, traer valores válidos
       if (templateField.validate_with) {
         const [validatorName, columnName] = templateField.validate_with.split(" - ");
-        const validator = await ValidatorModel.findOne({ name: validatorName });
+        const validator = await Validator.findValidatorByName(validatorName, pubTem.period?._id || pubTem.period);
 
         if (validator) {
           const validatorColumn = validator.columns.find(c => c.name === columnName);
@@ -1054,7 +1057,7 @@ if (field.multiple) {
 
       templateField.values = field.values;
 
-      const validationResult = await Validator.validateColumn(templateField);
+      const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
       return validationResult;
     });
 
@@ -1314,7 +1317,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
               // Convertir IDs a valores descriptivos (buscar campo en template para validadores)
               const templateField = template.template.fields ? 
                 template.template.fields.find(f => f.name === item.field_name) : null;
-              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField);
+              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField, template.period?._id || template.period);
               
               return { value: cleanValue, index };
             })
@@ -1463,7 +1466,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
         const validators = await Promise.all(
           template.template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with);
+            return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
           })
         );
         template.validators = validators.filter(v => v !== undefined);
@@ -1629,7 +1632,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
         const validators = (
           await Promise.all(
             template.template.fields.map(async (field) => 
-              Validator.giveValidatorToExcel(field.validate_with)
+              Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period)
             )
           )
         ).filter(Boolean);
@@ -1680,7 +1683,7 @@ publTempController.getTemplateById = async (req, res) => {
           const [templateName, columnName] = field.validate_with.split(' - ');
 
           // Buscar en la base de datos por el templateName y luego encontrar la columna correspondiente
-          const validator = await ValidatorModel.findOne({ name: templateName });
+          const validator = await Validator.findValidatorByName(templateName, publishedTemplate.period?._id || publishedTemplate.period);
 
           if (validator) {
             // Encontrar la columna que es validadora
@@ -1710,7 +1713,7 @@ publTempController.getTemplateById = async (req, res) => {
             console.error(`Validator not found for template: ${templateName}`);
           }
         } catch (err) {
-          console.error(`Error during ValidatorModel.findOne: ${err.message}`);
+          console.error(`Error during validator lookup: ${err.message}`);
         }
       }
       return field;

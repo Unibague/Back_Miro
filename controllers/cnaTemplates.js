@@ -209,6 +209,34 @@ const getEquivalenceItemFieldName = (item) => {
   return item.field_name || item.fieldName || item.name || item.value || "";
 };
 
+const getEquivalenceItemValueMappings = (item) => {
+  if (!item || typeof item !== "object" || typeof item === "string") return {};
+  const rawMappings = item.value_mappings || item.valueMappings;
+  if (!rawMappings || typeof rawMappings !== "object" || Array.isArray(rawMappings)) return {};
+
+  return Object.entries(rawMappings).reduce((acc, [targetValue, sourceValue]) => {
+    const cleanTargetValue = String(targetValue || "").trim();
+    const cleanSourceValue = String(sourceValue || "").trim();
+    if (cleanTargetValue && cleanSourceValue) {
+      acc[cleanTargetValue] = cleanSourceValue;
+    }
+    return acc;
+  }, {});
+};
+
+const applyValueMappings = (value, valueMappings = {}) => {
+  if (!hasUsableValue(value) || Object.keys(valueMappings).length === 0) return value;
+
+  const normalizedValue = normalizeFieldName(String(value).trim());
+  const matchingMapping = Object.entries(valueMappings).find(
+    ([targetValue, sourceValue]) =>
+      normalizeFieldName(sourceValue) === normalizedValue ||
+      normalizeFieldName(targetValue) === normalizedValue
+  );
+
+  return matchingMapping ? matchingMapping[0] : value;
+};
+
 const buildFieldEquivalenceLookup = (fieldEquivalences = {}) => {
   const lookup = new Map();
 
@@ -218,12 +246,14 @@ const buildFieldEquivalenceLookup = (fieldEquivalences = {}) => {
     const fieldName = equivalence.field_name || equivalence.fieldName || rawKey;
     const normalizedFieldName = normalizeFieldName(fieldName);
     const normalizedWorksheetName = normalizeFieldName(worksheetName);
-    const miroFieldNames = normalizeEquivalenceItems(rawValue)
-      .map(getEquivalenceItemFieldName)
-      .map(normalizeFieldName)
-      .filter(Boolean);
+    const miroFieldMappings = normalizeEquivalenceItems(rawValue)
+      .map((item) => ({
+        fieldName: normalizeFieldName(getEquivalenceItemFieldName(item)),
+        valueMappings: getEquivalenceItemValueMappings(item),
+      }))
+      .filter((item) => item.fieldName);
 
-    if (!normalizedFieldName || miroFieldNames.length === 0) {
+    if (!normalizedFieldName || miroFieldMappings.length === 0) {
       return;
     }
 
@@ -235,14 +265,14 @@ const buildFieldEquivalenceLookup = (fieldEquivalences = {}) => {
 
     keys.forEach((key) => {
       const current = lookup.get(key) || [];
-      lookup.set(key, [...current, ...miroFieldNames]);
+      lookup.set(key, [...current, ...miroFieldMappings]);
     });
   });
 
   return lookup;
 };
 
-const getEquivalentFieldNames = (lookup, worksheetName, fieldName) => {
+const getEquivalentFieldMappings = (lookup, worksheetName, fieldName) => {
   const normalizedWorksheetName = normalizeFieldName(worksheetName);
   const normalizedFieldName = normalizeFieldName(fieldName);
   if (!normalizedFieldName) return [];
@@ -2814,8 +2844,10 @@ const buildSniesDataset = async (template) => {
       return headers.reduce((acc, header, index) => {
         const normalizedHeader = normalizedHeaders[index];
         const directValue = normalizedRow[normalizedHeader];
-        const equivalentValue = getEquivalentFieldNames(equivalenceLookup, worksheet.name, header)
-          .map((fieldName) => normalizedRow[fieldName])
+        const equivalentValue = getEquivalentFieldMappings(equivalenceLookup, worksheet.name, header)
+          .map(({ fieldName, valueMappings }) =>
+            applyValueMappings(normalizedRow[fieldName], valueMappings)
+          )
           .find(hasUsableValue);
         const periodFallback = periodYear
           ? getPeriodValueForHeader(normalizedHeader, periodValues)

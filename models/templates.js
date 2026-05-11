@@ -46,6 +46,62 @@ const fieldSchema = new Schema({
         type: Boolean,
         required: true,
         default: false
+    },
+    dropdown_options: {
+        type: [String],
+        required: false,
+        default: []
+    },
+    header_row: {
+        type: Number,
+        required: false
+    },
+    column: {
+        type: Number,
+        required: false
+    },
+    locked: {
+        type: Boolean,
+        required: false,
+        default: false
+    }
+}, {
+    _id: false,
+    versionKey: false
+});
+
+const workbookSheetSchema = new Schema({
+    name: {
+        type: String,
+        required: true
+    },
+    fields: {
+        type: [fieldSchema],
+        default: []
+    },
+    preserveOriginalContent: {
+        type: Boolean,
+        required: false,
+        default: false
+    },
+    rawRows: {
+        type: [[Schema.Types.Mixed]],
+        required: false,
+        default: undefined
+    },
+    cellNotes: {
+        type: [{
+            row: Number,
+            col: Number,
+            note: String
+        }],
+        required: false,
+        default: undefined
+    },
+    columnWidths: {
+        type: [Number],
+        required: false,
+        default: undefined
     }
 }, {
     _id: false,
@@ -69,6 +125,14 @@ const templateSchema = new Schema({
         type: [fieldSchema],
         required: true
     }, // Array de campos
+    workbook_sheets: {
+        type: [workbookSheetSchema],
+        default: []
+    },
+    original_workbook_base64: {
+        type: String,
+        required: false
+    },
     active: {
         type: Boolean,
         default: true,
@@ -77,6 +141,11 @@ const templateSchema = new Schema({
     category: {  
         type: Schema.Types.ObjectId,
         ref: 'categories',
+    },
+    period: {
+        type: Schema.Types.ObjectId,
+        ref: 'periods',
+        required: false
     },
     created_by: {
         type: {},
