@@ -121,6 +121,9 @@ const getWorkbookSheetsFromTemplate = async (template) => {
     const detailedHeaders = extractDetailedWorksheetHeaders(worksheet);
     const { headers } = detailedHeaders;
     const dropdownOptionsByField = extractWorksheetDropdownOptions(workbook, worksheet, detailedHeaders);
+    const detailedFields = Array.isArray(detailedHeaders.fields) && detailedHeaders.fields.length
+      ? detailedHeaders.fields
+      : headers.map((header) => ({ name: header, baseName: header, groupPath: [] }));
     const configuredExtraFieldNames = new Set(
       (template.fields || [])
         .filter((field) => field?.field_origin !== "snies_original" && field?.worksheet_name === worksheet.name)
@@ -128,15 +131,27 @@ const getWorkbookSheetsFromTemplate = async (template) => {
         .filter(Boolean)
     );
 
-    const originalHeaders = headers.filter(
-      (header) => !configuredExtraFieldNames.has(normalizeDropdownFieldKey(header))
+    const originalFieldDescriptors = detailedFields.filter(
+      (field) =>
+        !configuredExtraFieldNames.has(normalizeDropdownFieldKey(field.name)) &&
+        !configuredExtraFieldNames.has(normalizeDropdownFieldKey(field.baseName || field.name))
     );
-    const visualFields = originalHeaders.map((header) => ({
-      name: header,
+    const originalHeaders = originalFieldDescriptors.map((field) => field.name);
+    const visualFields = originalFieldDescriptors.map((field) => ({
+      name: field.name,
+      base_name: field.baseName || field.name,
+      source_name: field.baseName || field.name,
+      group_path: field.groupPath || [],
+      cell_ref: field.cellRef || "",
+      row_number: field.rowNumber,
+      column_number: field.columnNumber,
       field_origin: "snies_original",
       visible_for_producer: true,
       export_to_snies: true,
-      validator_options: dropdownOptionsByField.get(normalizeDropdownFieldKey(header)) || [],
+      validator_options:
+        dropdownOptionsByField.get(normalizeDropdownFieldKey(field.name)) ||
+        dropdownOptionsByField.get(normalizeDropdownFieldKey(field.baseName || field.name)) ||
+        [],
     }));
 
     const additionalFields = (template.fields || [])
@@ -182,7 +197,7 @@ const getWorkbookSheetsFromTemplate = async (template) => {
     (sheet) =>
       !isInfoWorksheet(sheet.worksheetName) &&
       normalizeComparableName(sheet.worksheetName) !== "GUIA_CAMPOS_CNA" &&
-      normalizeComparableName(sheet.worksheetName) !== "LISTAS"
+      !isLookupWorksheet(sheet.worksheetName)
   );
 };
 
@@ -1008,7 +1023,7 @@ const buildWorksheetHeaderCommentsPlan = (workbook, configuredFields, originalCo
     });
 
   return workbook.worksheets.reduce((acc, worksheet) => {
-    if (isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+    if (isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name) || isLookupWorksheet(worksheet.name)) {
       return acc;
     }
 
@@ -1726,6 +1741,7 @@ const extractWorksheetDropdownOptions = (workbook, worksheet, detailedHeaders) =
       )
       .sort((a, b) => b.rowNumber - a.rowNumber)[0];
     if (sameColumnHeader?.name) addOptions(sameColumnHeader.name, options);
+    if (sameColumnHeader?.baseName) addOptions(sameColumnHeader.baseName, options);
 
     const nearbyLabel = getNearbyValidationLabel(
       worksheet,
@@ -1770,7 +1786,12 @@ const getMergedAwareCellValue = (worksheet, mergeLookup, rowNumber, columnNumber
     text,
     sourceRow,
     sourceColumn,
+    startRow: mergeRange?.startRow || rowNumber,
+    endRow: mergeRange?.endRow || rowNumber,
+    startColumn: mergeRange?.startColumn || columnNumber,
+    endColumn: mergeRange?.endColumn || columnNumber,
     spanColumns: mergeRange ? mergeRange.endColumn - mergeRange.startColumn + 1 : 1,
+    spanRows: mergeRange ? mergeRange.endRow - mergeRange.startRow + 1 : 1,
   };
 };
 
@@ -1797,6 +1818,22 @@ const isLikelyHeaderLabel = (text = "", spanColumns = 1) => {
   }
 
   if (/^nota\s*\d*\s*[:.]/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^cuadro\s+\d+/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (/^proceso\s+de\s+acreditaci/i.test(normalizedText)) {
+    return false;
+  }
+
+  if (normalizeComparableName(normalizedText) === "VERSION") {
+    return false;
+  }
+
+  if (/^reemplace\b/i.test(normalizedText)) {
     return false;
   }
 
@@ -1840,17 +1877,223 @@ const isLikelyHeaderLabel = (text = "", spanColumns = 1) => {
   return true;
 };
 
+const FIELD_CONTEXT_SEPARATOR = " > ";
+
+const isWorksheetChromeLabel = (label = "") => {
+  const normalized = normalizeComparableName(label);
+  return (
+    /^CUADRO(_|$)/.test(normalized) ||
+    normalized.includes("PROCESO_DE_ACREDITACION") ||
+    normalized === "VERSION" ||
+    normalized.startsWith("NOTA_")
+  );
+};
+
+const isSummaryRowLabel = (label = "") => {
+  const normalized = normalizeComparableName(label);
+  return normalized === "PROMEDIO";
+};
+
+const isFillableContextLabel = (label = "") => {
+  const normalized = normalizeComparableName(label);
+  return (
+    normalized.startsWith("LUGAR_DEL_CAMPUS") ||
+    /^CAMPUS(_|\d|N$)/.test(normalized)
+  );
+};
+
+const isRowScopedContextLabel = (candidate = {}) => {
+  const normalized = normalizeComparableName(candidate.label);
+  return (
+    normalized.startsWith("LUGAR_DEL_CAMPUS") ||
+    normalized.startsWith("COMUNIDAD_DE_")
+  );
+};
+
+const isTopLevelSectionLabel = (label = "") => {
+  const normalized = normalizeComparableName(label);
+  return normalized.startsWith("COMUNIDAD_DE_");
+};
+
+const getHeaderCandidateCoverage = (candidate, sameRowCandidates = [], maxColumnNumber = 1) => {
+  if (!isRowScopedContextLabel(candidate)) {
+    return {
+      startColumn: candidate.startColumn,
+      endColumn: candidate.endColumn,
+    };
+  }
+
+  const nextPeer = sameRowCandidates
+    .filter(
+      (item) =>
+        item.columnNumber > candidate.columnNumber &&
+        normalizeComparableName(item.label) !== normalizeComparableName(candidate.label) &&
+        isRowScopedContextLabel(item)
+    )
+    .sort((a, b) => a.columnNumber - b.columnNumber)[0];
+
+  return {
+    startColumn: candidate.startColumn,
+    endColumn: Math.max(candidate.endColumn, (nextPeer?.columnNumber || (maxColumnNumber + 1)) - 1),
+  };
+};
+
+const isSameHeaderCandidate = (left = {}, right = {}) =>
+  left.rowNumber === right.rowNumber &&
+  left.columnNumber === right.columnNumber &&
+  normalizeComparableName(left.label) === normalizeComparableName(right.label);
+
+const hasHeaderChildCandidate = (candidate, candidates = []) =>
+  candidates.some((child) => {
+    if (child.rowNumber <= candidate.rowNumber || child.rowNumber > candidate.rowNumber + 4) {
+      return false;
+    }
+
+    if (
+      child.startColumn < candidate.startColumn ||
+      child.endColumn > candidate.endColumn
+    ) {
+      return false;
+    }
+
+    return normalizeComparableName(child.label) !== normalizeComparableName(candidate.label);
+  });
+
+const findActiveContextCandidate = (fieldCandidate, candidatesByRow, maxColumnNumber) => {
+  if (isFillableContextLabel(fieldCandidate.label)) {
+    return null;
+  }
+
+  let activeContext = null;
+
+  Array.from(candidatesByRow.entries())
+    .filter(([rowNumber]) => rowNumber <= fieldCandidate.rowNumber)
+    .sort(([rowA], [rowB]) => rowA - rowB)
+    .forEach(([, rowCandidates]) => {
+      rowCandidates.forEach((candidate) => {
+        if (!isFillableContextLabel(candidate.label) || isSameHeaderCandidate(candidate, fieldCandidate)) {
+          return;
+        }
+
+        const coverage = getHeaderCandidateCoverage(candidate, rowCandidates, maxColumnNumber);
+        if (
+          fieldCandidate.columnNumber < coverage.startColumn ||
+          fieldCandidate.columnNumber > coverage.endColumn
+        ) {
+          return;
+        }
+
+        if (!activeContext || candidate.rowNumber >= activeContext.rowNumber) {
+          activeContext = candidate;
+        }
+      });
+    });
+
+  return activeContext;
+};
+
+const dedupeContextLabels = (labels = []) => {
+  const seen = new Set();
+  return labels.filter((label) => {
+    const normalized = normalizeComparableName(label);
+    if (!normalized || seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+};
+
+const buildFieldGroupPath = (fieldCandidate, candidatesByRow, maxColumnNumber, allCandidates = []) => {
+  const groups = [];
+  const activeContext = findActiveContextCandidate(fieldCandidate, candidatesByRow, maxColumnNumber);
+
+  Array.from(candidatesByRow.entries())
+    .filter(([rowNumber]) => rowNumber < fieldCandidate.rowNumber)
+    .sort(([rowA], [rowB]) => rowA - rowB)
+    .forEach(([rowNumber, rowCandidates]) => {
+      rowCandidates.forEach((candidate) => {
+        if (
+          candidate.rowNumber !== rowNumber ||
+          isWorksheetChromeLabel(candidate.label) ||
+          !isTopLevelSectionLabel(candidate.label)
+        ) {
+          return;
+        }
+
+        const coverage = getHeaderCandidateCoverage(candidate, rowCandidates, maxColumnNumber);
+        if (
+          fieldCandidate.columnNumber < coverage.startColumn ||
+          fieldCandidate.columnNumber > coverage.endColumn
+        ) {
+          return;
+        }
+
+        if (normalizeComparableName(candidate.label) === normalizeComparableName(fieldCandidate.label)) {
+          return;
+        }
+
+        groups.push(candidate.label);
+      });
+    });
+
+  if (activeContext?.label) {
+    groups.push(activeContext.label);
+  }
+
+  const parentSearchStartRow = activeContext?.rowNumber || 0;
+  Array.from(candidatesByRow.entries())
+    .filter(([rowNumber]) => rowNumber > parentSearchStartRow && rowNumber < fieldCandidate.rowNumber)
+    .sort(([rowA], [rowB]) => rowA - rowB)
+    .forEach(([, rowCandidates]) => {
+      rowCandidates.forEach((candidate) => {
+        if (
+          isTopLevelSectionLabel(candidate.label) ||
+          isFillableContextLabel(candidate.label) ||
+          isSameHeaderCandidate(candidate, fieldCandidate) ||
+          !hasHeaderChildCandidate(candidate, allCandidates)
+        ) {
+          return;
+        }
+
+        const coverage = getHeaderCandidateCoverage(candidate, rowCandidates, maxColumnNumber);
+        if (
+          fieldCandidate.columnNumber < coverage.startColumn ||
+          fieldCandidate.columnNumber > coverage.endColumn
+        ) {
+          return;
+        }
+
+        groups.push(candidate.label);
+      });
+    });
+
+  return dedupeContextLabels(groups);
+};
+
+const buildContextualFieldName = (fieldCandidate, groupPath) => {
+  const pathParts = dedupeContextLabels([...(groupPath || []), fieldCandidate.label]);
+  return pathParts.join(FIELD_CONTEXT_SEPARATOR);
+};
+
 const extractDetailedWorksheetHeaders = (worksheet) => {
   const maxHeaderScanRows = Math.min(120, worksheet.rowCount || 120);
   const mergeLookup = buildWorksheetMergeLookup(worksheet);
-  const headers = [];
-  const fields = [];
-  const seen = new Set();
+  const candidates = [];
+  const candidatesByRow = new Map();
   const maxColumnNumber = Math.min(200, Math.max(worksheet.columnCount || 0, 1));
 
   for (let rowNumber = 1; rowNumber <= maxHeaderScanRows; rowNumber += 1) {
     for (let columnNumber = 1; columnNumber <= maxColumnNumber; columnNumber += 1) {
-      const { text, sourceRow, sourceColumn, spanColumns } = getMergedAwareCellValue(
+      const {
+        text,
+        sourceRow,
+        sourceColumn,
+        startColumn,
+        endColumn,
+        spanColumns,
+        spanRows,
+      } = getMergedAwareCellValue(
         worksheet,
         mergeLookup,
         rowNumber,
@@ -1861,7 +2104,11 @@ const extractDetailedWorksheetHeaders = (worksheet) => {
       }
 
       const label = cleanFieldLabel(text);
-      if (!isLikelyHeaderLabel(label, spanColumns)) {
+      if (
+        !isLikelyHeaderLabel(label, spanColumns) ||
+        isWorksheetChromeLabel(label) ||
+        isSummaryRowLabel(label)
+      ) {
         continue;
       }
 
@@ -1874,27 +2121,94 @@ const extractDetailedWorksheetHeaders = (worksheet) => {
       }
 
       const normalizedLabel = normalizeDropdownFieldKey(label);
-      if (!normalizedLabel || seen.has(normalizedLabel)) {
+      if (!normalizedLabel) {
         continue;
       }
 
-      seen.add(normalizedLabel);
-      headers.push(label);
-      fields.push({ name: label, rowNumber, columnNumber });
+      const candidate = {
+        label,
+        rowNumber,
+        columnNumber,
+        sourceRow,
+        sourceColumn,
+        startColumn,
+        endColumn,
+        spanColumns,
+        spanRows,
+        cellRef: `${columnNumberToName(sourceColumn)}${sourceRow}`,
+      };
+
+      candidates.push(candidate);
+
+      if (!candidatesByRow.has(rowNumber)) {
+        candidatesByRow.set(rowNumber, []);
+      }
+      candidatesByRow.get(rowNumber).push(candidate);
     }
   }
 
+  const rowCandidateCounts = new Map(
+    Array.from(candidatesByRow.entries()).map(([rowNumber, rowCandidates]) => [
+      rowNumber,
+      rowCandidates.length,
+    ])
+  );
+
+  const fieldCandidates = candidates.filter((candidate) => {
+    const rowCandidateCount = rowCandidateCounts.get(candidate.rowNumber) || 0;
+    const hasEnoughRowContext = rowCandidateCount >= 2 || isFillableContextLabel(candidate.label);
+    if (!hasEnoughRowContext) {
+      return false;
+    }
+
+    const hasChild = hasHeaderChildCandidate(candidate, candidates);
+    if (hasChild && !isFillableContextLabel(candidate.label)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const seen = new Map();
+  const fields = fieldCandidates.map((candidate) => {
+    const groupPath = buildFieldGroupPath(candidate, candidatesByRow, maxColumnNumber, candidates);
+    const baseName = candidate.label;
+    const displayName = buildContextualFieldName(candidate, groupPath);
+    const normalizedDisplayName = normalizeDropdownFieldKey(displayName);
+    const occurrence = (seen.get(normalizedDisplayName) || 0) + 1;
+    seen.set(normalizedDisplayName, occurrence);
+    const uniqueName = occurrence > 1
+      ? `${displayName} (${candidate.cellRef})`
+      : displayName;
+
+    return {
+      name: uniqueName,
+      baseName,
+      sourceName: baseName,
+      groupPath,
+      rowNumber: candidate.sourceRow,
+      columnNumber: candidate.sourceColumn,
+      cellRef: candidate.cellRef,
+      spanColumns: candidate.spanColumns,
+      spanRows: candidate.spanRows,
+    };
+  });
+
   return {
     headerRowNumber: fields[0]?.rowNumber || 1,
-    headers,
+    headers: fields.map((field) => field.name),
+    matchHeaders: fields.map((field) => field.baseName || field.name),
     fields,
   };
 };
 
 const cloneExcelStyle = (style = {}) => JSON.parse(JSON.stringify(style || {}));
 const GUIDE_WORKSHEET_NAME = "GUIA_CAMPOS_CNA";
+const LOOKUP_WORKSHEET_NAMES = new Set(["LISTAS", "MENU"]);
 const isGuideWorksheet = (worksheetName = "") =>
   normalizeComparableName(worksheetName) === normalizeComparableName(GUIDE_WORKSHEET_NAME);
+const isLookupWorksheet = (worksheetName = "") =>
+  LOOKUP_WORKSHEET_NAMES.has(normalizeComparableName(worksheetName));
 
 const cloneCellValue = (value) => {
   if (value === null || value === undefined) {
@@ -1978,7 +2292,12 @@ const applyConfiguredFieldsToWorksheet = (worksheet, configuredFields = []) => {
     (field) => field?.name && field?.worksheet_name === worksheet.name
   );
 
-  if (normalizedFields.length === 0 || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+  if (
+    normalizedFields.length === 0 ||
+    isInfoWorksheet(worksheet.name) ||
+    isGuideWorksheet(worksheet.name) ||
+    isLookupWorksheet(worksheet.name)
+  ) {
     return;
   }
 
@@ -2066,7 +2385,12 @@ const removeConfiguredFieldsFromWorksheet = (worksheet, configuredFields = []) =
       .filter(Boolean)
   );
 
-  if (normalizedFieldsToRemove.size === 0 || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+  if (
+    normalizedFieldsToRemove.size === 0 ||
+    isInfoWorksheet(worksheet.name) ||
+    isGuideWorksheet(worksheet.name) ||
+    isLookupWorksheet(worksheet.name)
+  ) {
     return;
   }
 
@@ -2104,7 +2428,12 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
   let sourceCol = Math.max(1, sourcesSheet.columnCount + 1);
 
   workbook.worksheets.forEach((worksheet) => {
-    if (worksheet.name === sourcesSheetName || isInfoWorksheet(worksheet.name) || isGuideWorksheet(worksheet.name)) {
+    if (
+      worksheet.name === sourcesSheetName ||
+      isInfoWorksheet(worksheet.name) ||
+      isGuideWorksheet(worksheet.name) ||
+      isLookupWorksheet(worksheet.name)
+    ) {
       return;
     }
 
@@ -2780,7 +3109,7 @@ const buildSniesDataset = async (template) => {
   });
   const workbookNotes = captureWorkbookNotes(workbook);
   const worksheets = workbook.worksheets.filter(
-    (worksheet) => !isGuideWorksheet(worksheet.name)
+    (worksheet) => !isGuideWorksheet(worksheet.name) && !isLookupWorksheet(worksheet.name)
   );
 
   if (!worksheets[0]) {
@@ -2797,6 +3126,12 @@ const buildSniesDataset = async (template) => {
     const headers = detailedHeaderInfo.headers.length
       ? detailedHeaderInfo.headers
       : exportHeaderInfo.headers;
+    const headerFields = Array.isArray(detailedHeaderInfo.fields)
+      ? detailedHeaderInfo.fields
+      : [];
+    const matchHeaders = detailedHeaderInfo.matchHeaders?.length
+      ? detailedHeaderInfo.matchHeaders
+      : headers;
     const headerRowNumber = detailedHeaderInfo.headerRowNumber || exportHeaderInfo.headerRowNumber;
 
     if (isInfoWorksheet(worksheet.name)) {
@@ -2828,13 +3163,16 @@ const buildSniesDataset = async (template) => {
     }
 
     const matchedSourceTemplate = useWorksheetMapping
-      ? getWorksheetTemplateMatch(worksheet.name, headers, enrichedSourceDatasets)
+      ? getWorksheetTemplateMatch(worksheet.name, matchHeaders, enrichedSourceDatasets)
       : null;
     const sourceRows = useWorksheetMapping
       ? matchedSourceTemplate?.rows || mergedRows
       : mergedRows;
 
     const normalizedHeaders = headers.map((header) => normalizeFieldName(header));
+    const normalizedBaseHeaders = headers.map((header, index) =>
+      normalizeFieldName(headerFields[index]?.baseName || header)
+    );
     const finalRows = sourceRows.map((row) => {
       const normalizedRow = Object.entries(row).reduce((acc, [key, value]) => {
         acc[normalizeFieldName(key)] = value;
@@ -2843,14 +3181,18 @@ const buildSniesDataset = async (template) => {
 
       return headers.reduce((acc, header, index) => {
         const normalizedHeader = normalizedHeaders[index];
-        const directValue = normalizedRow[normalizedHeader];
-        const equivalentValue = getEquivalentFieldMappings(equivalenceLookup, worksheet.name, header)
+        const normalizedBaseHeader = normalizedBaseHeaders[index];
+        const directValue = normalizedRow[normalizedHeader] ?? normalizedRow[normalizedBaseHeader];
+        const equivalentValue = [
+          ...getEquivalentFieldMappings(equivalenceLookup, worksheet.name, header),
+          ...getEquivalentFieldMappings(equivalenceLookup, worksheet.name, headerFields[index]?.baseName || ""),
+        ]
           .map(({ fieldName, valueMappings }) =>
             applyValueMappings(normalizedRow[fieldName], valueMappings)
           )
           .find(hasUsableValue);
         const periodFallback = periodYear
-          ? getPeriodValueForHeader(normalizedHeader, periodValues)
+          ? getPeriodValueForHeader(normalizedBaseHeader || normalizedHeader, periodValues)
           : undefined;
 
         acc[header] = hasUsableValue(directValue)
@@ -2865,6 +3207,7 @@ const buildSniesDataset = async (template) => {
       worksheetName: worksheet.name,
       headerRowNumber,
       headers,
+      fieldDetails: headerFields,
       exportHeaderRowNumber: exportHeaderInfo.headerRowNumber,
       exportHeaders: exportHeaderInfo.headers,
       rows: finalRows,
@@ -2917,9 +3260,13 @@ const buildSniesComparisonDataset = async (template) => {
   await workbook.xlsx.load(templateBuffer);
 
   const sheetDatasets = workbook.worksheets.map((worksheet) => {
-    const { headers } = extractDetailedWorksheetHeaders(worksheet);
+    const detailedHeaderInfo = extractDetailedWorksheetHeaders(worksheet);
+    const { headers } = detailedHeaderInfo;
+    const matchHeaders = detailedHeaderInfo.matchHeaders?.length
+      ? detailedHeaderInfo.matchHeaders
+      : headers;
 
-    if (isInfoWorksheet(worksheet.name)) {
+    if (isInfoWorksheet(worksheet.name) || isLookupWorksheet(worksheet.name)) {
       return null;
     }
 
@@ -2932,12 +3279,13 @@ const buildSniesComparisonDataset = async (template) => {
     }
 
     const matchedSourceTemplate = workbook.worksheets.length > 1
-      ? getWorksheetTemplateMatch(worksheet.name, headers, normalizedSourceTemplates)
+      ? getWorksheetTemplateMatch(worksheet.name, matchHeaders, normalizedSourceTemplates)
       : normalizedSourceTemplates[0] || null;
 
     return {
       worksheetName: worksheet.name,
       headers,
+      fieldDetails: detailedHeaderInfo.fields || [],
       sourceTemplate: matchedSourceTemplate
         ? {
             template_id: matchedSourceTemplate.template_id,
@@ -2974,6 +3322,7 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
       resolveUniqueWorksheetName(workbook, rawSheetName, `Hoja_${index + 1}`)
     );
     const sniesFields = Array.isArray(sheet.headers) ? sheet.headers : [];
+    const sniesFieldDetails = Array.isArray(sheet.fieldDetails) ? sheet.fieldDetails : [];
     const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
       ? sheet.sourceTemplate.fieldNames
       : [];
@@ -2981,49 +3330,58 @@ const appendFieldComparisonSheets = async (workbook, template, dataset, includeT
 
     worksheet.columns = [
       { width: 8 },
-      { width: 42 },
+      { width: 38 },
+      { width: 38 },
+      { width: 10 },
       { width: 4 },
       { width: 8 },
       { width: 42 },
     ];
 
-    worksheet.mergeCells("A1:B1");
-    worksheet.mergeCells("D1:E1");
+    worksheet.mergeCells("A1:D1");
+    worksheet.mergeCells("F1:G1");
     worksheet.getCell("A1").value = "Campos CNA";
-    worksheet.getCell("D1").value = "Campos Miro";
+    worksheet.getCell("F1").value = "Campos Miro";
     worksheet.getCell("A2").value = "#";
-    worksheet.getCell("B2").value = "Campo CNA";
-    worksheet.getCell("D2").value = "#";
-    worksheet.getCell("E2").value = "Campo Miro";
+    worksheet.getCell("B2").value = "Grupo CNA";
+    worksheet.getCell("C2").value = "Campo CNA";
+    worksheet.getCell("D2").value = "Celda";
+    worksheet.getCell("F2").value = "#";
+    worksheet.getCell("G2").value = "Campo Miro";
 
     for (let rowIndex = 0; rowIndex < totalRows; rowIndex += 1) {
       const excelRow = rowIndex + 3;
       const sniesField = sniesFields[rowIndex] || "";
+      const sniesFieldDetail = sniesFieldDetails[rowIndex] || {};
       const miroField = miroFields[rowIndex] || "";
-      const sniesCell = worksheet.getCell(`B${excelRow}`);
-      const miroCell = worksheet.getCell(`E${excelRow}`);
+      const sniesGroupCell = worksheet.getCell(`B${excelRow}`);
+      const sniesCell = worksheet.getCell(`C${excelRow}`);
+      const sniesAddressCell = worksheet.getCell(`D${excelRow}`);
+      const miroCell = worksheet.getCell(`G${excelRow}`);
 
       worksheet.getCell(`A${excelRow}`).value = sniesField ? rowIndex + 1 : "";
-      sniesCell.value = sanitizeExcelValue(sniesField);
-      worksheet.getCell(`D${excelRow}`).value = miroField ? rowIndex + 1 : "";
+      sniesGroupCell.value = sanitizeExcelValue((sniesFieldDetail.groupPath || []).join(FIELD_CONTEXT_SEPARATOR));
+      sniesCell.value = sanitizeExcelValue(sniesFieldDetail.baseName || sniesField);
+      sniesAddressCell.value = sanitizeExcelValue(sniesFieldDetail.cellRef || "");
+      worksheet.getCell(`F${excelRow}`).value = miroField ? rowIndex + 1 : "";
       miroCell.value = sanitizeExcelValue(miroField);
 
     }
 
-    ["A1", "D1"].forEach((cellRef) => {
+    ["A1", "F1"].forEach((cellRef) => {
       const cell = worksheet.getCell(cellRef);
       cell.font = { bold: true, size: 12 };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
-    ["A2", "B2", "D2", "E2"].forEach((cellRef) => {
+    ["A2", "B2", "C2", "D2", "F2", "G2"].forEach((cellRef) => {
       const cell = worksheet.getCell(cellRef);
       cell.font = { bold: true };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
     for (let rowNumber = 2; rowNumber <= totalRows + 2; rowNumber += 1) {
-      applyFieldComparisonBorders(worksheet, rowNumber, ["A", "B", "D", "E"]);
+      applyFieldComparisonBorders(worksheet, rowNumber, ["A", "B", "C", "D", "F", "G"]);
     }
 
     worksheet.views = [{ state: "frozen", ySplit: 2 }];
@@ -3038,7 +3396,9 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
   worksheet.columns = [
     { width: 24 },
     { width: 8 },
-    { width: 42 },
+    { width: 38 },
+    { width: 38 },
+    { width: 10 },
     { width: 4 },
     { width: 8 },
     { width: 42 },
@@ -3048,6 +3408,7 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
 
   dataset.sheetDatasets.forEach((sheet, index) => {
     const sniesFields = Array.isArray(sheet.headers) ? sheet.headers : [];
+    const sniesFieldDetails = Array.isArray(sheet.fieldDetails) ? sheet.fieldDetails : [];
     const miroFields = Array.isArray(sheet.sourceTemplate?.fieldNames)
       ? sheet.sourceTemplate.fieldNames
       : [];
@@ -3058,14 +3419,16 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
     const dataStartRow = sectionStartRow + 3;
     const dataEndRow = dataStartRow + totalRows - 1;
 
-    worksheet.mergeCells(`B${headerRow}:C${headerRow}`);
-    worksheet.mergeCells(`E${headerRow}:F${headerRow}`);
+    worksheet.mergeCells(`B${headerRow}:E${headerRow}`);
+    worksheet.mergeCells(`G${headerRow}:H${headerRow}`);
     worksheet.getCell(`B${headerRow}`).value = "Campos CNA";
-    worksheet.getCell(`E${headerRow}`).value = "Campos Miro";
+    worksheet.getCell(`G${headerRow}`).value = "Campos Miro";
     worksheet.getCell(`B${subHeaderRow}`).value = "#";
-    worksheet.getCell(`C${subHeaderRow}`).value = "Campo CNA";
-    worksheet.getCell(`E${subHeaderRow}`).value = "#";
-    worksheet.getCell(`F${subHeaderRow}`).value = "Campo Miro";
+    worksheet.getCell(`C${subHeaderRow}`).value = "Grupo CNA";
+    worksheet.getCell(`D${subHeaderRow}`).value = "Campo CNA";
+    worksheet.getCell(`E${subHeaderRow}`).value = "Celda";
+    worksheet.getCell(`G${subHeaderRow}`).value = "#";
+    worksheet.getCell(`H${subHeaderRow}`).value = "Campo Miro";
 
     worksheet.mergeCells(`A${headerRow}:A${dataEndRow}`);
     const sectionCell = worksheet.getCell(`A${headerRow}`);
@@ -3073,13 +3436,13 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
     sectionCell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
     sectionCell.font = { bold: true, color: { argb: "FF1F1F1F" } };
 
-    ["B", "E"].forEach((column) => {
+    ["B", "G"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${headerRow}`);
       cell.font = { bold: true, size: 12 };
       cell.alignment = { horizontal: "center", vertical: "middle" };
     });
 
-    ["B", "C", "E", "F"].forEach((column) => {
+    ["B", "C", "D", "E", "G", "H"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${subHeaderRow}`);
       cell.font = { bold: true };
       cell.alignment = { horizontal: "center", vertical: "middle" };
@@ -3088,21 +3451,26 @@ const appendConsolidatedFieldComparisonSheet = (workbook, template, dataset) => 
     for (let rowIndex = 0; rowIndex < totalRows; rowIndex += 1) {
       const excelRow = dataStartRow + rowIndex;
       const sniesField = sniesFields[rowIndex] || "";
+      const sniesFieldDetail = sniesFieldDetails[rowIndex] || {};
       const miroField = miroFields[rowIndex] || "";
-      const sniesCell = worksheet.getCell(`C${excelRow}`);
-      const miroCell = worksheet.getCell(`F${excelRow}`);
+      const sniesGroupCell = worksheet.getCell(`C${excelRow}`);
+      const sniesCell = worksheet.getCell(`D${excelRow}`);
+      const sniesAddressCell = worksheet.getCell(`E${excelRow}`);
+      const miroCell = worksheet.getCell(`H${excelRow}`);
 
       worksheet.getCell(`B${excelRow}`).value = sniesField ? rowIndex + 1 : "";
-      sniesCell.value = sanitizeExcelValue(sniesField);
-      worksheet.getCell(`E${excelRow}`).value = miroField ? rowIndex + 1 : "";
+      sniesGroupCell.value = sanitizeExcelValue((sniesFieldDetail.groupPath || []).join(FIELD_CONTEXT_SEPARATOR));
+      sniesCell.value = sanitizeExcelValue(sniesFieldDetail.baseName || sniesField);
+      sniesAddressCell.value = sanitizeExcelValue(sniesFieldDetail.cellRef || "");
+      worksheet.getCell(`G${excelRow}`).value = miroField ? rowIndex + 1 : "";
       miroCell.value = sanitizeExcelValue(miroField);
 
 
-      applyFieldComparisonBorders(worksheet, excelRow, ["A", "B", "C", "E", "F"]);
+      applyFieldComparisonBorders(worksheet, excelRow, ["A", "B", "C", "D", "E", "G", "H"]);
     }
 
-    applyFieldComparisonBorders(worksheet, headerRow, ["A", "B", "C", "E", "F"]);
-    applyFieldComparisonBorders(worksheet, subHeaderRow, ["A", "B", "C", "E", "F"]);
+    applyFieldComparisonBorders(worksheet, headerRow, ["A", "B", "C", "D", "E", "G", "H"]);
+    applyFieldComparisonBorders(worksheet, subHeaderRow, ["A", "B", "C", "D", "E", "G", "H"]);
 
     currentRow = dataEndRow + 2;
   });
@@ -3227,6 +3595,7 @@ controller.getConnectedData = async (req, res) => {
         worksheetName: sheet.worksheetName,
         sourceTemplate: sheet.sourceTemplate,
         headers: sheet.headers,
+        fieldDetails: sheet.fieldDetails || [],
         rows: sheet.rows,
         preserveOriginalContent: sheet.preserveOriginalContent,
       })),
@@ -3267,7 +3636,10 @@ controller.downloadConnectedData = async (req, res) => {
       exportHeaderRowNumber,
       preserveOriginalContent,
     }) => {
-      const headersForExport = Array.isArray(exportHeaders) && exportHeaders.length
+      const hasContextualHeaders = Array.isArray(headers) && headers.some((header) =>
+        String(header || "").includes(FIELD_CONTEXT_SEPARATOR)
+      );
+      const headersForExport = !hasContextualHeaders && Array.isArray(exportHeaders) && exportHeaders.length
         ? exportHeaders
         : headers;
       const headerRowForExport = exportHeaderRowNumber || headerRowNumber;
