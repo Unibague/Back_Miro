@@ -11,6 +11,11 @@ const pdiConfigSchema = new mongoose.Schema({
     anio_fin:     { type: Number, default: 2029 },
     // Texto libre para encabezados y reportes
     lema:         { type: String, default: 'Tejiendo futuros: soñar, actuar y transformar juntos' },
+    // Estructura planeada del PDI (0 = sin definir)
+    num_macroproyectos:      { type: Number, default: 0, min: 0 },
+    proyectos_por_macro:     { type: Number, default: 0, min: 0 },
+    acciones_por_proyecto:   { type: Number, default: 0, min: 0 },
+    indicadores_por_accion:  { type: Number, default: 0, min: 0 },
 }, {
     versionKey: false,
     timestamps: true,

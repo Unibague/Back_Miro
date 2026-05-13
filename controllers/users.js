@@ -37,6 +37,7 @@ const viewPermissionOptions = [
     { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", group: "Administracion" },
     { key: "snies", label: "SNIES", path: "/snies/templates", group: "Modulos" },
     { key: "cna", label: "CNA", path: "/cna/templates", group: "Modulos" },
+    { key: "supportTemplates", label: "Cruce de apoyos", path: "/apoyos-plantillas", group: "Modulos" },
     { key: "dateReview", label: "Gestion de procesos", path: "/date-review", group: "Gestion de procesos" },
     { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/date-review", group: "Gestion de procesos" },
     { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/date-review?section=alertas", group: "Gestion de procesos" },

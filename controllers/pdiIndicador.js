@@ -3,6 +3,7 @@ const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
 const Historial = require('../models/pdiIndicadorHistorial');
+const User = require('../models/users');
 
 function withCalculatedFields(doc) {
     const base = typeof doc.toObject === 'function' ? doc.toObject() : doc;
@@ -187,11 +188,19 @@ async function guardarHistorial(antes, despues, modificado_por = '') {
 
         comparar(antes, despues);
 
+        // Resolver nombre completo si modificado_por es un email
+        let modificado_por_nombre = '';
+        if (modificado_por && modificado_por.includes('@')) {
+            const usuario = await User.findOne({ email: modificado_por }).select('full_name name').lean();
+            modificado_por_nombre = usuario?.full_name || usuario?.name || '';
+        }
+
         await Historial.create({
             indicador_id: antes._id,
             indicador_codigo: antes.codigo,
             indicador_nombre: antes.nombre,
             modificado_por,
+            modificado_por_nombre,
             antes: JSON.parse(JSON.stringify(antes)),
             despues: JSON.parse(JSON.stringify(despues)),
             campos_cambiados,
@@ -429,3 +438,4 @@ ctrl.recalcularTodos = async (req, res) => {
 };
 
 module.exports = ctrl;
+module.exports.recalcularAccion = recalcularAccion;

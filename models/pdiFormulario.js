@@ -1,11 +1,15 @@
 const mongoose = require('mongoose');
 
 const campoPdiSchema = new mongoose.Schema({
-    etiqueta:     { type: String, required: true },           // nombre visible del campo
-    tipo:         { type: String, enum: ['texto_largo', 'archivo_pdf'], required: true },
-    requerido:    { type: Boolean, default: false },
-    descripcion:  { type: String, default: '' },              // ayuda/placeholder
-    orden:        { type: Number, default: 0 },
+    etiqueta:             { type: String, required: true },
+    tipo:                 { type: String, enum: ['texto_largo', 'texto_corto', 'archivo_pdf', 'select', 'select_con_otro', 'checkbox'], required: true },
+    requerido:            { type: Boolean, default: false },
+    descripcion:          { type: String, default: '' },
+    orden:                { type: Number, default: 0 },
+    max_caracteres:       { type: Number, default: null },
+    opciones:             { type: [String], default: [] },
+    condicional_campo_id: { type: String, default: null },
+    condicional_valor:    { type: String, default: null },
 }, { _id: true });
 
 const pdiFormularioSchema = new mongoose.Schema({
