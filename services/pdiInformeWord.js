@@ -9,7 +9,7 @@ const {
 const UPLOAD_DIR = path.join(__dirname, '../uploads/pdi/informes');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const BASE_URL = () => process.env.BACKEND_URL || 'http://localhost:6000';
+const BASE_URL = () => process.env.BACKEND_URL || 'http://localhost:3456';
 const buildUrl = (filename) => `${BASE_URL()}/uploads/pdi/informes/${filename}`;
 
 const sanitize = (v) =>
@@ -39,6 +39,11 @@ const h3 = (text) => new Paragraph({
     children: [new TextRun({ text, bold: true, size: 22, color: '6B21A8' })],
 });
 
+const h4 = (text) => new Paragraph({
+    spacing: { before: 160, after: 60 },
+    children: [new TextRun({ text, bold: true, size: 20, color: '374151' })],
+});
+
 const campo = (label, value) => new Paragraph({
     spacing: { before: 80, after: 40 },
     children: [
@@ -53,111 +58,232 @@ const separador = () => new Paragraph({
     children: [],
 });
 
+const separadorFino = () => new Paragraph({
+    spacing: { before: 100, after: 100 },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 1, color: 'E5E7EB' } },
+    children: [],
+});
+
 const formatCOP = (v) =>
     new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v ?? 0);
 
-// ── Tabla de periodos de un indicador ────────────────────────────────────────
+// ── Ordenar periodos ───────────────────────────────────────────────────────────────
+function ordenarPeriodos(periodos = []) {
+    return [...periodos].sort((a, b) => String(a.periodo ?? '').localeCompare(String(b.periodo ?? '')));
+}
 
+function filtrarPeriodos(periodos = [], corte = null) {
+    const ordenados = ordenarPeriodos(periodos);
+    if (!corte) return ordenados;
+    return ordenados.filter((p) => p.periodo === corte);
+}
+
+// ── Tabla genérica ──────────────────────────────────────────────────────────────────
+function crearTabla(headers, filas) {
+    const pct = Math.floor(100 / headers.length);
+    const headerRow = new TableRow({
+        children: headers.map((t) => new TableCell({
+            width: { size: pct, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, size: 18 })] })],
+        })),
+    });
+    const rows = filas.map((fila) => new TableRow({
+        children: fila.map((v) => new TableCell({
+            width: { size: pct, type: WidthType.PERCENTAGE },
+            children: [new Paragraph({ children: [new TextRun({ text: String(v ?? '—'), size: 18 })] })],
+        })),
+    }));
+    return new Table({ rows: [headerRow, ...rows], width: { size: 100, type: WidthType.PERCENTAGE } });
+}
+
+// ── Tabla de periodos ──────────────────────────────────────────────────────────────
 function tablaPeriodos(periodos = []) {
     if (!periodos.length) return [];
-
-    const headerRow = new TableRow({
-        children: ['Periodo', 'Meta', 'Avance', 'Estado', 'Reportado por'].map((t) =>
-            new TableCell({
-                width: { size: 20, type: WidthType.PERCENTAGE },
-                children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, size: 18 })] })],
-            })
-        ),
-    });
-
-    const rows = periodos.map((p) =>
-        new TableRow({
-            children: [
-                p.periodo,
-                String(p.meta ?? '—'),
-                String(p.avance ?? '—'),
-                p.estado_reporte ?? 'Borrador',
-                p.reportado_por || '—',
-            ].map((v) =>
-                new TableCell({
-                    width: { size: 20, type: WidthType.PERCENTAGE },
-                    children: [new Paragraph({ children: [new TextRun({ text: v, size: 18 })] })],
-                })
-            ),
-        })
-    );
-
     return [
         new Paragraph({ spacing: { before: 100, after: 60 }, children: [new TextRun({ text: 'Periodos reportados', bold: true })] }),
-        new Table({ rows: [headerRow, ...rows], width: { size: 100, type: WidthType.PERCENTAGE } }),
+        crearTabla(
+            ['Periodo', 'Meta', 'Avance', 'Estado', 'Reportado por', 'Fecha envío'],
+            periodos.map((p) => [
+                p.periodo,
+                p.meta,
+                p.avance,
+                p.estado_reporte ?? 'Borrador',
+                p.reportado_por,
+                p.fecha_envio ? new Date(p.fecha_envio).toLocaleDateString('es-CO') : '—',
+            ])
+        ),
     ];
 }
 
-// ── Sección de un indicador ───────────────────────────────────────────────────
+// ── Tabla de evidencias ──────────────────────────────────────────────────────────────
+function tablaEvidencias(evidencias = [], corte = null) {
+    const filtradas = corte ? evidencias.filter((ev) => ev.periodo === corte) : evidencias;
+    if (!filtradas.length) return [];
+    return [
+        new Paragraph({ spacing: { before: 100, after: 60 }, children: [new TextRun({ text: 'Evidencias adjuntas', bold: true })] }),
+        crearTabla(
+            ['Nombre archivo', 'Periodo', 'Estado', 'Subido por', 'Fecha', 'URL'],
+            filtradas.map((ev) => [
+                ev.nombre_original,
+                ev.periodo,
+                ev.estado,
+                ev.subido_por,
+                ev.fecha_subida ? new Date(ev.fecha_subida).toLocaleDateString('es-CO') : '—',
+                ev.url,
+            ])
+        ),
+    ];
+}
 
-function seccionIndicador(ind) {
+// ── Sección de formularios/respuestas del indicador (igual que en el informe de indicador) ──────
+function seccionFormularios(respuestas = [], corte = null) {
+    const filtradas = corte
+        ? respuestas.filter((r) => r.corte === corte)
+        : respuestas;
+
+    const enviadas = filtradas.filter((r) => r.estado === 'Enviado');
+    if (!enviadas.length) return [];
+
+    const bloques = [
+        new Paragraph({ spacing: { before: 140, after: 60 }, children: [new TextRun({ text: 'Formularios de evidencias enviados', bold: true, size: 20 })] }),
+    ];
+
+    for (const r of enviadas) {
+        const formularioNombre = typeof r.formulario_id === 'object'
+            ? (r.formulario_id?.nombre ?? 'Formulario')
+            : 'Formulario';
+        const fechaEnvio = r.fecha_envio ? new Date(r.fecha_envio).toLocaleDateString('es-CO') : '—';
+        const avalEstado = r.estado_aval ?? 'Pendiente';
+        const avalPor    = r.aval_por ? ` · ${r.aval_por}` : '';
+        const avalFecha  = r.aval_fecha ? ` (${new Date(r.aval_fecha).toLocaleDateString('es-CO')})` : '';
+
+        bloques.push(
+            h4(`${formularioNombre} — Corte ${r.corte || '—'}`),
+            campo('Enviado por', r.respondido_por),
+            campo('Fecha de envío', fechaEnvio),
+            campo('Estado del aval', `${avalEstado}${avalPor}${avalFecha}`),
+        );
+
+        if (r.aval_comentario) {
+            bloques.push(campo('Observaciones del líder', r.aval_comentario));
+        }
+
+        // Respuestas campo a campo
+        if (r.respuestas?.length) {
+            bloques.push(new Paragraph({
+                spacing: { before: 80, after: 40 },
+                children: [new TextRun({ text: 'Respuestas del formulario:', bold: true })],
+            }));
+            for (const resp of r.respuestas) {
+                bloques.push(new Paragraph({
+                    spacing: { before: 60, after: 20 },
+                    indent: { left: 360 },
+                    children: [new TextRun({ text: `${resp.etiqueta}: `, bold: true })],
+                }));
+                if (resp.valor_texto) {
+                    for (const linea of String(resp.valor_texto).split(/\r?\n/)) {
+                        bloques.push(new Paragraph({
+                            spacing: { before: 0, after: 20 },
+                            indent: { left: 720 },
+                            children: [new TextRun({ text: linea || ' ' })],
+                        }));
+                    }
+                } else if (resp.url) {
+                    bloques.push(new Paragraph({
+                        spacing: { before: 0, after: 20 },
+                        indent: { left: 720 },
+                        children: [
+                            new TextRun({ text: resp.nombre_original || 'Archivo adjunto' }),
+                            new TextRun({ text: `  ${resp.url}`, color: '6B7280' }),
+                        ],
+                    }));
+                } else {
+                    bloques.push(new Paragraph({
+                        spacing: { before: 0, after: 20 },
+                        indent: { left: 720 },
+                        children: [new TextRun({ text: 'Sin respuesta', color: '9CA3AF' })],
+                    }));
+                }
+            }
+        }
+
+        // Documento final adjunto
+        if (r.documento_url) {
+            bloques.push(campo('Documento de evidencia adjunto', `${r.documento_nombre_original || r.documento_filename}  ${r.documento_url}`));
+        }
+
+        bloques.push(separadorFino());
+    }
+
+    return bloques;
+}
+
+// ── Sección de un indicador ───────────────────────────────────────────────────
+function seccionIndicador(ind, respuestasInd = [], corte = null) {
+    const periodosAMostrar = filtrarPeriodos(ind.periodos ?? [], corte);
+
     const bloques = [
         h3(`${ind.codigo} · ${ind.nombre}`),
         campo('Responsable', ind.responsable),
         campo('Avance actual', `${ind.avance_total_real ?? ind.avance ?? 0}%`),
         campo('Meta final', ind.meta_final_2029),
         campo('Tipo de cálculo', ind.tipo_calculo),
-        ...tablaPeriodos(ind.periodos ?? []),
+        ...tablaPeriodos(periodosAMostrar),
     ];
 
-    // Campos cualitativos del último periodo con datos
-    const periodosConDatos = (ind.periodos ?? []).filter(
-        (p) => p.resultados_alcanzados || p.logros || p.alertas || p.justificacion_retrasos
-    );
-    for (const p of periodosConDatos) {
-        bloques.push(new Paragraph({ spacing: { before: 120, after: 40 }, children: [new TextRun({ text: `Corte ${p.periodo}`, bold: true, italics: true })] }));
+    // Campos cualitativos por periodo
+    for (const p of periodosAMostrar) {
+        const tieneCualitativo = p.resultados_alcanzados || p.logros || p.alertas || p.justificacion_retrasos;
+        if (!tieneCualitativo) continue;
+        bloques.push(new Paragraph({
+            spacing: { before: 120, after: 40 },
+            children: [new TextRun({ text: `Corte ${p.periodo} — detalle`, bold: true, italics: true })],
+        }));
         if (p.resultados_alcanzados) bloques.push(campo('Resultados alcanzados', p.resultados_alcanzados));
         if (p.logros)                bloques.push(campo('Logros', p.logros));
         if (p.alertas)               bloques.push(campo('Alertas', p.alertas));
         if (p.justificacion_retrasos) bloques.push(campo('Justificación de retrasos', p.justificacion_retrasos));
     }
 
-    // Evidencias
-    if (ind.evidencias?.length) {
-        bloques.push(new Paragraph({ spacing: { before: 100, after: 40 }, children: [new TextRun({ text: 'Evidencias adjuntas:', bold: true })] }));
-        for (const ev of ind.evidencias) {
-            bloques.push(new Paragraph({
-                spacing: { before: 40, after: 20 },
-                children: [
-                    new TextRun({ text: `• ${ev.nombre_original}` }),
-                    new TextRun({ text: `  [${ev.estado}]`, color: ev.estado === 'Aprobado' ? '0D9488' : ev.estado === 'Rechazado' ? 'EF4444' : '3B82F6' }),
-                    new TextRun({ text: `  ${ev.url}`, color: '6B7280' }),
-                ],
-            }));
-        }
-    }
+    // Evidencias del indicador
+    bloques.push(...tablaEvidencias(ind.evidencias ?? [], corte));
+
+    // Formularios enviados por el responsable (igual que en el informe de indicador)
+    bloques.push(...seccionFormularios(respuestasInd, corte));
 
     return bloques;
 }
 
-// ── Sección de una acción ─────────────────────────────────────────────────────
-
-function seccionAccion(accion, indicadores) {
+// ── Sección de una acción ───────────────────────────────────────────────────
+function seccionAccion(accion, indicadores, respuestasPorIndicador, corte = null) {
     return [
         h2(`Acción: ${accion.codigo} · ${accion.nombre}`),
         campo('Responsable', accion.responsable),
         campo('Avance', `${accion.avance ?? 0}%`),
         campo('Presupuesto asignado', formatCOP(accion.presupuesto)),
         campo('Presupuesto ejecutado', formatCOP(accion.presupuesto_ejecutado)),
-        ...indicadores.flatMap((ind) => seccionIndicador(ind)),
+        ...indicadores.flatMap((ind) =>
+            seccionIndicador(ind, respuestasPorIndicador[String(ind._id)] ?? [], corte)
+        ),
         separador(),
     ];
 }
 
-// ── Generador principal ───────────────────────────────────────────────────────
+// ── Generadores principales ───────────────────────────────────────────────────────
 
-async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion }) {
+async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion, respuestasPorIndicador = {}, corte = null }) {
+    const subtitulo = corte ? `Corte: ${corte}` : 'Todos los cortes';
     const children = [
         new Paragraph({
             heading: HeadingLevel.TITLE,
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 300 },
             children: [new TextRun({ text: 'Informe de Avance — Proyecto PDI', bold: true, size: 36 })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 100 },
+            children: [new TextRun({ text: subtitulo, color: '7C3AED', bold: true })],
         }),
         new Paragraph({
             alignment: AlignmentType.CENTER,
@@ -174,24 +300,31 @@ async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion
         campo('Fecha fin', proyecto.fecha_fin ?? '—'),
         separador(),
         ...acciones.flatMap((acc) =>
-            seccionAccion(acc, indicadoresPorAccion[String(acc._id)] ?? [])
+            seccionAccion(acc, indicadoresPorAccion[String(acc._id)] ?? [], respuestasPorIndicador, corte)
         ),
     ];
 
     const doc = new Document({ sections: [{ properties: {}, children }] });
     const buffer = await Packer.toBuffer(doc);
-    const filename = `informe_proyecto_${sanitize(proyecto.codigo)}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
+    const filename = `informe_proyecto_${sanitize(proyecto.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
     fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
     return { filename, url: buildUrl(filename) };
 }
 
-async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indicadoresPorAccion }) {
+async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador = {}, corte = null }) {
+    const subtitulo = corte ? `Corte: ${corte}` : 'Todos los cortes';
     const children = [
         new Paragraph({
             heading: HeadingLevel.TITLE,
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 300 },
             children: [new TextRun({ text: 'Informe de Avance — Macroproyecto PDI', bold: true, size: 36 })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 100 },
+            children: [new TextRun({ text: subtitulo, color: '7C3AED', bold: true })],
         }),
         new Paragraph({
             alignment: AlignmentType.CENTER,
@@ -217,13 +350,14 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
         );
         const acciones = accionesPorProyecto[String(proy._id)] ?? [];
         for (const acc of acciones) {
-            children.push(...seccionAccion(acc, indicadoresPorAccion[String(acc._id)] ?? []));
+            children.push(...seccionAccion(acc, indicadoresPorAccion[String(acc._id)] ?? [], respuestasPorIndicador, corte));
         }
     }
 
     const doc = new Document({ sections: [{ properties: {}, children }] });
     const buffer = await Packer.toBuffer(doc);
-    const filename = `informe_macro_${sanitize(macro.codigo)}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
+    const filename = `informe_macro_${sanitize(macro.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
     fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
     return { filename, url: buildUrl(filename) };
 }
