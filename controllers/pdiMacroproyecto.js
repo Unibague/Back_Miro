@@ -38,8 +38,19 @@ ctrl.create = async (req, res) => {
 
 ctrl.update = async (req, res) => {
     try {
-        const doc = await Macroproyecto.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+        const { num_proyectos, ...rest } = req.body;
+        const update = { ...rest };
+        if (num_proyectos !== undefined) update.num_proyectos = Number(num_proyectos) || 0;
+
+        const doc = await Macroproyecto.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+
+        if (num_proyectos !== undefined && Number(num_proyectos) > 0) {
+            const Proyecto = require('../models/pdiProyecto');
+            const peso = parseFloat((100 / Number(num_proyectos)).toFixed(6));
+            await Proyecto.updateMany({ macroproyecto_id: req.params.id }, { $set: { peso } });
+        }
+
         res.json(withSemaforo(doc));
     } catch (e) {
         res.status(400).json({ error: e.message });

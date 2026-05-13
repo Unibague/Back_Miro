@@ -63,8 +63,18 @@ ctrl.create = async (req, res) => {
 
 ctrl.update = async (req, res) => {
     try {
-        const doc = await AccionEstrategica.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+        const { num_indicadores, ...updateData } = req.body;
+        if (num_indicadores !== undefined) updateData.num_indicadores = Number(num_indicadores) || 0;
+
+        const doc = await AccionEstrategica.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+
+        if (num_indicadores !== undefined && Number(num_indicadores) > 0) {
+            const Indicador = require('../models/pdiIndicador');
+            const peso = parseFloat((100 / Number(num_indicadores)).toFixed(6));
+            await Indicador.updateMany({ accion_id: req.params.id }, { $set: { peso } });
+        }
+
         await recalcularProyecto(doc.proyecto_id);
         res.json(withSemaforo(doc));
     } catch (e) {

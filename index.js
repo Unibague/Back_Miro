@@ -96,6 +96,7 @@ apiRouter.use("/pqr",              require('./routes/pqr'));
 apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
+apiRouter.use("/support-templates", require('./routes/supportTemplates'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
 apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
 apiRouter.use("/pdi/macroproyectos",   require('./routes/pdiMacroproyecto'));

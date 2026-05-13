@@ -182,11 +182,18 @@ function parseBudgetWorkbook(filePath, options = {}) {
     };
 }
 
+function getSheetNames(filePath) {
+    const workbook = xlsx.readFile(filePath, { cellDates: false });
+    return workbook.SheetNames;
+}
+
 module.exports = {
     DEFAULT_SHEET_NAME,
     parseBudgetWorkbook,
     parseExecutedWorkbook,
+    getSheetNames,
     normalizeCode,
+    normalizeText,
 };
 
 function buildExecutedProjectAggregate() {
@@ -283,6 +290,14 @@ function parseExecutedWorkbook(filePath, options = {}) {
     };
 }
 
+function detectTipo(firstCell, gastoVal, inversionVal) {
+    if (/^Gasto:/i.test(firstCell)) return 'gasto';
+    if (/^Inversi/i.test(firstCell)) return 'inversion';
+    if (gastoVal > 0 && inversionVal === 0) return 'gasto';
+    if (inversionVal > 0 && gastoVal === 0) return 'inversion';
+    return 'general';
+}
+
 function parseExecutedSummaryRows(rows, sheetName, workbook) {
     const aggregatedByProject = new Map();
     const actions = [];
@@ -304,6 +319,8 @@ function parseExecutedSummaryRows(rows, sheetName, workbook) {
                     codigo: currentProjectCode,
                     nombre_proyecto: currentProjectName,
                     presupuesto_ejecutado: 0,
+                    gasto_total: 0,
+                    inversion_total: 0,
                     acciones: 0,
                 });
             }
@@ -318,12 +335,21 @@ function parseExecutedSummaryRows(rows, sheetName, workbook) {
             continue;
         }
 
-        const presupuestoEjecutado = toNumber(row[6]);
+        const gastoVal = toNumber(row[3]);
+        const inversionVal = toNumber(row[4]);
+        const ejecucionAnio = toNumber(row[6]);
+        // Usar ejecución registrada; si está vacía, tomar gasto+inversión como monto comprometido
+        const presupuestoEjecutado = ejecucionAnio > 0 ? ejecucionAnio : (gastoVal + inversionVal);
+        const tipo = detectTipo(firstCell, gastoVal, inversionVal);
+        const nombre_accion_clean = firstCell.replace(/^(Gasto:|Inversión:|Inversion:)\s*/i, '').trim();
+
         const projectKey = currentProjectCode || currentProjectName;
         const project = aggregatedByProject.get(projectKey);
         if (!project) continue;
 
         project.presupuesto_ejecutado += presupuestoEjecutado;
+        project.gasto_total += tipo === 'gasto' ? presupuestoEjecutado : 0;
+        project.inversion_total += tipo === 'inversion' ? presupuestoEjecutado : 0;
         project.acciones += 1;
 
         actions.push({
@@ -331,16 +357,27 @@ function parseExecutedSummaryRows(rows, sheetName, workbook) {
             codigo_accion: null,
             codigo_proyecto: currentProjectCode,
             nombre_proyecto: currentProjectName,
-            nombre_accion: firstCell,
+            nombre_accion: nombre_accion_clean,
+            tipo,
+            gasto: tipo === 'gasto' ? presupuestoEjecutado : 0,
+            inversion: tipo === 'inversion' ? presupuestoEjecutado : 0,
             presupuesto_ejecutado: presupuestoEjecutado,
             observacion: row[5] || '',
         });
     }
 
+    // Buscar el título del macro en las primeras filas (ignorar cabeceras y filas de proyecto)
+    let projectTitle = null;
+    const SKIP_PATTERNS = /^(Acciones Estratégicas|Proyecto:|Total|Actividad:|Presupuesto)/i;
+    for (let i = 0; i < Math.min(rows.length, 6); i++) {
+        const cell = String(rows[i]?.[0] || '').trim();
+        if (cell && !SKIP_PATTERNS.test(cell)) { projectTitle = cell; break; }
+    }
+
     return {
         fileName: workbook?.Props?.Title || null,
         sheetName,
-        projectTitle: rows[1]?.[0] || null,
+        projectTitle,
         rowsRead: rows.length,
         actionsDetected: actions.length,
         projects: Array.from(aggregatedByProject.values())
