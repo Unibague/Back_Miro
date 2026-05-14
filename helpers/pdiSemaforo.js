@@ -5,7 +5,7 @@ function getSemaforo(avance) {
 }
 
 function withSemaforo(doc) {
-    const obj = doc.toObject ? doc.toObject() : doc;
+    const obj = doc.toObject ? doc.toObject({ flattenMaps: true }) : doc;
     const avanceParaSemaforo = obj.avance_total_real != null ? obj.avance_total_real : obj.avance;
     return { ...obj, semaforo: getSemaforo(avanceParaSemaforo) };
 }

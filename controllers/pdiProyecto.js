@@ -3,7 +3,7 @@ const Macroproyecto  = require('../models/pdiMacroproyecto');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const fs = require('fs/promises');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
-const { parseExecutedWorkbook, normalizeCode, DEFAULT_SHEET_NAME } = require('../services/pdiBudgetImport');
+const { parseExecutedWorkbook, getSheetNames, normalizeCode, DEFAULT_SHEET_NAME } = require('../services/pdiBudgetImport');
 
 function normalizePeso(peso) {
     const value = Number(peso) || 0;
@@ -80,11 +80,18 @@ ctrl.create = async (req, res) => {
 
 ctrl.update = async (req, res) => {
     try {
-        // presupuesto y presupuesto_ejecutado son campos calculados desde acciones;
-        // no se permiten sobrescribir directamente desde este endpoint
-        const { presupuesto, presupuesto_ejecutado, ...updateData } = req.body;
+        const { presupuesto, presupuesto_ejecutado, num_acciones, ...updateData } = req.body;
+        if (num_acciones !== undefined) updateData.num_acciones = Number(num_acciones) || 0;
+
         const doc = await Proyecto.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+
+        if (num_acciones !== undefined && Number(num_acciones) > 0) {
+            const Accion = require('../models/pdiAccionEstrategica');
+            const peso = parseFloat((100 / Number(num_acciones)).toFixed(6));
+            await Accion.updateMany({ proyecto_id: req.params.id }, { $set: { peso } });
+        }
+
         await recalcularMacroproyecto(doc.macroproyecto_id);
         res.json(withSemaforo(doc));
     } catch (e) {
@@ -111,74 +118,140 @@ ctrl.importExecuted = async (req, res) => {
             return res.status(400).json({ error: 'Debes adjuntar un archivo Excel en el campo "file".' });
         }
 
-        if (!req.body?.macroproyecto_id) {
-            return res.status(400).json({ error: 'Debes indicar el macroproyecto a actualizar.' });
-        }
+        let macroproyecto;
 
-        const macroproyecto = await Macroproyecto.findById(req.body.macroproyecto_id);
-        if (!macroproyecto) {
-            return res.status(404).json({ error: 'El macroproyecto indicado no existe.' });
-        }
+        if (req.body?.macroproyecto_id) {
+            macroproyecto = await Macroproyecto.findById(req.body.macroproyecto_id);
+            if (!macroproyecto) {
+                return res.status(404).json({ error: 'El macroproyecto indicado no existe.' });
+            }
+            parsed = parseExecutedWorkbook(req.file.path, {
+                sheetName: req.body?.sheetName || DEFAULT_SHEET_NAME,
+                sheetMatchText: macroproyecto.nombre,
+            });
+        } else {
+            // Modo global: leer TODAS las hojas del Excel y agregar acciones de todas
+            const sheetNames = getSheetNames(req.file.path);
+            const allActions = [];
+            const allProjects = [];
+            let firstSheet = null;
+            let firstTitle = null;
 
-        parsed = parseExecutedWorkbook(req.file.path, {
-            sheetName: req.body?.sheetName || DEFAULT_SHEET_NAME,
-            sheetMatchText: macroproyecto.nombre,
-        });
+            for (const sheetName of sheetNames) {
+                try {
+                    const sheetResult = parseExecutedWorkbook(req.file.path, { sheetName });
+                    if (sheetResult.actionsDetected > 0 || sheetResult.projects.length > 0) {
+                        allActions.push(...sheetResult.actions);
+                        allProjects.push(...sheetResult.projects);
+                        if (!firstSheet) { firstSheet = sheetName; firstTitle = sheetResult.projectTitle; }
+                    }
+                } catch (_) { /* hoja sin estructura reconocible, se omite */ }
+            }
+
+            parsed = {
+                sheetName: firstSheet || sheetNames[0] || DEFAULT_SHEET_NAME,
+                projectTitle: firstTitle,
+                rowsRead: allActions.length,
+                actionsDetected: allActions.length,
+                projects: allProjects,
+                actions: allActions,
+            };
+            macroproyecto = null; // búsqueda global por nombre de acción
+        }
 
         if (!parsed.projects.length) {
             return res.status(400).json({
-                error: 'El archivo no contiene filas de ejecucion reconocibles para importar.',
+                error: 'El archivo no contiene filas de ejecución reconocibles para importar.',
                 detalle: 'Se esperaban proyectos y acciones con ejecutado en la hoja de presupuesto.',
             });
         }
 
-        const proyectos = await Proyecto.find({ macroproyecto_id: req.body.macroproyecto_id });
+        // Cargar proyectos: del macro si fue identificado, o todos si no
+        const proyectos = macroproyecto
+            ? await Proyecto.find({ macroproyecto_id: macroproyecto._id })
+            : await Proyecto.find({});
         const projectMap = new Map(
             proyectos.map((proyecto) => [normalizeCode(proyecto.codigo), proyecto])
         );
         const projectNameMap = new Map(
             proyectos.map((proyecto) => [normalizeText(proyecto.nombre), proyecto])
         );
-        const acciones = await AccionEstrategica.find({ proyecto_id: { $in: proyectos.map((proyecto) => proyecto._id) } });
+        // Cargar acciones: del macro si fue identificado, o TODAS si no
+        const accionesQuery = macroproyecto
+            ? { proyecto_id: { $in: proyectos.map((p) => p._id) } }
+            : {};
+        const accionesDB = await AccionEstrategica.find(accionesQuery)
+            .populate('proyecto_id', '_id codigo nombre macroproyecto_id');
+
+        // Mapa global: nombre normalizado → acción (para búsqueda directa sin pasar por proyecto)
+        const globalActionByName = new Map();
         const actionsByProjectId = new Map();
 
-        for (const accion of acciones) {
-            const projectId = String(accion.proyecto_id);
-            if (!actionsByProjectId.has(projectId)) {
-                actionsByProjectId.set(projectId, new Map());
-            }
-            actionsByProjectId.get(projectId).set(normalizeText(accion.nombre), accion);
+        for (const accion of accionesDB) {
+            const nn = normalizeText(accion.nombre);
+            if (!globalActionByName.has(nn)) globalActionByName.set(nn, accion);
+            const projectId = String(accion.proyecto_id?._id ?? accion.proyecto_id);
+            if (!actionsByProjectId.has(projectId)) actionsByProjectId.set(projectId, new Map());
+            actionsByProjectId.get(projectId).set(nn, accion);
         }
 
-        const actualizados = new Map();
+        function findAction(importedActionName, proyectoId) {
+            const map = proyectoId ? (actionsByProjectId.get(String(proyectoId)) || new Map()) : globalActionByName;
+            const nn = normalizeText(importedActionName);
+            let found = map.get(nn);
+            if (!found) {
+                for (const [key, val] of map) {
+                    if (nn.length > 10 && key.includes(nn.slice(0, Math.floor(nn.length * 0.7)))) { found = val; break; }
+                    if (nn.length > 10 && nn.includes(key.slice(0, Math.floor(key.length * 0.7)))) { found = val; break; }
+                }
+            }
+            return found || null;
+        }
+
         const proyectosNoEncontrados = [];
-        const accionesActualizadasDetalle = [];
         const accionesNoEncontradas = [];
-        const proyectosTocados = new Set();
+
+        // Acumular sub-filas (Gasto/Inversión) de la misma acción antes de guardar
+        const pendingAcciones = new Map();
 
         for (const importedAction of parsed.actions) {
-            const proyecto = projectMap.get(normalizeCode(importedAction.codigo_proyecto))
-                || projectNameMap.get(normalizeText(importedAction.nombre_proyecto));
+            let proyecto = null;
+            let accion = null;
 
-            if (!proyecto) {
-                proyectosNoEncontrados.push({
-                    codigo: importedAction.codigo_proyecto || null,
-                    nombre_proyecto: importedAction.nombre_proyecto || null,
-                    accion: importedAction.nombre_accion,
-                    presupuesto_ejecutado: importedAction.presupuesto_ejecutado,
-                    fila: importedAction.fila,
-                });
-                continue;
+            if (macroproyecto) {
+                // Modo por macro: buscar proyecto primero, luego acción dentro de él
+                proyecto = projectMap.get(normalizeCode(importedAction.codigo_proyecto))
+                    || projectNameMap.get(normalizeText(importedAction.nombre_proyecto))
+                    || (() => {
+                        const cleanName = normalizeText(importedAction.nombre_proyecto || '').replace(/^\d[\d\s.]+/, '').trim();
+                        for (const [key, val] of projectNameMap) {
+                            if (cleanName && (key.includes(cleanName) || cleanName.includes(key))) return val;
+                        }
+                        return null;
+                    })();
+
+                if (!proyecto) {
+                    proyectosNoEncontrados.push({
+                        codigo: importedAction.codigo_proyecto || null,
+                        nombre_proyecto: importedAction.nombre_proyecto || null,
+                        accion: importedAction.nombre_accion,
+                        presupuesto_ejecutado: importedAction.presupuesto_ejecutado,
+                        fila: importedAction.fila,
+                    });
+                    continue;
+                }
+                accion = findAction(importedAction.nombre_accion, proyecto._id);
+            } else {
+                // Modo global: buscar acción directamente en toda la BD
+                accion = findAction(importedAction.nombre_accion, null);
+                if (accion) proyecto = accion.proyecto_id;
             }
-
-            const actionMap = actionsByProjectId.get(String(proyecto._id)) || new Map();
-            const accion = actionMap.get(normalizeText(importedAction.nombre_accion));
 
             if (!accion) {
                 accionesNoEncontradas.push({
-                    proyecto_id: proyecto._id,
-                    codigo_proyecto: proyecto.codigo,
-                    nombre_proyecto: proyecto.nombre,
+                    proyecto_id: proyecto?._id,
+                    codigo_proyecto: proyecto?.codigo,
+                    nombre_proyecto: proyecto?.nombre || importedAction.nombre_proyecto,
                     accion_excel: importedAction.nombre_accion,
                     presupuesto_ejecutado: importedAction.presupuesto_ejecutado,
                     fila: importedAction.fila,
@@ -186,7 +259,33 @@ ctrl.importExecuted = async (req, res) => {
                 continue;
             }
 
-            accion.presupuesto_ejecutado = importedAction.presupuesto_ejecutado;
+            // Acumular (evitar que sub-filas Gasto/Inversión de la misma acción se sobreescriban)
+            const accionKey = String(accion._id);
+            if (!pendingAcciones.has(accionKey)) {
+                pendingAcciones.set(accionKey, {
+                    accion, proyecto,
+                    presupuesto_ejecutado: 0,
+                    gasto: 0, inversion: 0,
+                    observacion: '', filas: [],
+                });
+            }
+            const pending = pendingAcciones.get(accionKey);
+            pending.presupuesto_ejecutado += importedAction.presupuesto_ejecutado;
+            pending.gasto += importedAction.gasto || 0;
+            pending.inversion += importedAction.inversion || 0;
+            if (importedAction.observacion) pending.observacion = importedAction.observacion;
+            pending.filas.push(importedAction.fila);
+        }
+
+        // Guardar acciones acumuladas
+        const actualizados = new Map();
+        const accionesActualizadasDetalle = [];
+        const proyectosTocados = new Set();
+
+        for (const { accion, proyecto, presupuesto_ejecutado, gasto, inversion, observacion, filas } of pendingAcciones.values()) {
+            accion.presupuesto_ejecutado = presupuesto_ejecutado;
+            accion.gasto = gasto;
+            accion.inversion = inversion;
             await accion.save();
             proyectosTocados.add(String(proyecto._id));
 
@@ -209,16 +308,34 @@ ctrl.importExecuted = async (req, res) => {
                 proyecto_id: proyecto._id,
                 codigo_proyecto: proyecto.codigo,
                 nombre_proyecto: proyecto.nombre,
-                presupuesto_ejecutado: accion.presupuesto_ejecutado,
-                fila_excel: importedAction.fila,
-                observacion: importedAction.observacion || '',
+                tipo: gasto > 0 && inversion > 0 ? 'mixto' : gasto > 0 ? 'gasto' : inversion > 0 ? 'inversion' : 'general',
+                gasto,
+                inversion,
+                presupuesto_ejecutado,
+                fila_excel: filas[0],
+                observacion,
             });
         }
 
         if (accionesActualizadasDetalle.length === 0) {
-            return res.status(400).json({
-                error: `El archivo no contiene proyectos del macroproyecto ${macroproyecto.codigo}.`,
-                detalle: `Se detectaron filas para ${parsed.projects.map((item) => item.codigo || item.nombre_proyecto).join(', ')}, pero no hubo acciones que coincidieran con ${macroproyecto.codigo}.`,
+            return res.json({
+                archivo: req.file.originalname,
+                hoja: parsed.sheetName,
+                proyecto_excel: parsed.projectTitle,
+                macro_detectado: macroproyecto ? { _id: macroproyecto._id, codigo: macroproyecto.codigo, nombre: macroproyecto.nombre } : null,
+                filas_leidas: parsed.rowsRead,
+                acciones_detectadas: parsed.actionsDetected,
+                acciones_actualizadas: 0,
+                proyectos_detectados: parsed.projects.length,
+                proyectos_actualizados: 0,
+                proyectos_no_encontrados: proyectosNoEncontrados.length + accionesNoEncontradas.length,
+                totales_importados: { presupuesto_ejecutado: 0, gasto: 0, inversion: 0 },
+                actualizados: [],
+                acciones: parsed.actions,
+                acciones_actualizadas_detalle: [],
+                no_encontrados: { proyectos: proyectosNoEncontrados, acciones: accionesNoEncontradas },
+                criterio: { presupuesto_ejecutado: '' },
+                observacion: 'Ninguna acción del archivo coincidió con las acciones registradas en el sistema.',
             });
         }
 
@@ -231,10 +348,14 @@ ctrl.importExecuted = async (req, res) => {
 
         const actualizadosList = Array.from(actualizados.values()).sort((a, b) => a.codigo.localeCompare(b.codigo));
 
+        const totalGasto = accionesActualizadasDetalle.reduce((acc, item) => acc + (item.gasto || 0), 0);
+        const totalInversion = accionesActualizadasDetalle.reduce((acc, item) => acc + (item.inversion || 0), 0);
+
         return res.json({
             archivo: req.file.originalname,
             hoja: parsed.sheetName,
             proyecto_excel: parsed.projectTitle,
+            macro_detectado: macroproyecto ? { _id: macroproyecto._id, codigo: macroproyecto.codigo, nombre: macroproyecto.nombre } : null,
             filas_leidas: parsed.rowsRead,
             acciones_detectadas: parsed.actionsDetected,
             acciones_actualizadas: accionesActualizadasDetalle.length,
@@ -243,6 +364,8 @@ ctrl.importExecuted = async (req, res) => {
             proyectos_no_encontrados: proyectosNoEncontrados.length,
             totales_importados: {
                 presupuesto_ejecutado: accionesActualizadasDetalle.reduce((acc, item) => acc + item.presupuesto_ejecutado, 0),
+                gasto: totalGasto,
+                inversion: totalInversion,
             },
             actualizados: actualizadosList,
             acciones: parsed.actions,
@@ -254,10 +377,9 @@ ctrl.importExecuted = async (req, res) => {
             criterio: {
                 presupuesto_ejecutado: 'Se toma la columna "Ejecucion ano 2026" por accion y el proyecto queda con la suma de sus acciones actualizadas.',
             },
-            observacion: 'La importacion actualiza primero cada accion encontrada y luego recalcula el presupuesto ejecutado del proyecto como suma de esas acciones.',
         });
     } catch (e) {
-        return res.status(400).json({ error: e.message || 'No fue posible importar la ejecucion presupuestal.' });
+        return res.status(400).json({ error: e.message || 'No fue posible importar la ejecución presupuestal.' });
     } finally {
         if (req.file?.path) {
             await fs.unlink(req.file.path).catch(() => {});

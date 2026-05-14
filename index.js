@@ -108,6 +108,7 @@ apiRouter.use("/pdi/formularios",      require('./routes/pdiFormulario'));
 apiRouter.use("/pdi/cambios",          require('./routes/pdiSolicitudCambio'));
 apiRouter.use("/pdi/dashboard",        require('./routes/pdiDashboard'));
 apiRouter.use("/pdi/config",           require('./routes/pdiConfig'));
+apiRouter.use("/pdi/informes",         require('./routes/pdiInforme'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');

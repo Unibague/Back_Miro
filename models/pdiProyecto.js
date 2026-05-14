@@ -4,6 +4,7 @@ const pdiProyectoSchema = new mongoose.Schema({
     codigo:              { type: String, required: true },
     nombre:              { type: String, required: true },
     descripcion:         { type: String, default: '' },
+    num_acciones:        { type: Number, default: 0 },
     peso:                { type: Number, required: true, min: 0, max: 100 },
     avance:              { type: Number, default: 0, min: 0, max: 100 },
     formulador:          { type: String, required: true },
