@@ -243,8 +243,12 @@ ctrl.importExecuted = async (req, res) => {
                 accion = findAction(importedAction.nombre_accion, proyecto._id);
             } else {
                 // Modo global: buscar acción directamente en toda la BD
-                accion = findAction(importedAction.nombre_accion, null);
-                if (accion) proyecto = accion.proyecto_id;
+                proyecto = projectMap.get(normalizeCode(importedAction.codigo_proyecto))
+                    || projectNameMap.get(normalizeText(importedAction.nombre_proyecto));
+                accion = proyecto
+                    ? findAction(importedAction.nombre_accion, proyecto._id)
+                    : findAction(importedAction.nombre_accion, null);
+                if (accion && !proyecto) proyecto = accion.proyecto_id;
             }
 
             if (!accion) {
@@ -375,7 +379,7 @@ ctrl.importExecuted = async (req, res) => {
                 acciones: accionesNoEncontradas,
             },
             criterio: {
-                presupuesto_ejecutado: 'Se toma la columna "Ejecucion ano 2026" por accion y el proyecto queda con la suma de sus acciones actualizadas.',
+                presupuesto_ejecutado: 'Se toma el "Total Actividad" de los bloques inferiores. La tabla superior se usa solo para identificar si corresponde a Gasto o Inversion.',
             },
         });
     } catch (e) {

@@ -295,12 +295,59 @@ function detectTipo(firstCell, gastoVal, inversionVal) {
     if (/^Inversi/i.test(firstCell)) return 'inversion';
     if (gastoVal > 0 && inversionVal === 0) return 'gasto';
     if (inversionVal > 0 && gastoVal === 0) return 'inversion';
+    if (gastoVal > 0 && inversionVal > 0) return 'mixto';
     return 'general';
 }
 
 function parseExecutedSummaryRows(rows, sheetName, workbook) {
-    const aggregatedByProject = new Map();
+    const parsedSummary = buildSummaryIndex(rows);
+    const parsedDetailActions = parseActivityExecutionBlocks(rows, parsedSummary);
+    const parsedActions = parsedDetailActions.length > 0
+        ? parsedDetailActions
+        : parseTopExecutionRows(parsedSummary.actions);
+    const parsedAggregates = aggregateExecutedActionsByProject(parsedActions);
+    const parsedProjectTitle = extractSheetTitle(rows);
+
+    return {
+        fileName: workbook?.Props?.Title || null,
+        sheetName,
+        projectTitle: parsedProjectTitle,
+        rowsRead: rows.length,
+        actionsDetected: parsedActions.length,
+        projects: Array.from(parsedAggregates.values())
+            .sort((a, b) => String(a.codigo || a.nombre_proyecto).localeCompare(String(b.codigo || b.nombre_proyecto))),
+        actions: parsedActions,
+    };
+}
+
+function stripTipoPrefix(value) {
+    return String(value || '')
+        .replace(/^\s*(Gasto|Inversi(?:o|\u00f3)n)\s*:\s*/i, '')
+        .trim();
+}
+
+function detectExplicitTipo(value) {
+    const normalized = normalizeText(value);
+    if (normalized.startsWith('gasto ')) return 'gasto';
+    if (normalized.startsWith('inversion ')) return 'inversion';
+    return null;
+}
+
+function extractSheetTitle(rows) {
+    for (let i = 0; i < Math.min(rows.length, 6); i += 1) {
+        const cell = String(rows[i]?.[0] || '').trim();
+        const normalized = normalizeText(cell);
+        if (cell && !/^(acciones estrategicas|proyecto|total|actividad|presupuesto)/i.test(normalized)) {
+            return cell;
+        }
+    }
+
+    return null;
+}
+
+function buildSummaryIndex(rows) {
     const actions = [];
+    const byName = new Map();
     let currentProjectCode = null;
     let currentProjectName = '';
 
@@ -308,80 +355,187 @@ function parseExecutedSummaryRows(rows, sheetName, workbook) {
         const row = rows[index] || [];
         const firstCell = String(row[0] || '').trim();
 
+        if (/^Actividad:/i.test(firstCell)) break;
         if (!firstCell) continue;
 
         if (/^Proyecto:/i.test(firstCell)) {
             currentProjectName = firstCell.replace(/^Proyecto:\s*/i, '').trim();
             currentProjectCode = extractProjectCodeFromLabel(currentProjectName);
-
-            if (!aggregatedByProject.has(currentProjectCode || currentProjectName)) {
-                aggregatedByProject.set(currentProjectCode || currentProjectName, {
-                    codigo: currentProjectCode,
-                    nombre_proyecto: currentProjectName,
-                    presupuesto_ejecutado: 0,
-                    gasto_total: 0,
-                    inversion_total: 0,
-                    acciones: 0,
-                });
-            }
             continue;
         }
 
-        if (/^Totales$/i.test(firstCell) || /^Actividad:/i.test(firstCell)) {
-            break;
-        }
-
-        if (!currentProjectName || /^Total Proyecto$/i.test(firstCell)) {
+        if (
+            !currentProjectName
+            || /^Total Proyecto$/i.test(firstCell)
+            || /^Totales$/i.test(firstCell)
+            || normalizeText(firstCell) === 'acciones estrategicas'
+        ) {
             continue;
         }
 
-        const gastoVal = toNumber(row[3]);
-        const inversionVal = toNumber(row[4]);
-        const ejecucionAnio = toNumber(row[6]);
-        // Usar ejecución registrada; si está vacía, tomar gasto+inversión como monto comprometido
-        const presupuestoEjecutado = ejecucionAnio > 0 ? ejecucionAnio : (gastoVal + inversionVal);
-        const tipo = detectTipo(firstCell, gastoVal, inversionVal);
-        const nombre_accion_clean = firstCell.replace(/^(Gasto:|Inversión:|Inversion:)\s*/i, '').trim();
-
-        const projectKey = currentProjectCode || currentProjectName;
-        const project = aggregatedByProject.get(projectKey);
-        if (!project) continue;
-
-        project.presupuesto_ejecutado += presupuestoEjecutado;
-        project.gasto_total += tipo === 'gasto' ? presupuestoEjecutado : 0;
-        project.inversion_total += tipo === 'inversion' ? presupuestoEjecutado : 0;
-        project.acciones += 1;
-
-        actions.push({
+        const gastoPresupuesto = toNumber(row[3]);
+        const inversionPresupuesto = toNumber(row[4]);
+        const nombreAccion = stripTipoPrefix(firstCell);
+        const tipo = detectExplicitTipo(firstCell) || detectTipo(firstCell, gastoPresupuesto, inversionPresupuesto);
+        const action = {
             fila: index + 1,
             codigo_accion: null,
             codigo_proyecto: currentProjectCode,
             nombre_proyecto: currentProjectName,
-            nombre_accion: nombre_accion_clean,
+            nombre_accion: nombreAccion,
+            tipo,
+            gasto_presupuesto: gastoPresupuesto,
+            inversion_presupuesto: inversionPresupuesto,
+            ejecucion_anio: toNumber(row[6]),
+            observacion: row[5] || '',
+        };
+        const key = normalizeText(nombreAccion);
+
+        actions.push(action);
+        if (!byName.has(key)) byName.set(key, []);
+        byName.get(key).push(action);
+    }
+
+    return { actions, byName };
+}
+
+function findSummaryAction(summary, activityName, explicitTipo) {
+    const normalizedName = normalizeText(stripTipoPrefix(activityName));
+    const candidates = summary.byName.get(normalizedName) || [];
+
+    if (candidates.length > 0) {
+        return explicitTipo
+            ? candidates.find((action) => action.tipo === explicitTipo) || candidates[0]
+            : candidates[0];
+    }
+
+    return summary.actions.find((action) => {
+        const candidateName = normalizeText(action.nombre_accion);
+        return normalizedName.length > 10
+            && (candidateName.includes(normalizedName.slice(0, Math.floor(normalizedName.length * 0.7)))
+                || normalizedName.includes(candidateName.slice(0, Math.floor(candidateName.length * 0.7))));
+    }) || null;
+}
+
+function parseActivityExecutionBlocks(rows, summary) {
+    const actions = [];
+    let block = null;
+
+    const closeBlock = (totalValue) => {
+        if (!block?.nombre_accion) return;
+
+        const explicitTipo = detectExplicitTipo(block.rawName);
+        const summaryAction = findSummaryAction(summary, block.nombre_accion, explicitTipo);
+        let tipo = explicitTipo || summaryAction?.tipo || 'gasto';
+        const presupuestoEjecutado = Number.isFinite(totalValue) ? totalValue : block.detalleTotal;
+
+        if (tipo === 'general' || tipo === 'mixto') {
+            tipo = (summaryAction?.inversion_presupuesto || 0) > 0
+                && (summaryAction?.gasto_presupuesto || 0) === 0
+                ? 'inversion'
+                : 'gasto';
+        }
+
+        actions.push({
+            fila: block.fila,
+            codigo_accion: null,
+            codigo_proyecto: summaryAction?.codigo_proyecto || null,
+            nombre_proyecto: summaryAction?.nombre_proyecto || null,
+            nombre_accion: stripTipoPrefix(block.nombre_accion),
             tipo,
             gasto: tipo === 'gasto' ? presupuestoEjecutado : 0,
             inversion: tipo === 'inversion' ? presupuestoEjecutado : 0,
             presupuesto_ejecutado: presupuestoEjecutado,
-            observacion: row[5] || '',
+            observacion: summaryAction?.observacion || block.observacion || '',
         });
-    }
-
-    // Buscar el título del macro en las primeras filas (ignorar cabeceras y filas de proyecto)
-    let projectTitle = null;
-    const SKIP_PATTERNS = /^(Acciones Estratégicas|Proyecto:|Total|Actividad:|Presupuesto)/i;
-    for (let i = 0; i < Math.min(rows.length, 6); i++) {
-        const cell = String(rows[i]?.[0] || '').trim();
-        if (cell && !SKIP_PATTERNS.test(cell)) { projectTitle = cell; break; }
-    }
-
-    return {
-        fileName: workbook?.Props?.Title || null,
-        sheetName,
-        projectTitle,
-        rowsRead: rows.length,
-        actionsDetected: actions.length,
-        projects: Array.from(aggregatedByProject.values())
-            .sort((a, b) => String(a.codigo || a.nombre_proyecto).localeCompare(String(b.codigo || b.nombre_proyecto))),
-        actions,
     };
+
+    for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index] || [];
+        const firstCell = String(row[0] || '').trim();
+
+        if (/^Actividad:/i.test(firstCell)) {
+            if (block) closeBlock(block.detalleTotal);
+            block = {
+                fila: index + 1,
+                rawName: row[1] || '',
+                nombre_accion: stripTipoPrefix(row[1] || ''),
+                detalleTotal: 0,
+                observacion: '',
+            };
+            continue;
+        }
+
+        if (!block) continue;
+
+        if (/^Total Actividad$/i.test(firstCell)) {
+            closeBlock(toNumber(row[6]));
+            block = null;
+            continue;
+        }
+
+        if (/^Tercero$/i.test(firstCell)) continue;
+
+        const detailValue = toNumber(row[6]);
+        block.detalleTotal += detailValue;
+        if (!block.observacion && row[2]) {
+            block.observacion = String(row[2]).trim();
+        }
+    }
+
+    if (block) closeBlock(block.detalleTotal);
+
+    return actions;
+}
+
+function parseTopExecutionRows(summaryActions) {
+    return summaryActions.map((action) => {
+        let tipo = action.tipo;
+        const presupuestoEjecutado = action.ejecucion_anio || 0;
+
+        if (tipo === 'general' || tipo === 'mixto') {
+            tipo = (action.inversion_presupuesto || 0) > 0 && (action.gasto_presupuesto || 0) === 0
+                ? 'inversion'
+                : 'gasto';
+        }
+
+        return {
+            fila: action.fila,
+            codigo_accion: null,
+            codigo_proyecto: action.codigo_proyecto,
+            nombre_proyecto: action.nombre_proyecto,
+            nombre_accion: action.nombre_accion,
+            tipo,
+            gasto: tipo === 'gasto' ? presupuestoEjecutado : 0,
+            inversion: tipo === 'inversion' ? presupuestoEjecutado : 0,
+            presupuesto_ejecutado: presupuestoEjecutado,
+            observacion: action.observacion || '',
+        };
+    });
+}
+
+function aggregateExecutedActionsByProject(actions) {
+    const aggregatedByProject = new Map();
+
+    for (const action of actions) {
+        const projectKey = action.codigo_proyecto || action.nombre_proyecto || 'Sin proyecto';
+        if (!aggregatedByProject.has(projectKey)) {
+            aggregatedByProject.set(projectKey, {
+                codigo: action.codigo_proyecto,
+                nombre_proyecto: action.nombre_proyecto,
+                presupuesto_ejecutado: 0,
+                gasto_total: 0,
+                inversion_total: 0,
+                acciones: 0,
+            });
+        }
+
+        const project = aggregatedByProject.get(projectKey);
+        project.presupuesto_ejecutado += action.presupuesto_ejecutado || 0;
+        project.gasto_total += action.gasto || 0;
+        project.inversion_total += action.inversion || 0;
+        project.acciones += 1;
+    }
+
+    return aggregatedByProject;
 }
