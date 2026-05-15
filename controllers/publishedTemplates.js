@@ -410,6 +410,21 @@ const convertHyperlinkToText = (value) => {
   return result;
 };
 
+const isMeaningfulMergedValue = (value) => {
+  const cleanValue = convertHyperlinkToText(value);
+  if (String(cleanValue).trim() === '[object Object]') return false;
+  return !isBlankOptionalValue(cleanValue);
+};
+
+const hasLoadedDataValues = (loadedData) =>
+  Array.isArray(loadedData?.filled_data) &&
+  loadedData.filled_data.some((fieldData) =>
+    Array.isArray(fieldData?.values) && fieldData.values.some((value) => isMeaningfulMergedValue(value))
+  );
+
+const hasMergedRowInformation = (row = {}) =>
+  Object.entries(row).some(([key, value]) => key !== 'Dependencia' && isMeaningfulMergedValue(value));
+
 datetime_now = () => {
   const now = new Date();
 
@@ -1261,17 +1276,19 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     });
 
     // Filtrar datos por dependencia del usuario si se solicita
-    let filteredLoadedData = template.loaded_data;
+    let filteredLoadedData = Array.isArray(template.loaded_data) ? template.loaded_data : [];
     
     if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
       // Obtener todas las dependencias del usuario
       const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
       
       // Filtrar solo los datos de las dependencias del usuario
-      filteredLoadedData = template.loaded_data.filter(data => 
+      filteredLoadedData = filteredLoadedData.filter(data => 
         allUserDependencies.includes(data.dependency)
       );
     }
+
+    filteredLoadedData = filteredLoadedData.filter(hasLoadedDataValues);
 
     const dependencies = await Dependency.find({ dep_code: { $in: filteredLoadedData.map(data => data.dependency) } });
 
@@ -1335,17 +1352,17 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
             finalData[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
           }
           const fieldName = normalizeFieldName(item.field_name);
-          finalData[index][fieldName] = value || "";
+          finalData[index][fieldName] = isBlankOptionalValue(value) ? "" : value;
         });
       });
 
 
        console.log('INFO CARGADA', finalData);
     
-      return finalData;
+      return finalData.filter(hasMergedRowInformation);
     }));
     
-    data = data.flat();
+    data = data.flat().filter(hasMergedRowInformation);
 
     // Detectar si es plantilla de beneficiarios y enriquecer datos
     const templateName = template.name ? template.name.toUpperCase().replace(/\s+/g, '_') : '';
