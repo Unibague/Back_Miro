@@ -3,11 +3,12 @@ const ExcelJS = require("exceljs");
 const HistoricoDocentes = require("../models/historicoDocentes");
 const UserService = require("../services/users");
 const {
-  uploadFileToGoogleDrive,
   downloadDriveFileBuffer,
 } = require("../config/googleDrive");
 
 const controller = {};
+
+const VALID_CATEGORIES = ['snies', 'plantillas', 'informes'];
 
 const parseSheetsFromBuffer = async (buffer) => {
   const workbook = new ExcelJS.Workbook();
@@ -21,7 +22,6 @@ const parseSheetsFromBuffer = async (buffer) => {
 
     let headerRowIndex = 1;
 
-    // Buscar la fila con más encabezados en las primeras 10 filas
     let maxCells = 0;
     for (let r = 1; r <= Math.min(10, worksheet.rowCount); r++) {
       const row = worksheet.getRow(r);
@@ -39,7 +39,6 @@ const parseSheetsFromBuffer = async (buffer) => {
       headers[colIndex - 1] = val || `Columna ${colIndex}`;
     });
 
-    // Quitar encabezados vacíos al final
     while (headers.length > 0 && !headers[headers.length - 1]) {
       headers.pop();
     }
@@ -61,11 +60,7 @@ const parseSheetsFromBuffer = async (buffer) => {
       }
     }
 
-    sheets.push({
-      name: worksheet.name,
-      headers,
-      rows,
-    });
+    sheets.push({ name: worksheet.name, headers, rows });
   });
 
   return sheets;
@@ -74,8 +69,7 @@ const parseSheetsFromBuffer = async (buffer) => {
 const getCellText = (value) => {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean")
-    return String(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (value instanceof Date) return value.toLocaleDateString("es-CO");
   if (Array.isArray(value)) return value.map(getCellText).join(", ");
   if (typeof value === "object") {
@@ -89,17 +83,77 @@ const getCellText = (value) => {
   return "";
 };
 
+// GET /historico-docentes/list?category=&email=&periodId=
+controller.listFiles = async (req, res) => {
+  const { category = 'snies', email, periodId } = req.query;
+
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
+
+  try {
+    const query = {
+      active: true,
+      $or: [
+        { category },
+        ...(category === 'snies' ? [{ category: { $exists: false } }] : [])
+      ]
+    };
+
+    // Filtrar por período solo para plantillas e informes
+    if (category !== 'snies' && periodId) {
+      query.period = periodId;
+    }
+
+    const files = await HistoricoDocentes.find(query)
+      .select('_id file_name uploaded_by updatedAt createdAt category sheets')
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      files: files.map(f => ({
+        _id: f._id,
+        file_name: f.file_name,
+        uploaded_by: f.uploaded_by,
+        updatedAt: f.updatedAt,
+        createdAt: f.createdAt,
+        category: f.category || 'snies',
+        sheetsInfo: (f.sheets || []).map((s, i) => ({
+          index: i,
+          name: s.name,
+          totalRows: s.rows.length,
+        })),
+      }))
+    });
+  } catch (error) {
+    console.error("Error listando archivos:", error);
+    return res.status(500).json({ message: "Error al listar los archivos.", error: error.message });
+  }
+};
+
+// DELETE /historico-docentes/:id
+controller.deleteFile = async (req, res) => {
+  const { id } = req.params;
+  const { email } = req.query;
+
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
+
+  try {
+    const registro = await HistoricoDocentes.findById(id);
+    if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
+
+    await HistoricoDocentes.findByIdAndDelete(id);
+    return res.status(200).json({ message: "Archivo eliminado correctamente." });
+  } catch (error) {
+    console.error("Error eliminando archivo:", error);
+    return res.status(500).json({ message: "Error al eliminar el archivo.", error: error.message });
+  }
+};
+
 // POST /historico-docentes/upload
 controller.upload = async (req, res) => {
-  const { email } = req.body;
+  const { email, category = 'snies' } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ message: "El email es requerido." });
-  }
-
-  if (!req.file) {
-    return res.status(400).json({ message: "El archivo Excel es requerido." });
-  }
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
+  if (!VALID_CATEGORIES.includes(category)) return res.status(400).json({ message: "Categoría no válida." });
+  if (!req.file) return res.status(400).json({ message: "El archivo Excel es requerido." });
 
   let user;
   try {
@@ -112,89 +166,83 @@ controller.upload = async (req, res) => {
   const ext = fileName.toLowerCase();
   if (!ext.endsWith(".xlsx") && !ext.endsWith(".xlsm")) {
     fs.unlinkSync(req.file.path);
-    return res
-      .status(400)
-      .json({ message: "Solo se aceptan archivos .xlsx o .xlsm." });
+    return res.status(400).json({ message: "Solo se aceptan archivos .xlsx o .xlsm." });
   }
 
   try {
-    // Parsear el Excel
     const buffer = fs.readFileSync(req.file.path);
     const sheets = await parseSheetsFromBuffer(buffer);
 
     if (sheets.length < 1) {
       fs.unlinkSync(req.file.path);
-      return res
-        .status(400)
-        .json({ message: "El archivo no contiene hojas válidas." });
+      return res.status(400).json({ message: "El archivo no contiene hojas válidas." });
     }
 
-    // Subir a Google Drive
-    const uploaded = await uploadFileToGoogleDrive(
-      req.file,
-      "Formatos/Historico Docentes",
-      fileName
-    );
+    // Solo para SNIES se reemplaza el archivo anterior
+    if (category === 'snies') {
+      await HistoricoDocentes.deleteMany({ $or: [{ category: 'snies' }, { category: { $exists: false } }] });
+    }
 
-    // Eliminar registros anteriores
-    await HistoricoDocentes.deleteMany({});
-
-    // Guardar en MongoDB
     const registro = new HistoricoDocentes({
       file_name: fileName,
-      uploaded_by: {
-        full_name: user.full_name || user.name,
-        email: user.email,
-      },
-      drive_file_id: uploaded.id,
-      drive_file_link: uploaded.webViewLink,
-      drive_file_download: uploaded.webContentLink,
+      uploaded_by: { full_name: user.full_name || user.name, email: user.email },
       sheets,
+      category,
+      period: (category !== 'snies' && req.body.periodId) ? req.body.periodId : null,
       active: true,
     });
 
     await registro.save();
-
     fs.unlinkSync(req.file.path);
 
     return res.status(201).json({
-      message: "Histórico de docentes cargado correctamente.",
+      message: "Archivo cargado correctamente.",
       registro: {
         _id: registro._id,
         file_name: registro.file_name,
         uploaded_by: registro.uploaded_by,
         drive_file_link: registro.drive_file_link,
-        sheets: registro.sheets.map((s) => ({ name: s.name, headers: s.headers, totalRows: s.rows.length })),
+        category: registro.category,
+        sheetsInfo: registro.sheets.map((s) => ({ name: s.name, headers: s.headers, totalRows: s.rows.length })),
         createdAt: registro.createdAt,
       },
     });
   } catch (error) {
-    console.error("Error al cargar histórico de docentes:", error);
-    if (req.file?.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    return res
-      .status(500)
-      .json({ message: "Error al procesar el archivo.", error: error.message });
+    console.error("Error al cargar archivo:", error);
+    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    return res.status(500).json({ message: "Error al procesar el archivo.", error: error.message });
   }
 };
 
 const normalizeHeader = (h) =>
   (h || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-// GET /historico-docentes/data
+// GET /historico-docentes/data?email=&category=&id=&sheet=&page=&limit=&year=&search=
 controller.getData = async (req, res) => {
-  const { email, sheet, page = 1, limit = 100, year } = req.query;
+  const { email, sheet, page = 1, limit = 100, year, category = 'snies', id } = req.query;
 
-  if (!email) {
-    return res.status(400).json({ message: "El email es requerido." });
-  }
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
 
   try {
-    const registro = await HistoricoDocentes.findOne({ active: true }).sort({ createdAt: -1 });
+    let registro;
+
+    if (id) {
+      // Consulta por ID específico (para plantillas/informes)
+      registro = await HistoricoDocentes.findById(id);
+    } else {
+      // Consulta del más reciente (para SNIES)
+      const query = {
+        active: true,
+        $or: [
+          { category },
+          ...(category === 'snies' ? [{ category: { $exists: false } }] : [])
+        ]
+      };
+      registro = await HistoricoDocentes.findOne(query).sort({ createdAt: -1 });
+    }
 
     if (!registro) {
-      return res.status(200).json({ data: null, message: "No hay histórico cargado aún." });
+      return res.status(200).json({ data: null, message: "No hay archivo cargado aún." });
     }
 
     const pageNum = parseInt(page, 10) || 1;
@@ -202,16 +250,12 @@ controller.getData = async (req, res) => {
     const sheetIndex = sheet !== undefined ? parseInt(sheet, 10) : 0;
 
     const sheetData = registro.sheets[sheetIndex];
-    if (!sheetData) {
-      return res.status(404).json({ message: "Hoja no encontrada." });
-    }
+    if (!sheetData) return res.status(404).json({ message: "Hoja no encontrada." });
 
-    // Detectar columna de año por nombre (ano, año, AÑO, ANO, etc.)
     const yearColIndex = sheetData.headers.findIndex(
       (h) => normalizeHeader(h) === "ano"
     );
 
-    // Años únicos disponibles en esta hoja
     let availableYears = [];
     if (yearColIndex >= 0) {
       const yearSet = new Set();
@@ -222,7 +266,6 @@ controller.getData = async (req, res) => {
       availableYears = Array.from(yearSet).sort();
     }
 
-    // Filtrar filas por año y/o búsqueda de texto
     let filteredRows = sheetData.rows;
     if (year && yearColIndex >= 0) {
       filteredRows = filteredRows.filter(
@@ -233,9 +276,7 @@ controller.getData = async (req, res) => {
       const searchTerm = req.query.search.toString().trim().toLowerCase();
       if (searchTerm) {
         filteredRows = filteredRows.filter((row) =>
-          row.some((cell) =>
-            (cell || "").toString().toLowerCase().includes(searchTerm)
-          )
+          row.some((cell) => (cell || "").toString().toLowerCase().includes(searchTerm))
         );
       }
     }
@@ -251,6 +292,7 @@ controller.getData = async (req, res) => {
       drive_file_link: registro.drive_file_link,
       drive_file_download: registro.drive_file_download,
       updatedAt: registro.updatedAt,
+      category: registro.category || 'snies',
       sheetsInfo: registro.sheets.map((s, i) => ({
         index: i,
         name: s.name,
@@ -269,34 +311,63 @@ controller.getData = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Error al obtener histórico de docentes:", error);
+    console.error("Error al obtener datos:", error);
     return res.status(500).json({ message: "Error al obtener los datos.", error: error.message });
   }
 };
 
 // GET /historico-docentes/download
 controller.downloadFile = async (req, res) => {
-  const { email } = req.query;
+  const { email, category = 'snies', id } = req.query;
 
-  if (!email) {
-    return res.status(400).json({ message: "El email es requerido." });
-  }
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
 
   try {
-    const registro = await HistoricoDocentes.findOne({ active: true }).sort({ createdAt: -1 });
+    let registro;
+    if (id) {
+      registro = await HistoricoDocentes.findById(id);
+    } else {
+      const query = {
+        active: true,
+        $or: [
+          { category },
+          ...(category === 'snies' ? [{ category: { $exists: false } }] : [])
+        ]
+      };
+      registro = await HistoricoDocentes.findOne(query).sort({ createdAt: -1 });
+    }
 
     if (!registro || !registro.drive_file_id) {
       return res.status(404).json({ message: "No hay archivo disponible para descargar." });
     }
 
     const buffer = await downloadDriveFileBuffer(registro.drive_file_id);
-
     res.setHeader("Content-Disposition", `attachment; filename="${registro.file_name}"`);
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     return res.send(buffer);
   } catch (error) {
-    console.error("Error al descargar histórico de docentes:", error);
+    console.error("Error al descargar archivo:", error);
     return res.status(500).json({ message: "Error al descargar el archivo.", error: error.message });
+  }
+};
+
+// PATCH /historico-docentes/:id/rename
+controller.renameFile = async (req, res) => {
+  const { id } = req.params;
+  const { file_name } = req.body;
+
+  if (!file_name?.trim()) return res.status(400).json({ message: "El nombre es requerido." });
+
+  try {
+    const registro = await HistoricoDocentes.findByIdAndUpdate(
+      id,
+      { file_name: file_name.trim() },
+      { new: true }
+    );
+    if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
+    return res.status(200).json({ message: "Nombre actualizado.", file_name: registro.file_name });
+  } catch (error) {
+    return res.status(500).json({ message: "Error al renombrar.", error: error.message });
   }
 };
 

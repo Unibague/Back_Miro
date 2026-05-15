@@ -17,6 +17,8 @@ const historicoDocentesSchema = new mongoose.Schema(
     drive_file_link: { type: String },
     drive_file_download: { type: String },
     sheets: [sheetDataSchema],
+    category: { type: String, enum: ['snies', 'plantillas', 'informes'], default: 'snies' },
+    period: { type: mongoose.Schema.Types.ObjectId, ref: 'periods', default: null },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }
