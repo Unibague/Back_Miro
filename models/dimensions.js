@@ -14,7 +14,12 @@ const dimensionSchema = new mongoose.Schema({
       type: Schema.Types.ObjectId,
       ref: 'dependencies',
       required: true
-    }
+    },
+    producers: [{
+      type: Schema.Types.ObjectId,
+      ref: 'dependencies',
+      default: []
+    }]
 },
 {
     versionKey: false,

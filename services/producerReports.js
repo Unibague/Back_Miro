@@ -8,15 +8,13 @@ const { ObjectId } = mongoose.Types;
 const datetime_now = () => {
   const now = new Date();
 
-  const offset = -5; // GMT-5
+  const offset = -5; 
   const dateWithOffset = new Date(now.getTime() + offset * 60 * 60 * 1000);
 
   return new Date(dateWithOffset.setMilliseconds(now.getMilliseconds()));
 };
 
 class ProducerReportsService {
-// services/ProducerReportsService.js
-
 static async getReports(periodId = null) {
   try {
     const reports = await ProducerReport.find().lean();

@@ -452,7 +452,7 @@ pubReportController.feedOptionsForPublish = async (req, res) => {
         .status(403)
         .json({ status: "User not found or isn't an active administrator" });
     }
-    //TODO FILTER ONLY ACTIVE PERIODS
+    //TODO FILTER ONLY ACTIVE PERIODSssss
     const currentDate = datetime_now();
     console.log('Current date from datetime_now():', currentDate);
     

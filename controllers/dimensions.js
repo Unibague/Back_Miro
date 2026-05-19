@@ -62,6 +62,7 @@ dimensionController.getDimensionsPagination = async (req, res) => {
     const dimensions = await Dimension
       .find(query)
       .populate('responsible')
+      .populate('producers')
       .skip(skip)
       .limit(limit);
     const total = await Dimension.countDocuments(query);
@@ -228,14 +229,12 @@ dimensionController.getProducers = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const dimension = await Dimension.findById(id);
+    const dimension = await Dimension.findById(id).populate('producers');
     if (!dimension) {
       return res.status(404).json({ error: "Dimension not found" });
     }
 
-    const producers = await Dependency.find({ dep_code: { $in: dimension.producers } });
-
-    res.status(200).json(producers);
+    res.status(200).json(dimension.producers || []);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

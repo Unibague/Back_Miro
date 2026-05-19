@@ -44,15 +44,27 @@ processDocumentsController.getByPhase = async (req, res) => {
 };
 
 // GET /process-documents/by-process?process_id=...
+// Incluye: PDF de resolución / docs de «información del caso» (process_id) y también
+// todos los adjuntos de fases/actividades/subactividades (phase_id ∈ fases del proceso),
+// porque POST /process-documents/:phaseId no guarda process_id.
 processDocumentsController.getByProcess = async (req, res) => {
   try {
     const { process_id, caso_date_key } = req.query;
     if (!process_id) {
       return res.status(400).json({ error: 'process_id es requerido' });
     }
-    const query = { process_id };
-    if (caso_date_key) query.caso_date_key = caso_date_key;
-    const docs = await ProcessDocument.find(query).sort({ createdAt: -1 });
+    if (caso_date_key) {
+      const query = { process_id, caso_date_key };
+      const docs = await ProcessDocument.find(query).sort({ createdAt: -1 });
+      return res.status(200).json(docs);
+    }
+
+    const phaseIds = await Phase.find({ proceso_id: process_id }).distinct('_id');
+    const or = [{ process_id }];
+    if (phaseIds.length) {
+      or.push({ phase_id: { $in: phaseIds } });
+    }
+    const docs = await ProcessDocument.find({ $or: or }).sort({ createdAt: -1 });
     res.status(200).json(docs);
   } catch (error) {
     console.error('Error obteniendo documentos de proceso:', error);

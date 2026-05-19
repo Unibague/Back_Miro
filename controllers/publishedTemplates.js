@@ -1,10 +1,11 @@
 const PublishedTemplate = require('../models/publishedTemplates.js');
 const Template = require('../models/templates.js')
+const SniesTemplate = require('../models/sniesTemplates');
+const CnaTemplate = require('../models/cnaTemplates');
 const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
 const User = require('../models/users.js')
-const ValidatorModel = require('../models/validators');
 const Validator = require('./validators.js');
 const Log = require('../models/logs');
 const UserService = require('../services/users.js');
@@ -15,6 +16,57 @@ const auditLogger = require('../services/auditLogger');
 const axios = require('axios');
 
 const publTempController = {};
+
+const isBlankOptionalValue = (value) => {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'number') return Number.isNaN(value);
+  if (Array.isArray(value)) {
+    return value.length === 0 || value.every((item) => isBlankOptionalValue(item));
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '' || normalized === 'null' || normalized === 'nan';
+};
+
+const resolveLatestTemplateSnapshot = async (templateSnapshot) => {
+  const templateId = templateSnapshot?._id;
+  if (!templateId) return null;
+
+  const latestTemplate =
+    await Template.findById(templateId).lean() ||
+    await SniesTemplate.findById(templateId).lean() ||
+    await CnaTemplate.findById(templateId).lean();
+
+  return latestTemplate || null;
+};
+
+const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
+  if (!publishedTemplate?.template?._id) return publishedTemplate;
+
+  const latestTemplate = await resolveLatestTemplateSnapshot(publishedTemplate.template);
+  if (!latestTemplate) return publishedTemplate;
+
+  const currentTemplateId = String(publishedTemplate.template._id);
+  const latestTemplateId = String(latestTemplate._id);
+  const currentFields = JSON.stringify(publishedTemplate.template.fields || []);
+  const latestFields = JSON.stringify(latestTemplate.fields || []);
+  const currentWorkbookSheets = JSON.stringify(publishedTemplate.template.workbook_sheets || []);
+  const latestWorkbookSheets = JSON.stringify(latestTemplate.workbook_sheets || []);
+
+  if (
+    currentTemplateId !== latestTemplateId ||
+    currentFields !== latestFields ||
+    currentWorkbookSheets !== latestWorkbookSheets ||
+    String(publishedTemplate.template.original_workbook_base64 || "") !== String(latestTemplate.original_workbook_base64 || "") ||
+    JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
+    JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
+  ) {
+    publishedTemplate.template = latestTemplate;
+    await publishedTemplate.save();
+  }
+
+  return publishedTemplate;
+};
 
 // Mapeo de códigos alfa-2 de países a IDs numéricos
 const countryCodeToId = {
@@ -96,7 +148,7 @@ const idToDescriptiveValue = {
 };
 
 // Función para convertir IDs a valores descriptivos
-const convertIdToDescriptive = async (fieldName, value, templateField = null) => {
+const convertIdToDescriptive = async (fieldName, value, templateField = null, periodId = null) => {
   if (!fieldName || !value) return value;
   
   const fieldNameLower = fieldName.toLowerCase();
@@ -132,7 +184,7 @@ const convertIdToDescriptive = async (fieldName, value, templateField = null) =>
   if (templateField && templateField.validate_with) {
     try {
       const [validatorName, columnName] = templateField.validate_with.split(' - ');
-      const validator = await ValidatorModel.findOne({ name: validatorName });
+      const validator = await Validator.findValidatorByName(validatorName, periodId);
       
       if (validator) {
         const column = validator.columns.find(col => col.name === columnName);
@@ -358,6 +410,21 @@ const convertHyperlinkToText = (value) => {
   return result;
 };
 
+const isMeaningfulMergedValue = (value) => {
+  const cleanValue = convertHyperlinkToText(value);
+  if (String(cleanValue).trim() === '[object Object]') return false;
+  return !isBlankOptionalValue(cleanValue);
+};
+
+const hasLoadedDataValues = (loadedData) =>
+  Array.isArray(loadedData?.filled_data) &&
+  loadedData.filled_data.some((fieldData) =>
+    Array.isArray(fieldData?.values) && fieldData.values.some((value) => isMeaningfulMergedValue(value))
+  );
+
+const hasMergedRowInformation = (row = {}) =>
+  Object.entries(row).some(([key, value]) => key !== 'Dependencia' && isMeaningfulMergedValue(value));
+
 datetime_now = () => {
   const now = new Date();
 
@@ -530,7 +597,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     const updated_templates = await Promise.all(published_templates.map(async template => {
       const validators = await Promise.all(
         template.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with);
+          return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
         })
       );
 
@@ -642,7 +709,7 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
       
       const validators = await Promise.all(
         t.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with);
+          return Validator.giveValidatorToExcel(field.validate_with, t.period?._id || t.period);
         })
       );
 
@@ -831,6 +898,8 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
+    await refreshPublishedTemplateSnapshot(pubTem);
+
     const now = new Date(datetime_now());
     const deadline = new Date(pubTem.deadline);
     
@@ -944,16 +1013,17 @@ const result = pubTem.template.fields.map((field) => {
     }
     
     // Limpiar valores: convertir string "null" a null real
-    if (typeof val === 'string' && val.trim() === 'null') {
+    if (typeof val === 'string' && ['null', 'nan'].includes(val.trim().toLowerCase())) {
       val = null;
     }
     
     // Limpiar valores vacíos para campos no obligatorios
-    if (!field.required && (val === null || val === undefined || (typeof val === 'string' && val.trim() === ''))) {
+    if (!field.required && isBlankOptionalValue(val)) {
       val = null;
     }
 
 if (field.multiple) {
+  if (!field.required && isBlankOptionalValue(val)) return [];
   if (val === null || val === undefined) return [];
 
   // Forzamos a string y separamos por coma
@@ -989,7 +1059,7 @@ if (field.multiple) {
       // 🚀 NUEVO: si tiene validate_with, traer valores válidos
       if (templateField.validate_with) {
         const [validatorName, columnName] = templateField.validate_with.split(" - ");
-        const validator = await ValidatorModel.findOne({ name: validatorName });
+        const validator = await Validator.findValidatorByName(validatorName, pubTem.period?._id || pubTem.period);
 
         if (validator) {
           const validatorColumn = validator.columns.find(c => c.name === columnName);
@@ -1002,7 +1072,7 @@ if (field.multiple) {
 
       templateField.values = field.values;
 
-      const validationResult = await Validator.validateColumn(templateField);
+      const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
       return validationResult;
     });
 
@@ -1206,17 +1276,19 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     });
 
     // Filtrar datos por dependencia del usuario si se solicita
-    let filteredLoadedData = template.loaded_data;
+    let filteredLoadedData = Array.isArray(template.loaded_data) ? template.loaded_data : [];
     
     if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
       // Obtener todas las dependencias del usuario
       const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
       
       // Filtrar solo los datos de las dependencias del usuario
-      filteredLoadedData = template.loaded_data.filter(data => 
+      filteredLoadedData = filteredLoadedData.filter(data => 
         allUserDependencies.includes(data.dependency)
       );
     }
+
+    filteredLoadedData = filteredLoadedData.filter(hasLoadedDataValues);
 
     const dependencies = await Dependency.find({ dep_code: { $in: filteredLoadedData.map(data => data.dependency) } });
 
@@ -1262,7 +1334,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
               // Convertir IDs a valores descriptivos (buscar campo en template para validadores)
               const templateField = template.template.fields ? 
                 template.template.fields.find(f => f.name === item.field_name) : null;
-              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField);
+              cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField, template.period?._id || template.period);
               
               return { value: cleanValue, index };
             })
@@ -1280,17 +1352,17 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
             finalData[index] = { Dependencia: depCodeToNameMap[data.dependency] || data.dependency };
           }
           const fieldName = normalizeFieldName(item.field_name);
-          finalData[index][fieldName] = value || "";
+          finalData[index][fieldName] = isBlankOptionalValue(value) ? "" : value;
         });
       });
 
 
        console.log('INFO CARGADA', finalData);
     
-      return finalData;
+      return finalData.filter(hasMergedRowInformation);
     }));
     
-    data = data.flat();
+    data = data.flat().filter(hasMergedRowInformation);
 
     // Detectar si es plantilla de beneficiarios y enriquecer datos
     const templateName = template.name ? template.name.toUpperCase().replace(/\s+/g, '_') : '';
@@ -1367,6 +1439,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     
     const query = {
       'template.producers': { $in: dependencyIds },
+      'loaded_data.dependency': { $in: dependenciesToQuery },
       name: { $regex: search, $options: 'i' }
     };
     
@@ -1376,8 +1449,6 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
 
     const templates = await PublishedTemplate.find(query)
       .collation({ locale: 'es', strength: 1 })
-      .skip(skip)
-      .limit(limit)
       .populate('period')
       .populate({
         path: 'template',
@@ -1400,28 +1471,28 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       return hasDataForDependencies;
     });
 
+    const normalizedTemplatesWithData = templatesWithData.map((template) => {
+      const templateObject = template.toObject();
+      templateObject.loaded_data = (templateObject.loaded_data || []).filter((data) =>
+        dependenciesToQuery.includes(data.dependency)
+      );
+      return templateObject;
+    });
+
     const templatesWithValidators = await Promise.all(
-      templatesWithData.map(async (template) => {
+      normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
         const validators = await Promise.all(
           template.template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with);
+            return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
           })
         );
-
-        template = template.toObject();
         template.validators = validators.filter(v => v !== undefined);
         return template;
       })
     );
 
     // Contar total real después del filtrado
-    const allTemplatesForCount = await PublishedTemplate.find(query);
-    const totalWithData = allTemplatesForCount.filter(template => {
-      return template.loaded_data.some(data => 
-        dependenciesToQuery.includes(data.dependency) && 
-        data.filled_data !== undefined
-      );
-    }).length;
+    const totalWithData = normalizedTemplatesWithData.length;
 
     res.status(200).json({
       templates: templatesWithValidators,
@@ -1578,7 +1649,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
         const validators = (
           await Promise.all(
             template.template.fields.map(async (field) => 
-              Validator.giveValidatorToExcel(field.validate_with)
+              Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period)
             )
           )
         ).filter(Boolean);
@@ -1618,6 +1689,8 @@ publTempController.getTemplateById = async (req, res) => {
       return res.status(404).json({ status: 'Template not found' });
     }
 
+    await refreshPublishedTemplateSnapshot(publishedTemplate);
+
     const validatorsMap = new Map();
 
     const fieldsWithValidatorIds = await Promise.all(publishedTemplate.template.fields.map(async (field) => {
@@ -1627,7 +1700,7 @@ publTempController.getTemplateById = async (req, res) => {
           const [templateName, columnName] = field.validate_with.split(' - ');
 
           // Buscar en la base de datos por el templateName y luego encontrar la columna correspondiente
-          const validator = await ValidatorModel.findOne({ name: templateName });
+          const validator = await Validator.findValidatorByName(templateName, publishedTemplate.period?._id || publishedTemplate.period);
 
           if (validator) {
             // Encontrar la columna que es validadora
@@ -1657,7 +1730,7 @@ publTempController.getTemplateById = async (req, res) => {
             console.error(`Validator not found for template: ${templateName}`);
           }
         } catch (err) {
-          console.error(`Error during ValidatorModel.findOne: ${err.message}`);
+          console.error(`Error during validator lookup: ${err.message}`);
         }
       }
       return field;

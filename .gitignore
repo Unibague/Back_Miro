@@ -3,3 +3,5 @@ node_modules
 package-lock.json
 .idx
 google-credentials.json
+miro-pdi-drive-*.json
+miro-drive-*.json

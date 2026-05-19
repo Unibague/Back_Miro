@@ -8,7 +8,6 @@ const Report = require('../models/reports');
 const ProducerReport = require('../models/producerReports');
 const UserService = require('../services/users');
 const DependencyService = require('../services/dependency');
-const Validator = require('../models/validators');
 const User = require('../models/users');
 const Dependency = require('../models/dependencies');
 
@@ -86,10 +85,9 @@ periodController.getPeriod = async (req, res) => {
 
 periodController.createPeriod = async (req, res) => {
     const period = new Period(req.body);
-    const [usersData, dependenciesData, validators] = await Promise.all([
+    const [usersData, dependenciesData] = await Promise.all([
       UserService.giveUsersToKeepAndDelete(),
-      DependencyService.giveDependenciesToKeep(),
-      Validator.find()
+      DependencyService.giveDependenciesToKeep()
     ]);
 
     const { usersToKeep, usersToDelete } = usersData;
@@ -105,7 +103,7 @@ periodController.createPeriod = async (req, res) => {
 
     period.screenshot.users = usersToKeep;
     period.screenshot.dependencies = dependencies;
-    period.screenshot.validators = validators;
+    period.screenshot.validators = [];
     period.screenshot_date = new Date();
 
     //TODO: Implementar lógica para cargar estudiantes
@@ -123,11 +121,8 @@ periodController.updateScreenshotsJob = async () => {
     for (const period of periods) {
       const users = await User.find({ isActive: true });
       const dependencies = await Dependency.find();
-      const validators = await Validator.find();
-
       period.screenshot.users = users;
       period.screenshot.dependencies = dependencies;
-      period.screenshot.validators = validators;
       period.screenshot_date = currentDate;
 
       await period.save();
@@ -237,7 +232,7 @@ periodController.feedDuplicateOptions = async (req, res) => {
 
 periodController.getAllPeriods = async (req, res) => {
     try {
-      const periods = await Period.find({}, { _id: 1, name: 1 }).sort({ name: 1 });
+      const periods = await Period.find({}, { _id: 1, name: 1, is_active: 1, end_date: 1 }).sort({ name: 1 });
       res.status(200).json(periods);
     } catch (error) {
       console.error('Error fetching all periods:', error);

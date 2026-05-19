@@ -2,6 +2,8 @@ const express = require('express');
 const morgan = require('morgan');
 const cors = require('cors');
 const connectDB = require('./config/db');
+const path = require('path');
+const initDB = require('./config/db');
 const swaggerRouter = require('./swagger');
 const app = express();
 const cron = require('node-cron');
@@ -15,7 +17,7 @@ const allowedOrigins = [
   'https://mirodev.unibague.edu.co',
 ];
 
-// Configurar Express para entender que está detrás de un proxy inverso
+// Configurar Express para entender que está detrás de  proxy
 app.set('trust proxy', true); 
 
 app.use(cors({
@@ -34,6 +36,14 @@ app.use(cors({
 app.use(express.json({ limit: '500mb', charset: 'utf-8' }));
 app.use(express.urlencoded({ limit: '500mb', extended: false, charset: 'utf-8' }));
 app.use(morgan('dev'));
+
+// Servir archivos estáticos de uploads (evidencias PDI, etc.)
+app.use('/uploads', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
 
 // Configurar charset UTF-8 para todas las respuestas
 app.use((req, res, next) => {
@@ -87,6 +97,21 @@ apiRouter.use("/config-audit", require('./routes/configurationAudit'));
 apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
+apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
+apiRouter.use("/support-templates", require('./routes/supportTemplates'));
+apiRouter.use("/historico-docentes", require('./routes/historicoDocentes'));
+apiRouter.use("/pdi/macroproyectos",   require('./routes/pdiMacroproyecto'));
+apiRouter.use("/pdi/proyectos",        require('./routes/pdiProyecto'));
+apiRouter.use("/pdi/acciones",         require('./routes/pdiAccionEstrategica'));
+apiRouter.use("/pdi/indicadores",      require('./routes/pdiIndicador'));
+apiRouter.use("/pdi/historial",        require('./routes/pdiIndicadorHistorial'));
+apiRouter.use("/pdi/cortes",           require('./routes/pdiCorte'));
+apiRouter.use("/pdi/formularios",      require('./routes/pdiFormulario'));
+apiRouter.use("/pdi/cambios",          require('./routes/pdiSolicitudCambio'));
+apiRouter.use("/pdi/dashboard",        require('./routes/pdiDashboard'));
+apiRouter.use("/pdi/config",           require('./routes/pdiConfig'));
+apiRouter.use("/pdi/informes",         require('./routes/pdiInforme'));
+apiRouter.use("/pdi/presupuesto",      require('./routes/pdiPresupuesto'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');
