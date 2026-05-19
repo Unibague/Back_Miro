@@ -5,13 +5,23 @@ const Program = require('../models/programs');
 const processRemindersController = {};
 
 async function mapAlertaToReminderRow(p) {
-  const program = await Program.findOne({ dep_code_programa: p.program_code }).lean();
+  const { findProgramByProcessCode } = require('../helpers/programByCode');
+  const program = await findProgramByProcessCode(Program, p.program_code);
   const ProcessDoc = require('../models/processDocuments');
   const docs = await ProcessDoc.find({ process_id: p._id, doc_type: 'resolucion' }).lean();
   const documentos = docs.map((d) => ({ name: d.name, view_link: d.view_link }));
+
+  // Para PM: las fechas clave del plan se mapean a los campos estándar de la fila de alerta.
+  // (fecha_inicio = envío PM vicerrectoría, fecha_documento_par = entrega PM al CNA, etc.)
+  const esPM = p.alert_para_tipo === 'PM';
+  const fecha_inicio        = esPM ? (p.fecha_envio_pm_vicerrectoria ?? null)     : (p.fecha_inicio ?? null);
+  const fecha_documento_par = esPM ? (p.fecha_entrega_pm_cna ?? null)             : (p.fecha_documento_par ?? null);
+  const fecha_digitacion    = esPM ? (p.fecha_envio_avance_vicerrectoria ?? null) : (p.fecha_digitacion_saces ?? null);
+  const fecha_radicado      = esPM ? (p.fecha_radicacion_avance_cna ?? null)      : (p.fecha_radicado_men ?? null);
+
   return {
     _id: p._id,
-    process_history_id: p.cerrado_process_history_id,
+    process_history_id: p.cerrado_process_history_id ?? null,
     program_code: p.program_code,
     dep_code_facultad: program?.dep_code_facultad ?? null,
     nombre_programa: program?.nombre ?? p.program_code,
@@ -21,11 +31,17 @@ async function mapAlertaToReminderRow(p) {
     codigo_resolucion: p.snapshot_codigo_resolucion ?? null,
     fecha_resolucion: p.snapshot_fecha_resolucion ?? null,
     duracion_resolucion: p.snapshot_duracion_anos ?? null,
-    fecha_vencimiento: p.fecha_vencimiento ?? null,
-    fecha_inicio: p.fecha_inicio ?? null,
-    fecha_documento_par: p.fecha_documento_par ?? null,
-    fecha_digitacion_saces: p.fecha_digitacion_saces ?? null,
-    fecha_radicado_men: p.fecha_radicado_men ?? null,
+    fecha_vencimiento:      p.fecha_vencimiento ?? null,
+    fecha_inicio,
+    fecha_documento_par,
+    fecha_digitacion_saces: fecha_digitacion,
+    fecha_radicado_men:     fecha_radicado,
+    // Campos PM originales (para lógica extra en el frontend si se necesitan)
+    fecha_envio_pm_vicerrectoria:     p.fecha_envio_pm_vicerrectoria ?? null,
+    fecha_entrega_pm_cna:             p.fecha_entrega_pm_cna ?? null,
+    fecha_envio_avance_vicerrectoria: p.fecha_envio_avance_vicerrectoria ?? null,
+    fecha_radicacion_avance_cna:      p.fecha_radicacion_avance_cna ?? null,
+    parent_process_id: p.parent_process_id ?? null,
     obs_vencimiento: p.obs_vencimiento ?? '',
     obs_inicio: p.obs_inicio ?? '',
     obs_documento_par: p.obs_documento_par ?? '',
@@ -63,7 +79,11 @@ processRemindersController.getAll = async (req, res) => {
 
     const byKey = new Map();
     for (const r of mappedAlerts) {
-      byKey.set(`${r.program_code}|${r.tipo_proceso}`, r);
+      // PM puede haber múltiples por programa (uno por padre AV/AE); usar _id como discriminador.
+      const k = r.tipo_proceso === 'PM'
+        ? `${r.program_code}|PM|${r._id}`
+        : `${r.program_code}|${r.tipo_proceso}`;
+      byKey.set(k, r);
     }
     for (const r of legacyRows) {
       const k = `${r.program_code}|${r.tipo_proceso}`;

@@ -1,10 +1,10 @@
-/* Fases y actividades predefinidas para procesos RC (Registro Calificado) */
-const FASES_BASE_RC = [
+/* Fases y actividades predefinidas para procesos AE (Autoevaluación) */
+const FASES_BASE_AE = [
   {
     numero: 0, nombre: 'Apertura',
     actividades: [
-      { nombre: 'Notificación de la apertura del proceso para solicitud de renovación de registro calificado',               responsables: 'Analista de calidad de Vicerrectoría' },
-      { nombre: 'Notificación de aval del Consejo Superior para solicitud de nuevo registro calificado o reforma curricular', responsables: 'Consejo Superior, Rector(a), Vicerrector(a) y Decano(a)' },
+      { nombre: 'Notificación de la apertura del proceso para solicitud de renovación de registro calificado',                           responsables: 'Analista de calidad de Vicerrectoría' },
+      { nombre: 'Notificación de aval del Consejo Superior para solicitud por primera vez o no renovación de la acreditación de calidad voluntaria', responsables: 'Consejo Superior, Rector(a), Vicerrector(a) y Decano(a)' },
     ],
   },
   {
@@ -18,11 +18,11 @@ const FASES_BASE_RC = [
   {
     numero: 2, nombre: 'Estructuración',
     actividades: [
-      { nombre: 'Construcción del documento maestro y anexos',                          responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
-      { nombre: 'Reuniones parciales de avance',                                        responsables: 'Decano(a), Director(a) de escuela, coordinador(a) de área (programa académico) y analista de calidad de Vicerrectoría' },
-      { nombre: 'Revisión y aval de decanatura: versión final de los documentos',       responsables: 'Decano(a)' },
-      { nombre: 'Entrega 1: documento maestro, enlace drive y tabla de anexos',         responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
-      { nombre: 'Entrega 2: documento pestañas SACES, versión ajustada del documento maestro, drive y tabla de anexos', responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
+      { nombre: 'Construcción del documento maestro, anexos, plan de mejoramiento, plantillas y cuadros CNA',                                                                    responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
+      { nombre: 'Reuniones parciales de avance',                                                                                                                                  responsables: 'Decano(a), Director(a) de escuela, coordinador(a) de área (programa académico) y analista de calidad de Vicerrectoría' },
+      { nombre: 'Revisión y aval de decanatura: versión final de los documentos',                                                                                                 responsables: 'Decano(a)' },
+      { nombre: 'Entrega 1: documento maestro, enlace drive, tabla de anexos, plan de mejoramiento, plantillas y cuadros CNA',                                                    responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
+      { nombre: 'Entrega 2: documentos pestañas CNA, versión ajustada del documento maestro, drive y tabla de anexos, plan de mejoramiento, plantillas y cuadros CNA',           responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
     ],
   },
   {
@@ -35,9 +35,9 @@ const FASES_BASE_RC = [
   {
     numero: 4, nombre: 'Radicación',
     actividades: [
-      { nombre: 'Montaje en plataforma nuevo SACES',                        responsables: 'Auxiliar administrativo de Vicerrectoría' },
-      { nombre: 'Información del caso',                                      responsables: 'Analista de calidad de Vicerrectoría' },
-      { nombre: 'Notificación de confirmación de radicación en plataforma',  responsables: 'Analista de calidad de Vicerrectoría' },
+      { nombre: 'Montaje en plataforma SACES CNA',                                responsables: 'Auxiliar administrativo de Vicerrectoría' },
+      { nombre: 'Información del caso',                                            responsables: 'Analista de calidad de Vicerrectoría' },
+      { nombre: 'Notificación de confirmación de radicación en plataforma',       responsables: 'Analista de calidad de Vicerrectoría' },
     ],
   },
   {
@@ -51,12 +51,12 @@ const FASES_BASE_RC = [
           { nombre: 'Elaboración de respuesta de la completitud',                         responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
           { nombre: 'Revisión y aval de decanatura a la respuesta de la completitud',    responsables: 'Decano(a)' },
           { nombre: 'Revisión y aval de vicerrectoría a la respuesta de la completitud', responsables: 'Analista de calidad de Vicerrectoría' },
-          { nombre: 'Radicación de respuesta a la completitud en plataforma SACES',      responsables: 'Analista de calidad y auxiliar administrativo de Vicerrectoría' },
-          { nombre: 'Notificación de confirmación de radicación en plataforma SACES',    responsables: 'Analista de calidad y auxiliar administrativo de Vicerrectoría' },
+          { nombre: 'Radicación de respuesta a la completitud en plataforma CNA',        responsables: 'Analista de calidad y auxiliar administrativo de Vicerrectoría' },
+          { nombre: 'Notificación de confirmación de radicación en plataforma CNA',      responsables: 'Analista de calidad y auxiliar administrativo de Vicerrectoría' },
         ],
       },
       {
-        nombre: 'Visita de pares académicos (no aplica por tener acreditación)', responsables: '',
+        nombre: 'Visita de pares académicos', responsables: '',
         subactividades: [
           { nombre: 'Notificación de la visita de pares académicos por parte del MEN',                       responsables: 'MEN, analista de calidad de Vicerrectoría' },
           { nombre: 'Coordinar la agenda y visita de pares',                                                  responsables: 'Vicerrectoría, decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
@@ -64,9 +64,9 @@ const FASES_BASE_RC = [
           { nombre: 'Notificación del informe de pares para comentarios del rector MEN',                      responsables: 'Analista de calidad de Vicerrectoría' },
           { nombre: 'Elaboración de respuesta a informe de pares',                                            responsables: 'Decano(a), director(a) de escuela, coordinador(a) de área (programa académico)' },
           { nombre: 'Revisión y aval de decanatura a la respuesta a informe de pares',                       responsables: 'Decano(a)' },
-          { nombre: 'Revisión y aval de Rectoría y Vicerrectoría a la respuesta a informe de pares',         responsables: 'Rector(a), Vicerrector(a), analista de calidad de Vicerrectoría' },
-          { nombre: 'Radicación de respuesta del informe de pares en plataforma SACES',                      responsables: 'Analista de calidad de Vicerrectoría' },
-          { nombre: 'Notificación de confirmación de radicación en plataforma SACES',                        responsables: 'Analista de calidad de Vicerrectoría' },
+          { nombre: 'Revisión y aval de vicerrectoría a la respuesta a informe de pares',                    responsables: 'Rector(a), Vicerrector(a), analista de calidad de Vicerrectoría' },
+          { nombre: 'Radicación de respuesta del informe de pares en plataforma CNA',                        responsables: 'Analista de calidad de Vicerrectoría' },
+          { nombre: 'Notificación de confirmación de radicación en plataforma CNA',                          responsables: 'Analista de calidad de Vicerrectoría' },
         ],
       },
       {
@@ -86,4 +86,4 @@ const FASES_BASE_RC = [
   },
 ];
 
-module.exports = FASES_BASE_RC;
+module.exports = FASES_BASE_AE;

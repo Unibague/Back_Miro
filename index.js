@@ -98,6 +98,8 @@ apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
 apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
+apiRouter.use("/support-templates", require('./routes/supportTemplates'));
+apiRouter.use("/historico-docentes", require('./routes/historicoDocentes'));
 apiRouter.use("/pdi/macroproyectos",   require('./routes/pdiMacroproyecto'));
 apiRouter.use("/pdi/proyectos",        require('./routes/pdiProyecto'));
 apiRouter.use("/pdi/acciones",         require('./routes/pdiAccionEstrategica'));
@@ -109,6 +111,7 @@ apiRouter.use("/pdi/cambios",          require('./routes/pdiSolicitudCambio'));
 apiRouter.use("/pdi/dashboard",        require('./routes/pdiDashboard'));
 apiRouter.use("/pdi/config",           require('./routes/pdiConfig'));
 apiRouter.use("/pdi/informes",         require('./routes/pdiInforme'));
+apiRouter.use("/pdi/presupuesto",      require('./routes/pdiPresupuesto'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');
@@ -133,6 +136,12 @@ async function start() {
     console.error('No se pudo iniciar el API sin MongoDB:', err.message || err);
     process.exit(1);
   }
+
+  const { iniciarCronVigencia, actualizarVigencias } = require('./helpers/cronVigencia');
+  iniciarCronVigencia();
+  actualizarVigencias().catch((e) => {
+    console.error('[cronVigencia] Error en sincronización inicial:', e.message);
+  });
 
   const server = app.listen(PORT, () => {
     if (process.env.NODE_ENV === 'production') {

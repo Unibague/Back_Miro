@@ -6,12 +6,18 @@ const ExcelJS = require("exceljs");
 const PublishedTemplate = require("../models/publishedTemplates");
 const Student = require("../models/students");
 const User = require("../models/users");
+const Dependency = require("../models/dependencies");
 const ValidatorModel = require("../models/validators");
 
 const controller = {};
 
-const GENERATED_COLUMNS = [
-  "NOMBRE_IDENTIFICADO",
+const GENERATED_COLUMN_DEFINITIONS = [
+  { key: "NOMBRE_IDENTIFICADO", label: "Nombre identificado" },
+  { key: "PROGRAMA_DEPENDENCIA", label: "Programa o dependencia" },
+];
+
+const GENERATED_COLUMNS = GENERATED_COLUMN_DEFINITIONS.map((column) => column.key);
+const DEPRECATED_GENERATED_COLUMNS = [
   "FUENTE_PERSONA",
   "TIPO_APOYO_DETECTADO",
   "NOMBRE_APOYO_DETECTADO",
@@ -19,7 +25,23 @@ const GENERATED_COLUMNS = [
   "PERIODOS_APOYO_PREVIO",
   "PLANTILLAS_APOYO_PREVIO",
   "ESTADO_CRUCE",
+  "Tipo de apoyo detectado",
+  "Nombre de apoyo detectado",
+  "Apoyos en otros periodos",
+  "Periodos con apoyo previo",
+  "Plantillas con apoyo previo",
+  "Estado del cruce",
 ];
+const EMPTY_OUTPUT_VALUE = "SIN INFORMACION";
+const OUTPUT_HEADER_FILL = {
+  type: "pattern",
+  pattern: "solid",
+  fgColor: { argb: "FF404040" },
+};
+const OUTPUT_HEADER_FONT = {
+  bold: true,
+  color: { argb: "FFFFFFFF" },
+};
 
 const VALIDATOR_FIELD_MAPPINGS = {
   ID_TIPO_DOCUMENTO: "TIPO_DOCUMENTO",
@@ -222,19 +244,107 @@ const getPersonName = (record = {}) =>
     [record.nombres, record.apellidos].filter(Boolean).join(" "),
   ]);
 
-const putPerson = (map, identification, payload, priority) => {
+const getPersonProgram = (record = {}) =>
+  firstValue([
+    record.program,
+    record.programa,
+    record.program_name,
+    record.programName,
+    record.nombre_programa,
+    record.academic_program,
+    record.program_code,
+    record.codigo_programa,
+  ]);
+
+const getDependencyCodes = (record = {}) => {
+  const secondaryCodes = Array.isArray(record.additional_dependencies) ? record.additional_dependencies : [];
+  return [
+    record.dep_code,
+    record.dependency_code,
+    record.codigo_dependencia,
+    record.cod_dependencia,
+    record.dependencia_codigo,
+    ...secondaryCodes,
+  ]
+    .map((value) => cellToText(value).trim())
+    .filter(Boolean);
+};
+
+const getPayloadDependencyName = (record = {}) =>
+  firstValue([
+    record.dependencyName,
+    record.dependency_name,
+    record.dependency,
+    record.dependencia,
+    record.dep_name,
+    record.nombre_dependencia,
+  ]);
+
+const isFacultyDependency = (dependency) => normalizeHeader(dependency?.name || "").includes("FACULTAD");
+
+const findFacultyDependency = (depCode, dependencyByCode) => {
+  const visited = new Set();
+  let current = dependencyByCode.get(cellToText(depCode).trim());
+
+  while (current && !visited.has(current.dep_code)) {
+    if (isFacultyDependency(current)) return current;
+    visited.add(current.dep_code);
+    current = dependencyByCode.get(cellToText(current.dep_father).trim());
+  }
+
+  return null;
+};
+
+const getDependencyDisplayName = (depCode, dependencyByCode, fallbackName = "") => {
+  const code = cellToText(depCode).trim();
+  const dependency = dependencyByCode.get(code);
+  const faculty = findFacultyDependency(code, dependencyByCode);
+  return faculty?.name || dependency?.name || fallbackName || code;
+};
+
+const getFuncionarioContext = (record = {}, dependencyByCode = new Map()) => {
+  const dependencyCodes = getDependencyCodes(record);
+  const explicitDependencyName = getPayloadDependencyName(record);
+
+  for (const depCode of dependencyCodes) {
+    const faculty = findFacultyDependency(depCode, dependencyByCode);
+    if (faculty?.name) return faculty.name;
+  }
+
+  return getDependencyDisplayName(dependencyCodes[0], dependencyByCode, explicitDependencyName);
+};
+
+const buildDependencyByCode = async () => {
+  const dependencies = await Dependency.find({}, "dep_code name dep_father").lean();
+  return new Map(
+    dependencies
+      .map((dependency) => ({
+        dep_code: cellToText(dependency.dep_code).trim(),
+        name: cellToText(dependency.name).trim(),
+        dep_father: cellToText(dependency.dep_father).trim(),
+      }))
+      .filter((dependency) => dependency.dep_code)
+      .map((dependency) => [dependency.dep_code, dependency])
+  );
+};
+
+const putPerson = (map, identification, payload, priority, dependencyByCode = new Map()) => {
   const id = normalizeId(identification);
   const name = getPersonName(payload);
   if (!id || !name) return;
 
   const current = map.get(id);
   if (!current || priority > current.priority) {
+    const personType = payload.personType || "";
     map.set(id, {
       identification: id,
       name,
       email: payload.email || payload.correo || "",
-      program: payload.program || payload.programa || "",
-      source: payload.source,
+      personType,
+      programaDependencia:
+        personType === "student"
+          ? getPersonProgram(payload)
+          : getFuncionarioContext(payload, dependencyByCode),
       priority,
     });
   }
@@ -263,11 +373,12 @@ const buildPeopleMap = async (identifications) => {
     safeGetEndpoint(process.env.USERS_ENDPOINT, 15000),
     safeGetEndpoint(process.env.STUDENTS_ENDPOINT, 20000),
   ]);
+  const dependencyByCode = await buildDependencyByCode();
 
-  studentsDb.forEach((student) => putPerson(people, student.identification, { ...student, source: "ICEBERG/BD" }, 40));
-  studentsApi.forEach((student) => putPerson(people, student.identification, { ...student, source: "ICEBERG" }, 35));
-  usersDb.forEach((user) => putPerson(people, user.identification, { ...user, source: "SIGA/BD" }, 30));
-  usersApi.forEach((user) => putPerson(people, user.identification, { ...user, source: "SIGA" }, 25));
+  studentsDb.forEach((student) => putPerson(people, student.identification, { ...student, personType: "student" }, 40, dependencyByCode));
+  studentsApi.forEach((student) => putPerson(people, student.identification, { ...student, personType: "student" }, 35, dependencyByCode));
+  usersDb.forEach((user) => putPerson(people, user.identification, { ...user, personType: "funcionario" }, 30, dependencyByCode));
+  usersApi.forEach((user) => putPerson(people, user.identification, { ...user, personType: "funcionario" }, 25, dependencyByCode));
 
   return people;
 };
@@ -311,6 +422,14 @@ const getPeriodTime = (period) => {
 };
 
 const compactUnique = (values) => [...new Set(values.map((value) => cellToText(value).trim()).filter(Boolean))];
+
+const outputText = (value, fallback = EMPTY_OUTPUT_VALUE) => {
+  const text = cellToText(value).trim();
+  return text || fallback;
+};
+
+const getGeneratedColumnLabel = (key) =>
+  GENERATED_COLUMN_DEFINITIONS.find((column) => column.key === key)?.label || key;
 
 const buildSupportHistory = async (periodId) => {
   const query = {
@@ -477,9 +596,12 @@ const buildValidatorColumns = async (headers, rows) => {
     if (matchedCount === 0) return;
 
     let outputColumn = `DESC_${normalizeHeader(header.name)}`;
+    const baseOutputLabel = `Descripcion de ${header.name}`;
+    let outputLabel = baseOutputLabel;
     let suffix = 2;
     while (usedOutputNames.has(normalizeHeader(outputColumn))) {
       outputColumn = `DESC_${normalizeHeader(header.name)}_${suffix}`;
+      outputLabel = `${baseOutputLabel} ${suffix}`;
       suffix += 1;
     }
     usedOutputNames.add(normalizeHeader(outputColumn));
@@ -488,6 +610,7 @@ const buildValidatorColumns = async (headers, rows) => {
       sourceField: header.name,
       sourceColumn: header.column,
       outputColumn,
+      outputLabel,
       validatorName: validator.name,
       validatorColumn: validator.idColumnName,
       descriptionColumn: validator.descriptionColumnName,
@@ -518,14 +641,15 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
       const rawValue = row.valuesByColumn[validatorColumn.sourceColumn];
       const key = normalizeLookupValue(rawValue);
       const description = validatorColumn.valueMap.get(key) || "";
+      const rawText = cellToText(rawValue).trim();
       if (description) {
         validatorDescriptions[validatorColumn.outputColumn] = `${cellToText(rawValue).trim()} - ${description}`;
+      } else if (rawText) {
+        validatorDescriptions[validatorColumn.outputColumn] = `${rawText} - SIN DESCRIPCION`;
+      } else {
+        validatorDescriptions[validatorColumn.outputColumn] = EMPTY_OUTPUT_VALUE;
       }
     });
-
-    const supportType = getRecordValue(row, fieldMap.supportType);
-    const supportName = getRecordValue(row, fieldMap.supportName);
-    const detectedSupport = supportName || supportType || firstValue(history.map((item) => item.supportName || item.supportType));
 
     if (person) personsFound += 1;
     if (history.length > 0) withPreviousSupport += 1;
@@ -541,13 +665,11 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
     return {
       row_number: row.rowNumber,
       identificacion: identification,
-      nombre_identificado: person?.name || getRecordValue(row, fieldMap.personName),
-      fuente_persona: person?.source || "",
-      tipo_apoyo_detectado: supportType || firstValue(history.map((item) => item.supportType)),
-      nombre_apoyo_detectado: detectedSupport,
-      apoyos_otros_periodos: compactUnique(history.map((item) => item.supportName || item.supportType)).join(" | "),
-      periodos_apoyo_previo: compactUnique(history.map((item) => item.period)).join(" | "),
-      plantillas_apoyo_previo: compactUnique(history.map((item) => item.templateName)).join(" | "),
+      nombre_identificado: outputText(person?.name || getRecordValue(row, fieldMap.personName), "NO IDENTIFICADO"),
+      programa_dependencia: outputText(person?.programaDependencia, "NO IDENTIFICADO"),
+      apoyos_otros_periodos: outputText(compactUnique(history.map((item) => item.supportName || item.supportType)).join(" | "), "SIN HISTORIAL"),
+      periodos_apoyo_previo: outputText(compactUnique(history.map((item) => item.period)).join(" | "), "SIN HISTORIAL"),
+      plantillas_apoyo_previo: outputText(compactUnique(history.map((item) => item.templateName)).join(" | "), "SIN HISTORIAL"),
       estado_cruce: status,
       _history_count: history.length,
       validadores_resueltos: validatorDescriptions,
@@ -555,7 +677,12 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
   });
 
   const resolvedValidatorValues = enrichedRows.reduce(
-    (count, row) => count + Object.keys(row.validadores_resueltos || {}).length,
+    (count, row) =>
+      count +
+      Object.values(row.validadores_resueltos || {}).filter((value) => {
+        const text = cellToText(value).trim();
+        return text && text !== EMPTY_OUTPUT_VALUE && !text.endsWith("SIN DESCRIPCION");
+      }).length,
     0
   );
 
@@ -573,7 +700,43 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
   };
 };
 
+const removeDeprecatedGeneratedColumns = (worksheet) => {
+  const headerRow = worksheet.getRow(1);
+  const deprecatedNames = new Set(DEPRECATED_GENERATED_COLUMNS.map(normalizeHeader));
+  const columnsToRemove = [];
+
+  headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
+    if (deprecatedNames.has(normalizeHeader(cellToText(cell.value)))) {
+      columnsToRemove.push(column);
+    }
+  });
+
+  columnsToRemove
+    .sort((left, right) => right - left)
+    .forEach((column) => worksheet.spliceColumns(column, 1));
+};
+
+const removeBlankRows = (worksheet) => {
+  const lastColumn = Math.max(worksheet.columnCount, 1);
+
+  for (let rowNumber = worksheet.rowCount; rowNumber >= 2; rowNumber -= 1) {
+    const row = worksheet.getRow(rowNumber);
+    let hasValue = false;
+
+    for (let columnNumber = 1; columnNumber <= lastColumn; columnNumber += 1) {
+      if (!isBlank(row.getCell(columnNumber).value)) {
+        hasValue = true;
+        break;
+      }
+    }
+
+    if (!hasValue) worksheet.spliceRows(rowNumber, 1);
+  }
+};
+
 const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = []) => {
+  removeDeprecatedGeneratedColumns(worksheet);
+
   const headerRow = worksheet.getRow(1);
   const existingHeaders = new Map();
   headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
@@ -583,34 +746,45 @@ const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = []) =
   let nextColumn = worksheet.columnCount + 1;
   const columnByName = {};
 
-  [...GENERATED_COLUMNS, ...validatorColumns.map((item) => item.outputColumn)].forEach((columnName) => {
-    const normalized = normalizeHeader(columnName);
-    if (existingHeaders.has(normalized)) {
-      columnByName[columnName] = existingHeaders.get(normalized);
+  const outputColumns = [
+    ...GENERATED_COLUMN_DEFINITIONS,
+    ...validatorColumns.map((item) => ({
+      key: item.outputColumn,
+      label: item.outputLabel || item.outputColumn,
+    })),
+  ];
+
+  outputColumns.forEach((column) => {
+    const normalizedKey = normalizeHeader(column.key);
+    const normalizedLabel = normalizeHeader(column.label);
+    const existingColumn = existingHeaders.get(normalizedLabel) || existingHeaders.get(normalizedKey);
+
+    if (existingColumn) {
+      columnByName[column.key] = existingColumn;
+      headerRow.getCell(existingColumn).value = column.label;
+      headerRow.getCell(existingColumn).font = OUTPUT_HEADER_FONT;
+      headerRow.getCell(existingColumn).fill = OUTPUT_HEADER_FILL;
     } else {
-      columnByName[columnName] = nextColumn;
-      headerRow.getCell(nextColumn).value = columnName;
-      headerRow.getCell(nextColumn).font = { ...(headerRow.getCell(1).font || {}), bold: true };
+      columnByName[column.key] = nextColumn;
+      headerRow.getCell(nextColumn).value = column.label;
+      headerRow.getCell(nextColumn).font = OUTPUT_HEADER_FONT;
+      headerRow.getCell(nextColumn).fill = OUTPUT_HEADER_FILL;
       nextColumn += 1;
     }
   });
 
   enrichedRows.forEach((enriched) => {
     const row = worksheet.getRow(enriched.row_number);
-    row.getCell(columnByName.NOMBRE_IDENTIFICADO).value = enriched.nombre_identificado || "";
-    row.getCell(columnByName.FUENTE_PERSONA).value = enriched.fuente_persona || "";
-    row.getCell(columnByName.TIPO_APOYO_DETECTADO).value = enriched.tipo_apoyo_detectado || "";
-    row.getCell(columnByName.NOMBRE_APOYO_DETECTADO).value = enriched.nombre_apoyo_detectado || "";
-    row.getCell(columnByName.APOYOS_OTROS_PERIODOS).value = enriched.apoyos_otros_periodos || "";
-    row.getCell(columnByName.PERIODOS_APOYO_PREVIO).value = enriched.periodos_apoyo_previo || "";
-    row.getCell(columnByName.PLANTILLAS_APOYO_PREVIO).value = enriched.plantillas_apoyo_previo || "";
-    row.getCell(columnByName.ESTADO_CRUCE).value = enriched.estado_cruce || "";
+    row.getCell(columnByName.NOMBRE_IDENTIFICADO).value = outputText(enriched.nombre_identificado, "NO IDENTIFICADO");
+    row.getCell(columnByName.PROGRAMA_DEPENDENCIA).value = outputText(enriched.programa_dependencia, "NO IDENTIFICADO");
     validatorColumns.forEach((validatorColumn) => {
       row.getCell(columnByName[validatorColumn.outputColumn]).value =
-        enriched.validadores_resueltos?.[validatorColumn.outputColumn] || "";
+        outputText(enriched.validadores_resueltos?.[validatorColumn.outputColumn]);
     });
     row.commit();
   });
+
+  removeBlankRows(worksheet);
 
   Object.values(columnByName).forEach((columnIndex) => {
     worksheet.getColumn(columnIndex).width = Math.max(22, worksheet.getColumn(columnIndex).width || 0);
@@ -633,6 +807,15 @@ const processFile = async (req) => {
   return { ...parsed, ...result, validatorColumns };
 };
 
+const buildPreviewRows = (rows) =>
+  rows.map((row) => ({
+    row_number: row.row_number,
+    identificacion: row.identificacion,
+    nombre_identificado: row.nombre_identificado,
+    programa_dependencia: row.programa_dependencia,
+    validadores_resueltos: row.validadores_resueltos,
+  }));
+
 const cleanupFile = async (file) => {
   if (!file?.path) return;
   try {
@@ -647,16 +830,20 @@ controller.preview = async (req, res) => {
     const result = await processFile(req);
     res.json({
       sheetName: result.worksheet.name,
-      columnsAdded: [...GENERATED_COLUMNS, ...result.validatorColumns.map((item) => item.outputColumn)],
+      columnsAdded: [
+        ...GENERATED_COLUMNS.map(getGeneratedColumnLabel),
+        ...result.validatorColumns.map((item) => item.outputLabel || item.outputColumn),
+      ],
       validatorColumns: result.validatorColumns.map((item) => ({
         sourceField: item.sourceField,
         outputColumn: item.outputColumn,
+        outputLabel: item.outputLabel || item.outputColumn,
         validatorName: item.validatorName,
         validatorColumn: item.validatorColumn,
         descriptionColumn: item.descriptionColumn,
       })),
       summary: result.summary,
-      rows: result.enrichedRows.slice(0, 100),
+      rows: buildPreviewRows(result.enrichedRows.slice(0, 100)),
     });
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || "No fue posible procesar la plantilla." });
