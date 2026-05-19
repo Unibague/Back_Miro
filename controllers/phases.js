@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const Phase = require('../models/phases');
 const Process = require('../models/processes');
 const Caso = require('../models/casos');
-const { crearPMAutomaticoParaAV } = require('../helpers/pmAutoCreate');
 
 const phaseController = {};
 
@@ -158,7 +157,13 @@ phaseController.updateActividad = async (req, res) => {
     // Auto-crear caso al completar "Información del caso" en fase 4
     if (completada === true && phase.numero === 4) {
       const act = phase.actividades.id(req.params.actividadId);
-      if (act && act.nombre.trim().toLowerCase() === 'información del caso') {
+      const normNombre = (s) =>
+        String(s ?? '')
+          .trim()
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/\p{M}/gu, '');
+      if (act && normNombre(act.nombre) === normNombre('Información del caso')) {
         const existing = await Caso.findOne({ proceso_id: phase.proceso_id });
         if (!existing) await Caso.create({ proceso_id: phase.proceso_id });
       }
@@ -336,9 +341,17 @@ phaseController.markAllCompleted = async (req, res) => {
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
 
+    const hoy = new Date().toISOString().split('T')[0];
     phase.actividades.forEach(a => {
       a.completada = true;
-      a.no_aplica = false;
+      a.no_aplica  = false;
+      if (!a.fecha_completado) a.fecha_completado = hoy;
+      a.subactividades.forEach(s => {
+        if (!s.no_aplica) {
+          s.completada = true;
+          if (!s.fecha_completado) s.fecha_completado = hoy;
+        }
+      });
     });
     await phase.save();
     res.status(200).json({ fase: phase });
@@ -348,20 +361,19 @@ phaseController.markAllCompleted = async (req, res) => {
   }
 };
 
-/* PUT /phases/:id/finish-phase — avanzar a la siguiente fase (sin exigir actividades completas) */
+/* PUT /phases/:id/finish-phase — avanzar a la siguiente fase (sin exigir actividades completas)
+   RC/AV solo tienen fases 0-5; AE igual. PM tiene solo la fase 1 (plan de mejoramiento). */
 phaseController.finishPhase = async (req, res) => {
   try {
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
 
     const proceso = await Process.findById(phase.proceso_id);
-    if (proceso && phase.numero === proceso.fase_actual && phase.numero < 6) {
+    // RC/AV/AE: avanzar hasta fase 5 como máximo. PM: avanza internamente entre sus fases.
+    const maxFaseNormal = 5;
+    if (proceso && phase.numero === proceso.fase_actual && phase.numero < maxFaseNormal) {
       proceso.fase_actual = phase.numero + 1;
       await proceso.save();
-
-      if (proceso.fase_actual === 6 && proceso.tipo_proceso === 'AV') {
-        await crearPMAutomaticoParaAV(proceso);
-      }
     }
 
     res.status(200).json({ fase: phase, proceso });
@@ -371,14 +383,11 @@ phaseController.finishPhase = async (req, res) => {
   }
 };
 
-/* PUT /phases/:id/mark-all-no-aplica — Fase 6: marcar toda la fase como No aplica */
+/* PUT /phases/:id/mark-all-no-aplica — marcar todas las actividades de una fase como No aplica */
 phaseController.markAllNoAplicaFase6 = async (req, res) => {
   try {
     const phase = await Phase.findById(req.params.id);
     if (!phase) return res.status(404).json({ error: 'Fase no encontrada' });
-    if (phase.numero !== 6) {
-      return res.status(400).json({ error: 'Solo aplica a la fase 6.' });
-    }
 
     phase.actividades.forEach(a => {
       a.no_aplica = true;
@@ -393,7 +402,7 @@ phaseController.markAllNoAplicaFase6 = async (req, res) => {
     await phase.save();
     res.status(200).json({ fase: phase });
   } catch (error) {
-    console.error('Error marcando fase 6 como N/A:', error);
+    console.error('Error marcando fase como N/A:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };

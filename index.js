@@ -137,6 +137,12 @@ async function start() {
     process.exit(1);
   }
 
+  const { iniciarCronVigencia, actualizarVigencias } = require('./helpers/cronVigencia');
+  iniciarCronVigencia();
+  actualizarVigencias().catch((e) => {
+    console.error('[cronVigencia] Error en sincronización inicial:', e.message);
+  });
+
   const server = app.listen(PORT, () => {
     if (process.env.NODE_ENV === 'production') {
       console.log('Servr running in production mode on ' + PORT);
