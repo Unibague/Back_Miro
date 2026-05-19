@@ -4,6 +4,21 @@ const { uploadFileToGoogleDrive, deleteDriveFile } = require('../config/googleDr
 
 const processDocumentsController = {};
 
+/** Un solo borrador de cierre por proceso (reemplazo atómico). */
+async function eliminarResolucionesCierrePrevias(processId) {
+  const prev = await ProcessDocument.find({ process_id: processId, doc_type: 'resolucion_cierre' });
+  for (const p of prev) {
+    if (p.drive_id) {
+      try {
+        await deleteDriveFile(p.drive_id);
+      } catch (err) {
+        console.error('Error eliminando PDF de cierre previo en Drive:', err);
+      }
+    }
+    await ProcessDocument.findByIdAndDelete(p._id);
+  }
+}
+
 // GET /process-documents?phase_id=...&actividad_id=...&subactividad_id=...
 processDocumentsController.getByPhase = async (req, res) => {
   try {
@@ -103,18 +118,29 @@ processDocumentsController.createForProcess = async (req, res) => {
 
     const { doc_type, caso_date_key } = req.body;
     const ds = String(doc_type || '');
-    const dtRaw = ds === 'resolucion_rc_oficio' ? 'resolucion_rc_oficio' : ds === 'resolucion' ? 'resolucion' : 'proceso';
-    const esResOderivado = dtRaw === 'resolucion' || dtRaw === 'resolucion_rc_oficio';
+    const dtRaw =
+      ds === 'resolucion_rc_oficio' ? 'resolucion_rc_oficio'
+      : ds === 'resolucion_cierre' ? 'resolucion_cierre'
+      : ds === 'resolucion' ? 'resolucion'
+      : ds === 'constancia_reforma' ? 'constancia_reforma'
+      : ds === 'respuesta_no_renovacion' ? 'respuesta_no_renovacion'
+      : 'proceso';
+    const esResOderivado = dtRaw === 'resolucion' || dtRaw === 'resolucion_rc_oficio' || dtRaw === 'resolucion_cierre';
+    const esConstanciaReforma = dtRaw === 'constancia_reforma';
+    const esRespuestaNoRenov = dtRaw === 'respuesta_no_renovacion';
     const cdk = !esResOderivado && caso_date_key && String(caso_date_key).trim()
       ? String(caso_date_key).trim()
       : null;
     const destino = cdk ? 'Fechas/Procesos/InformacionCaso' : 'Fechas/Procesos/Resoluciones';
+    if (dtRaw === 'resolucion_cierre') {
+      await eliminarResolucionesCierrePrevias(processId);
+    }
     const fileData = await uploadFileToGoogleDrive(req.file, destino, req.file.originalname);
 
     const doc = await ProcessDocument.create({
       phase_id: null,
       process_id: processId,
-      doc_type: esResOderivado ? dtRaw : 'proceso',
+      doc_type: esResOderivado ? dtRaw : esConstanciaReforma ? 'constancia_reforma' : esRespuestaNoRenov ? 'respuesta_no_renovacion' : 'proceso',
       caso_date_key: cdk,
       name: fileData.name,
       drive_id: fileData.id,
@@ -123,6 +149,19 @@ processDocumentsController.createForProcess = async (req, res) => {
       mime_type: req.file.mimetype,
       size: req.file.size,
     });
+
+    if (dtRaw === 'resolucion') {
+      const ProcessModel = require('../models/processes');
+      const proc = await ProcessModel.findById(processId).select('tipo_proceso subtipo program_code').lean();
+      if (
+        proc
+        && proc.tipo_proceso === 'RC'
+        && String(proc.subtipo ?? '').trim() === 'Registro calificado de oficio'
+      ) {
+        const { syncRcOficioResolucionDocsToAlert } = require('../helpers/syncRcOficioAlertDocs');
+        await syncRcOficioResolucionDocsToAlert(proc.program_code);
+      }
+    }
 
     res.status(201).json(doc);
   } catch (error) {
