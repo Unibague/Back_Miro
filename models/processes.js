@@ -5,19 +5,20 @@ const processSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  /** Ligadura al programa: **`_id` Mongo** (actual). Valores viejos pueden ser `dep_code_programa`. */
   program_code: {
     type: String,
     required: true,
   },
   tipo_proceso: {
     type: String,
-    enum: ['RC', 'AV', 'PM', 'ALERTA'],
+    enum: ['RC', 'AV', 'AE', 'PM', 'ALERTA'],
     required: true,
   },
-  /** Solo ALERTA: a qué línea (RC/AV) pertenece la alerta post-cierre */
+  /** Solo ALERTA: a qué línea pertenece la alerta (RC/AV/AE = post-cierre; PM = alerta activa del plan) */
   alert_para_tipo: {
     type: String,
-    enum: ['RC', 'AV', null],
+    enum: ['RC', 'AV', 'AE', 'PM', null],
     default: null,
   },
   cerrado_process_history_id: {
@@ -30,9 +31,10 @@ const processSchema = new mongoose.Schema({
   snapshot_fecha_resolucion: { type: String, default: null },
   snapshot_duracion_anos: { type: Number, default: null },
   /* Subtipo del proceso:
-     RC  → Nuevo | Renovación | No renovación | Reforma/actualización curricular
-     AV  → Nuevo | Renovación
-     PM  → Autoevaluación Registro calificado | Autoevaluación Acreditación */
+     RC  → Nuevo | Renovación | No renovación | Reforma/actualización curricular | Reactivación | …
+     AV  → Nuevo | Renovación | No renovación | Reactivación
+     AE  → Autoevaluación
+     PM  → Plan de Mejoramiento AV | Plan de Mejoramiento AE */
   subtipo: {
     type: String,
     default: null,
@@ -42,13 +44,24 @@ const processSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
-  // Si es un plan de mejoramiento hijo, referencia al proceso padre (RC o AV)
+  // Si es un PM o AE, referencia al proceso padre (AV o AE para PM; RC o AV para AE)
   parent_process_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'processes',
     default: null,
   },
   parent_tipo_proceso: {
+    type: String,
+    enum: ['RC', 'AV', 'AE', null],
+    default: null,
+  },
+  // Solo AE: proceso RC o AV al que está vinculado (informativo)
+  linked_process_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'processes',
+    default: null,
+  },
+  linked_process_tipo: {
     type: String,
     enum: ['RC', 'AV', null],
     default: null,
@@ -63,8 +76,14 @@ const processSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
-  /* Condición (RC: 1-9) o Factor (AV: 1-12) asociado al proceso */
+  /* Condición (RC: 1-9) o Factor (AV: 1-12) asociado al proceso (fase 2 — viabilidad financiera) */
   condicion: {
+    type: Number,
+    default: null,
+  },
+
+  /* Condición RC (1-9) o Factor AV (1-12) en revisión durante "Reuniones parciales de avance" */
+  factor_condicion_actual: {
     type: Number,
     default: null,
   },
@@ -152,6 +171,30 @@ const processSchema = new mongoose.Schema({
   },
   fecha_radicacion_avance_cna: {
     type: String,   // Radicación ante CNA informe de avance (≈ mitad vigencia)
+    default: null,
+  },
+
+  /**
+   * RC «Registro calificado de oficio» creado tras cierre AV con vigencia de gracia
+   * (programa.av_rc_oficio_pendiente al crear). Gestión liviana en front.
+   */
+  rc_oficio_contexto: {
+    type: String,
+    enum: ['post_av_gracia', null],
+    default: null,
+  },
+  /** Copia del RC en vigencia transitoria (gracia) antes de registrar el oficio. */
+  rc_gracia_vigente_snapshot: {
+    type: new mongoose.Schema(
+      {
+        codigo_resolucion:   { type: String, default: null },
+        fecha_resolucion:    { type: String, default: null },
+        fecha_vencimiento:   { type: String, default: null },
+        duracion_resolucion: { type: Number, default: null },
+        link_documento:      { type: String, default: null },
+      },
+      { _id: false },
+    ),
     default: null,
   },
 },

@@ -11,8 +11,9 @@ const programSchema = new mongoose.Schema({
   },
   dep_code_programa: {
     type: String,
-    required: true,
+    default: null,
     unique: true,
+    sparse: true,
   },
   codigo_snies: {
     type: String,
@@ -55,33 +56,67 @@ const programSchema = new mongoose.Schema({
     default: 'Activo',
   },
 
-  /* ── Resolución vigente — Registro Calificado (RC) ── */
-  fecha_resolucion_rc: {
-    type: String,   // YYYY-MM-DD
-    default: null,
+  /* ── Clasificación Internacional Normalizada de Educación CINE F 2013 AC ── */
+  cine_f: {
+    type: new mongoose.Schema({
+      campo_amplio:    { type: String, default: null },
+      campo_especifico:{ type: String, default: null },
+      campo_detallado: { type: String, default: null },
+    }, { _id: false }),
+    default: () => ({}),
   },
-  codigo_resolucion_rc: {
-    type: String,
-    default: null,
+
+  /* ── Núcleo Básico del Conocimiento ── */
+  nbc: {
+    type: new mongoose.Schema({
+      area_conocimiento: { type: String, default: null },
+      nbc:               { type: String, default: null },
+    }, { _id: false }),
+    default: () => ({}),
   },
-  duracion_resolucion_rc: {
-    type: Number,   // en años (ej: 7 = 7 años)
+
+  /* ── Último proceso RC vigente ── */
+  ultimo_rc: {
+    type: new mongoose.Schema({
+      codigo_resolucion:  { type: String, default: null },
+      fecha_resolucion:   { type: String, default: null },
+      duracion_resolucion:{ type: Number, default: null },
+      fecha_vencimiento:  { type: String, default: null },
+      link_documento:     { type: String, default: null },
+    }, { _id: false }),
     default: null,
   },
 
-  /* ── Resolución vigente — Acreditación Voluntaria (AV) ── */
-  fecha_resolucion_av: {
-    type: String,   // YYYY-MM-DD
+  /* ── Último proceso AV vigente ── */
+  ultimo_av: {
+    type: new mongoose.Schema({
+      codigo_resolucion:  { type: String, default: null },
+      fecha_resolucion:   { type: String, default: null },
+      duracion_resolucion:{ type: Number, default: null },
+      fecha_vencimiento:  { type: String, default: null },
+      link_documento:     { type: String, default: null },
+    }, { _id: false }),
     default: null,
   },
-  codigo_resolucion_av: {
-    type: String,
-    default: null,
-  },
-  duracion_resolucion_av: {
-    type: Number,   // en años (ej: 4 = 4 años)
-    default: null,
-  },
+
+  /* ── Vigencia (actualizada por cron diario) ── */
+  tiene_rc_vigente: { type: Boolean, default: false },
+  tiene_av_vigente: { type: Boolean, default: false },
+
+  /** Tras cerrar AV: el MEN concederá RC de oficio después; hasta registrarlo, el cron mantiene RC «vigente» en la ficha. */
+  av_rc_oficio_pendiente: { type: Boolean, default: false },
+
+  /* ── Totales históricos (calculados al cerrar procesos) ── */
+  total_rc: { type: Number, default: 0 },
+  total_av: { type: Number, default: 0 },
+
+  /* ── Campos legacy (mantener compatibilidad) ── */
+  fecha_resolucion_rc:    { type: String, default: null },
+  codigo_resolucion_rc:   { type: String, default: null },
+  duracion_resolucion_rc: { type: Number, default: null },
+  fecha_resolucion_av:    { type: String, default: null },
+  codigo_resolucion_av:   { type: String, default: null },
+  duracion_resolucion_av: { type: Number, default: null },
 
 },
 {

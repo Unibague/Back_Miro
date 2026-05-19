@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node --watch index.js",
-    "release": "semantic-release"
+    "release": "semantic-release",
+    "festivos:revisar": "node scripts/revisar-festivos-colombia.js"
   },
   "author": "Brayan & Steven",
   "license": "ISC",
@@ -16,6 +17,7 @@
     "back_miro": "file:",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
+    "date-holidays": "^3.29.0",
     "dayjs": "^1.11.13",
     "docx": "^9.6.0",
     "docx-merger": "^1.2.2",

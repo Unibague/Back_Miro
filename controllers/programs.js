@@ -95,10 +95,18 @@ programController.getById = async (req, res) => {
 /* POST /programs — crear un programa nuevo (sin procesos automáticos; los procesos se crean vía "Agregar proceso") */
 programController.create = async (req, res) => {
   try {
-    const program = await Program.create(req.body);
+    const body = { ...req.body };
+    if (body.dep_code_programa != null) {
+      const trimmed = String(body.dep_code_programa).trim();
+      body.dep_code_programa = trimmed || null;
+    }
+    const program = await Program.create(body);
     res.status(201).json(program);
   } catch (error) {
     console.error('Error creando programa:', error);
+    if (error?.code === 11000) {
+      return res.status(409).json({ error: 'Ese código de programa ya existe. Usa otro código.' });
+    }
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -106,23 +114,47 @@ programController.create = async (req, res) => {
 /* PUT /programs/:id — actualizar un programa y recalcular fechas de procesos si cambia la resolución */
 programController.update = async (req, res) => {
   try {
+    const rawId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(rawId)) {
+      return res.status(400).json({ error: 'ID de programa no válido' });
+    }
+
+
+    const patch = { ...req.body };
+
+    if (patch.dep_code_programa !== undefined) {
+      const trimmed = String(patch.dep_code_programa ?? '').trim();
+      patch.dep_code_programa = trimmed || null;
+      if (patch.dep_code_programa) {
+        const dupe = await Program.findOne({
+          dep_code_programa: patch.dep_code_programa,
+          _id: { $ne: rawId },
+        }).select('_id').lean();
+        if (dupe) {
+          return res.status(409).json({ error: 'Ese código de programa ya está en uso.' });
+        }
+      }
+    }
+
     const program = await Program.findByIdAndUpdate(
-      req.params.id,
-      req.body,
+      rawId,
+      patch,
       { new: true, runValidators: true }
     );
     if (!program) return res.status(404).json({ error: 'Programa no encontrado' });
 
+    const programaIdStr = String(program._id);
+
     const camposRC = ['fecha_resolucion_rc', 'codigo_resolucion_rc', 'duracion_resolucion_rc'];
     const camposAV = ['fecha_resolucion_av', 'codigo_resolucion_av', 'duracion_resolucion_av'];
-    const tocaRC   = camposRC.some(c => req.body[c] !== undefined);
-    const tocaAV   = camposAV.some(c => req.body[c] !== undefined);
+    const tocaRC   = camposRC.some(c => patch[c] !== undefined);
+    const tocaAV   = camposAV.some(c => patch[c] !== undefined);
 
     // Helper: eliminar el PM hijo ligado a un proceso padre y sus fases
     const eliminarPMDeProceso = async (parentProc) => {
       if (!parentProc) return;
       const pm = await Process.findOne({
-        program_code: program.dep_code_programa,
+        program_code: programaIdStr,
         tipo_proceso: 'PM',
         parent_process_id: parentProc._id,
       });
@@ -133,7 +165,7 @@ programController.update = async (req, res) => {
     };
 
     if (tocaRC) {
-      const procRC = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'RC' });
+      const procRC = await Process.findOne({ program_code: programaIdStr, tipo_proceso: 'RC' });
       const offsetsRC = procRC ? {
         meses_inicio_antes_venc:    procRC.meses_inicio_antes_venc,
         meses_doc_par_antes_venc:   procRC.meses_doc_par_antes_venc,
@@ -142,14 +174,14 @@ programController.update = async (req, res) => {
       } : undefined;
       const fechas = calcularFechas('RC', program.fecha_resolucion_rc, program.duracion_resolucion_rc, offsetsRC);
       await Process.findOneAndUpdate(
-        { program_code: program.dep_code_programa, tipo_proceso: 'RC' },
+        { program_code: programaIdStr, tipo_proceso: 'RC' },
         { $set: fechas }
       );
       // Al cambiar la resolución del RC, el PM ligado queda obsoleto → eliminarlo
       await eliminarPMDeProceso(procRC);
     }
     if (tocaAV) {
-      const procAV = await Process.findOne({ program_code: program.dep_code_programa, tipo_proceso: 'AV' });
+      const procAV = await Process.findOne({ program_code: programaIdStr, tipo_proceso: 'AV' });
       const offsetsAV = procAV ? {
         meses_inicio_antes_venc:    procAV.meses_inicio_antes_venc,
         meses_doc_par_antes_venc:   procAV.meses_doc_par_antes_venc,
@@ -158,7 +190,7 @@ programController.update = async (req, res) => {
       } : undefined;
       const fechas = calcularFechas('AV', program.fecha_resolucion_av, program.duracion_resolucion_av, offsetsAV);
       await Process.findOneAndUpdate(
-        { program_code: program.dep_code_programa, tipo_proceso: 'AV' },
+        { program_code: programaIdStr, tipo_proceso: 'AV' },
         { $set: fechas }
       );
       // Al cambiar la resolución del AV, el PM ligado queda obsoleto → eliminarlo
@@ -168,6 +200,9 @@ programController.update = async (req, res) => {
     res.status(200).json(program);
   } catch (error) {
     console.error('Error actualizando programa:', error);
+    if (error?.code === 11000) {
+      return res.status(409).json({ error: 'Ese código de programa ya está en uso.' });
+    }
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
