@@ -1,39 +1,37 @@
 const { google } = require('googleapis');
-const { GoogleAuth } = require('google-auth-library');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 
 const SPREADSHEET_ID = '1pGQkA-nu5kmy8HviHM4YzmC3AOmFrGoTS_X8U93f9YI';
-const PROJECT_SHEET_NAME = 'Proyecto 2026';
-const DETAIL_SHEET_NAME = 'PDI';
 const CACHE_TTL_MS = 60 * 1000;
 
 let cache = { data: null, timestamp: 0 };
 
-const resolveCredentialsPath = () => {
-  const rootDir = path.join(__dirname, '..');
-  const envPath =
-    process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-    process.env.GOOGLE_CREDENTIALS_FILE ||
-    process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
+const KEY_FILE = (() => {
+  const root = path.join(__dirname, '..');
+  try {
+    const miro = fs.readdirSync(root)
+      .filter((f) => f.endsWith('.json') && f.startsWith('miro-'))
+      .map((f) => path.join(root, f))
+      .find((p) => fs.existsSync(p));
+    if (miro) return miro;
+  } catch { /* ignore */ }
+  const fallback = path.join(root, 'google-credentials.json');
+  return fs.existsSync(fallback) ? fallback : undefined;
+})();
 
-  const candidates = [
-    envPath && (path.isAbsolute(envPath) ? envPath : path.join(rootDir, envPath)),
-    path.join(rootDir, 'google-credentials.json'),
-    ...fs
-      .readdirSync(rootDir)
-      .filter((fileName) => /^miro-drive-.*\.json$/i.test(fileName))
-      .map((fileName) => path.join(rootDir, fileName)),
-  ].filter(Boolean);
+const keyData = KEY_FILE ? JSON.parse(fs.readFileSync(KEY_FILE, 'utf8')) : null;
+const auth = keyData
+  ? new google.auth.JWT({
+      email: keyData.client_email,
+      key: keyData.private_key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    })
+  : null;
 
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[1];
-};
+const sheetsService = google.sheets({ version: 'v4', auth });
 
-const getAuth = () =>
-  new GoogleAuth({
-    keyFile: resolveCredentialsPath(),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-  });
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 const normalizeNum = (val) => {
   if (val === null || val === undefined || val === '') return 0;
@@ -42,178 +40,87 @@ const normalizeNum = (val) => {
   return Number.isNaN(n) ? 0 : n;
 };
 
-const normalizeText = (value) =>
-  String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
+// ── Parser ─────────────────────────────────────────────────────────────────
+// Estructura real de la hoja:
+// Col 0: N° autorización | Col 1: Centro de costo (macroproyecto)
+// Col 2: Proyecto        | Col 3: Acción estratégica | Col 4: Tipo (Gasto/Inversión)
+// Col 10: Valor (comprometido) | Col 20: Causado gasto | Col 21: Causado inversión
 
-const normalizeHeader = (value) =>
-  normalizeText(value).replace(/[^a-z0-9]+/g, ' ').trim();
-
-const cleanProjectName = (value) =>
-  String(value || '')
-    .replace(/^proyecto\s*:\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const cleanActionName = (value) =>
-  String(value || '').replace(/\s+/g, ' ').trim();
-
-const sheetRange = (sheetName, range) => `'${sheetName.replace(/'/g, "''")}'!${range}`;
-
-const findColIdx = (headers, keywords) =>
-  headers.findIndex((h) => keywords.some((k) => h.includes(normalizeHeader(k))));
-
-const getColIdx = (headers, keywords, fallback) => {
-  const idx = findColIdx(headers, keywords);
-  return idx !== -1 ? idx : fallback;
-};
-
-const getHeaderIdx = (rows, keywords) => {
-  for (let i = 0; i < Math.min(10, rows.length); i += 1) {
-    const normalized = (rows[i] || []).map(normalizeHeader);
-    if (keywords.some((keyword) => normalized.some((cell) => cell.includes(normalizeHeader(keyword))))) {
-      return i;
-    }
-  }
-  return 0;
-};
-
-const parseProjectRows = (rows) => {
+const parseRows = (rows) => {
   if (rows.length < 2) return [];
 
-  const headerIdx = getHeaderIdx(rows, ['total presupuesto', 'total comprometido', 'proyecto']);
-  const headers = (rows[headerIdx] || []).map(normalizeHeader);
+  const headers = rows[0] || [];
 
-  const colCentro = getColIdx(headers, ['centro de costo', 'centro costo'], 0);
-  const colMacro = getColIdx(headers, ['macroproyecto'], 1);
-  const colProyecto = (() => {
-    const idx = headers.findIndex((h) => h === 'proyecto' || (h.includes('proyecto') && !h.includes('macro')));
-    return idx !== -1 ? idx : 2;
-  })();
-  const colPresupuestoGasto = getColIdx(headers, ['gasto'], 12);
-  const colPresupuestoInversion = getColIdx(headers, ['inversion'], 13);
-  const colPresupuestoTotal = getColIdx(headers, ['total presupuesto'], 14);
-  const colComprometidoGasto = getColIdx(headers, ['comprometido gasto'], 15);
-  const colComprometidoInversion = getColIdx(headers, ['comprometido inversion'], 16);
-  const colComprometidoTotal = getColIdx(headers, ['total comprometido'], 17);
-  const colCausadoGasto = getColIdx(headers, ['causado gasto'], 18);
-  const colCausadoInversion = getColIdx(headers, ['causado inversion'], 19);
-  const colCausadoTotal = getColIdx(headers, ['total causado'], 20);
+  // Detectar columnas por cabecera (con fallback a índice fijo)
+  const findCol = (keywords, fallback) => {
+    const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const idx = headers.findIndex((h) => keywords.some((k) => norm(h).includes(norm(k))));
+    return idx !== -1 ? idx : fallback;
+  };
 
-  return rows
-    .slice(headerIdx + 1)
-    .map((row) => {
-      const centroCosto = String(row[colCentro] || '').trim();
-      const macroproyecto = String(row[colMacro] || '').trim();
-      const proyecto = String(row[colProyecto] || '').trim();
-      if (!centroCosto && !macroproyecto && !proyecto) return null;
+  const colMacro       = findCol(['centro de costo', 'macroproyecto', 'macro'], 1);
+  const colProyecto    = findCol(['proyecto'], 2);
+  const colTipo        = findCol(['tipo'], 4);
+  const colValor       = findCol(['valor'], 10);
+  const colCausGasto   = findCol(['causado gasto'], 20);
+  const colCausInv     = findCol(['causado inversion', 'causado inversión'], 21);
 
-      const presupuestoGasto = normalizeNum(row[colPresupuestoGasto]);
-      const presupuestoInversion = normalizeNum(row[colPresupuestoInversion]);
-      const presupuesto = normalizeNum(row[colPresupuestoTotal]) || presupuestoGasto + presupuestoInversion;
-      const comprometidoGasto = normalizeNum(row[colComprometidoGasto]);
-      const comprometidoInversion = normalizeNum(row[colComprometidoInversion]);
-      const comprometido = normalizeNum(row[colComprometidoTotal]) || comprometidoGasto + comprometidoInversion;
-      const causadoGasto = normalizeNum(row[colCausadoGasto]);
-      const causadoInversion = normalizeNum(row[colCausadoInversion]);
-      const causado = normalizeNum(row[colCausadoTotal]) || causadoGasto + causadoInversion;
+  const groups = {};
 
-      return {
-        centroCosto,
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const macroproyecto = String(row[colMacro]    || '').trim();
+    const proyecto      = String(row[colProyecto] || '').trim();
+    if (!macroproyecto && !proyecto) continue;
+
+    const tipo  = String(row[colTipo] || '').trim().toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '');
+    const valor       = normalizeNum(row[colValor]);
+    const causGasto   = normalizeNum(row[colCausGasto]);
+    const causInv     = normalizeNum(row[colCausInv]);
+
+    const key = `${macroproyecto}||${proyecto}`;
+    if (!groups[key]) {
+      groups[key] = {
         macroproyecto,
         proyecto,
-        proyectoNombre: cleanProjectName(proyecto),
-        presupuesto,
-        presupuestoGasto,
-        presupuestoInversion,
-        comprometido,
-        comprometidoGasto,
-        comprometidoInversion,
-        causado,
-        causadoGasto,
-        causadoInversion,
-      };
-    })
-    .filter(Boolean);
-};
-
-const parseActionRows = (rows, projectBudgetMap) => {
-  if (rows.length < 2) return [];
-
-  const headerIdx = getHeaderIdx(rows, ['accion estrategica', 'valor', 'tipo']);
-  const headers = (rows[headerIdx] || []).map(normalizeHeader);
-
-  const colAutorizacion = getColIdx(headers, ['autorizacion'], 0);
-  const colCentro = getColIdx(headers, ['centro de costo', 'centro costo'], 1);
-  const colProyecto = getColIdx(headers, ['proyecto'], 2);
-  const colAccion = getColIdx(headers, ['accion estrategica'], 3);
-  const colTipo = getColIdx(headers, ['tipo'], 4);
-  const colValor = getColIdx(headers, ['valor'], 10);
-  const colAprobacion = getColIdx(headers, ['aprobacion'], 18);
-  const colCausadoGasto = getColIdx(headers, ['causado gasto'], 20);
-  const colCausadoInversion = getColIdx(headers, ['causado inversion'], 21);
-
-  const byAction = new Map();
-
-  rows.slice(headerIdx + 1).forEach((row) => {
-    const proyecto = String(row[colProyecto] || '').trim();
-    const accionEstrategica = cleanActionName(row[colAccion]);
-    if (!proyecto || !accionEstrategica) return;
-
-    const centroCosto = String(row[colCentro] || '').trim();
-    const proyectoNombre = cleanProjectName(proyecto);
-    const key = `${normalizeText(proyectoNombre)}::${normalizeText(accionEstrategica)}`;
-    const tipo = normalizeHeader(row[colTipo]);
-    const valor = normalizeNum(row[colValor]);
-    const causadoGasto = normalizeNum(row[colCausadoGasto]);
-    const causadoInversion = normalizeNum(row[colCausadoInversion]);
-
-    if (!byAction.has(key)) {
-      const projectBudget = projectBudgetMap.get(normalizeText(proyectoNombre));
-      byAction.set(key, {
-        centroCosto,
-        proyecto,
-        proyectoNombre,
-        accionEstrategica,
-        presupuestoAsignado: projectBudget?.presupuesto || 0,
-        comprometidoGasto: 0,
+        comprometidoGasto:     0,
         comprometidoInversion: 0,
-        totalComprometido: 0,
-        causadoGasto: 0,
-        causadoInversion: 0,
-        totalCausado: 0,
-        autorizaciones: 0,
-        aprobadas: 0,
-      });
+        comprometido:          0,
+        causadoGasto:          0,
+        causadoInversion:      0,
+        causado:               0,
+        autorizaciones:        0,
+      };
     }
 
-    const current = byAction.get(key);
-    if (tipo.includes('inversion')) {
-      current.comprometidoInversion += valor;
+    const g = groups[key];
+    if (tipo === 'gasto') {
+      g.comprometidoGasto += valor;
+    } else if (tipo === 'inversion') {
+      g.comprometidoInversion += valor;
     } else {
-      current.comprometidoGasto += valor;
+      g.comprometidoGasto += valor;
     }
-    current.totalComprometido += valor;
-    current.causadoGasto += causadoGasto;
-    current.causadoInversion += causadoInversion;
-    current.totalCausado += causadoGasto + causadoInversion;
-    current.autorizaciones += String(row[colAutorizacion] || '').trim() ? 1 : 0;
-    current.aprobadas += normalizeHeader(row[colAprobacion]).includes('aprobada') ? 1 : 0;
-  });
+    g.comprometido    += valor;
+    g.causadoGasto    += causGasto;
+    g.causadoInversion += causInv;
+    g.causado         += causGasto + causInv;
+    g.autorizaciones  += 1;
+  }
 
-  return Array.from(byAction.values()).sort((a, b) =>
-    `${a.proyectoNombre} ${a.accionEstrategica}`.localeCompare(`${b.proyectoNombre} ${b.accionEstrategica}`)
-  );
+  return Object.values(groups);
 };
+
+// ── Controller ─────────────────────────────────────────────────────────────
 
 const controller = {};
 
-// GET /pdi/presupuesto/data?refresh=true
 controller.getData = async (req, res) => {
+  if (!auth) {
+    return res.status(500).json({ message: 'Credenciales de Google no encontradas en el servidor.' });
+  }
+
   const forceRefresh = req.query.refresh === 'true';
 
   try {
@@ -222,86 +129,36 @@ controller.getData = async (req, res) => {
       return res.status(200).json(cache.data);
     }
 
-    const auth = await getAuth().getClient();
-    const sheets = google.sheets({ version: 'v4', auth });
-
-    const response = await sheets.spreadsheets.values.batchGet({
+    const response = await sheetsService.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
-      ranges: [
-        sheetRange(PROJECT_SHEET_NAME, 'A:AK'),
-        sheetRange(DETAIL_SHEET_NAME, 'A:AD'),
-      ],
+      range: 'A:Z',
     });
 
-    const valueRanges = response.data.valueRanges || [];
-    const projectSheetRows = valueRanges[0]?.values || [];
-    const detailSheetRows = valueRanges[1]?.values || [];
-    const rows = parseProjectRows(projectSheetRows);
-    const projectBudgetMap = new Map(rows.map((row) => [normalizeText(row.proyectoNombre), row]));
-    const actionRows = parseActionRows(detailSheetRows, projectBudgetMap);
+    const rows = response.data.values || [];
+    const parsed = parseRows(rows);
 
-    const totals = rows.reduce(
-      (acc, row) => ({
-        presupuesto: acc.presupuesto + row.presupuesto,
-        comprometido: acc.comprometido + row.comprometido,
-        causado: acc.causado + row.causado,
-        presupuestoGasto: acc.presupuestoGasto + row.presupuestoGasto,
-        presupuestoInversion: acc.presupuestoInversion + row.presupuestoInversion,
-        comprometidoGasto: acc.comprometidoGasto + row.comprometidoGasto,
-        comprometidoInversion: acc.comprometidoInversion + row.comprometidoInversion,
-        causadoGasto: acc.causadoGasto + row.causadoGasto,
-        causadoInversion: acc.causadoInversion + row.causadoInversion,
+    const totals = parsed.reduce(
+      (acc, r) => ({
+        comprometido:          acc.comprometido          + r.comprometido,
+        comprometidoGasto:     acc.comprometidoGasto     + r.comprometidoGasto,
+        comprometidoInversion: acc.comprometidoInversion + r.comprometidoInversion,
+        causado:               acc.causado               + r.causado,
+        causadoGasto:          acc.causadoGasto          + r.causadoGasto,
+        causadoInversion:      acc.causadoInversion      + r.causadoInversion,
       }),
-      {
-        presupuesto: 0,
-        comprometido: 0,
-        causado: 0,
-        presupuestoGasto: 0,
-        presupuestoInversion: 0,
-        comprometidoGasto: 0,
-        comprometidoInversion: 0,
-        causadoGasto: 0,
-        causadoInversion: 0,
-      }
+      { comprometido: 0, comprometidoGasto: 0, comprometidoInversion: 0, causado: 0, causadoGasto: 0, causadoInversion: 0 }
     );
 
-    const detailTotals = actionRows.reduce(
-      (acc, row) => ({
-        comprometidoGasto: acc.comprometidoGasto + row.comprometidoGasto,
-        comprometidoInversion: acc.comprometidoInversion + row.comprometidoInversion,
-        totalComprometido: acc.totalComprometido + row.totalComprometido,
-        causadoGasto: acc.causadoGasto + row.causadoGasto,
-        causadoInversion: acc.causadoInversion + row.causadoInversion,
-        totalCausado: acc.totalCausado + row.totalCausado,
-      }),
-      {
-        comprometidoGasto: 0,
-        comprometidoInversion: 0,
-        totalComprometido: 0,
-        causadoGasto: 0,
-        causadoInversion: 0,
-        totalCausado: 0,
-      }
-    );
-
-    const result = {
-      rows,
-      actionRows,
-      totals: { ...totals, detalle: detailTotals },
-      source: {
-        spreadsheetId: SPREADSHEET_ID,
-        projectSheet: PROJECT_SHEET_NAME,
-        detailSheet: DETAIL_SHEET_NAME,
-      },
-      updatedAt: new Date().toISOString(),
-    };
+    const result = { rows: parsed, totals, updatedAt: new Date().toISOString() };
     cache = { data: result, timestamp: Date.now() };
-
     return res.status(200).json(result);
   } catch (error) {
-    console.error('Error leyendo presupuesto PDI desde Sheets:', error);
+    console.error('Error leyendo presupuesto PDI:', error.message);
     if (cache.data) return res.status(200).json({ ...cache.data, stale: true });
-    return res.status(500).json({ message: 'Error al leer la hoja de presupuesto.', error: error.message });
+    return res.status(500).json({
+      message: 'Error al leer la hoja de presupuesto.',
+      error: error.message,
+    });
   }
 };
 
