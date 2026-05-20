@@ -102,6 +102,11 @@ const workbookSheetSchema = new Schema({
         type: [Number],
         required: false,
         default: undefined
+    },
+    producers: {
+        type: [Schema.Types.ObjectId],
+        ref: 'dependencies',
+        default: []
     }
 }, {
     _id: false,

@@ -2,6 +2,9 @@ const Indicador = require('../models/pdiIndicador');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
+const fs = require('fs/promises');
+const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
+const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
 const Historial = require('../models/pdiIndicadorHistorial');
 const User = require('../models/users');
 
@@ -333,7 +336,10 @@ ctrl.remove = async (req, res) => {
     try {
         const doc = await Indicador.findByIdAndDelete(req.params.id);
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
-        for (const ev of doc.evidencias ?? []) deleteFile(ev.filename);
+        for (const ev of doc.evidencias ?? []) {
+            deleteFile(ev.filename);
+            await deleteDriveFile(ev.drive_file_id);
+        }
         await recalcularAccion(doc.accion_id);
         res.json({ message: 'Indicador eliminado' });
     } catch (e) {
@@ -342,15 +348,32 @@ ctrl.remove = async (req, res) => {
 };
 
 ctrl.uploadEvidencia = async (req, res) => {
+    let uploaded = null;
     try {
         if (!req.file) return res.status(400).json({ error: 'No se recibió ningún archivo PDF' });
         const doc = await Indicador.findById(req.params.id);
-        if (!doc) return res.status(404).json({ error: 'Indicador no encontrado' });
+        if (!doc) {
+            deleteFile(req.file.filename);
+            return res.status(404).json({ error: 'Indicador no encontrado' });
+        }
+
+        const { jerarquia } = await getHierarchyForIndicador(doc);
+        const buffer = await fs.readFile(req.file.path);
+        uploaded = await uploadDriveFile(
+            buffer,
+            req.file.originalname,
+            req.file.mimetype,
+            jerarquia
+        );
+        deleteFile(req.file.filename);
 
         const evidencia = {
             nombre_original: req.file.originalname,
             filename: req.file.filename,
-            url: buildUrl(req.file.filename),
+            url: uploaded.webViewLink || uploaded.webContentLink || buildUrl(req.file.filename),
+            drive_file_id: uploaded.fileId,
+            drive_web_view_link: uploaded.webViewLink || '',
+            drive_web_content_link: uploaded.webContentLink || '',
             subido_por: req.body.subido_por ?? '',
             periodo: req.body.periodo ?? '',
             descripcion: req.body.descripcion ?? '',
@@ -360,6 +383,8 @@ ctrl.uploadEvidencia = async (req, res) => {
         await doc.save();
         res.status(201).json(doc.evidencias[doc.evidencias.length - 1]);
     } catch (e) {
+        if (req.file?.filename) deleteFile(req.file.filename);
+        if (uploaded?.fileId) await deleteDriveFile(uploaded.fileId);
         res.status(500).json({ error: e.message });
     }
 };
@@ -373,6 +398,7 @@ ctrl.deleteEvidencia = async (req, res) => {
         if (!ev) return res.status(404).json({ error: 'Evidencia no encontrada' });
 
         deleteFile(ev.filename);
+        await deleteDriveFile(ev.drive_file_id);
         ev.deleteOne();
         await doc.save();
         res.json({ message: 'Evidencia eliminada' });

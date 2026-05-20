@@ -11,6 +11,9 @@ const respuestaCampoSchema = new mongoose.Schema({
     nombre_original: { type: String, default: '' },
     filename:        { type: String, default: '' },
     url:             { type: String, default: '' },
+    drive_file_id:   { type: String, default: '' },
+    drive_web_view_link: { type: String, default: '' },
+    drive_web_content_link: { type: String, default: '' },
 }, { _id: true });
 
 const pdiFormularioRespuestaSchema = new mongoose.Schema({
@@ -24,10 +27,17 @@ const pdiFormularioRespuestaSchema = new mongoose.Schema({
     word_filename:  { type: String, default: '' },
     word_url:       { type: String, default: '' },
     word_nombre_original: { type: String, default: '' },
+    word_drive_file_id: { type: String, default: '' },
+    word_drive_web_view_link: { type: String, default: '' },
+    word_drive_web_content_link: { type: String, default: '' },
     documento_nombre_original: { type: String, default: '' },
     documento_filename:        { type: String, default: '' },
     documento_url:             { type: String, default: '' },
     documento_mimetype:        { type: String, default: '' },
+    documento_size:            { type: Number, default: 0 },
+    documento_drive_file_id:   { type: String, default: '' },
+    documento_drive_web_view_link: { type: String, default: '' },
+    documento_drive_web_content_link: { type: String, default: '' },
     // Flujo de aval del lider de macroproyecto
     estado_aval:       { type: String, enum: ['Pendiente', 'Aprobado', 'Rechazado'], default: null },
     lider_email_aval:  { type: String, default: '' },

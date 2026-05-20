@@ -4,7 +4,11 @@ const Indicador       = require('../models/pdiIndicador');
 const Accion          = require('../models/pdiAccionEstrategica');
 const Proyecto        = require('../models/pdiProyecto');
 const Macroproyecto   = require('../models/pdiMacroproyecto');
-const { deleteFile }  = require('./pdiFormularioStorage');
+const fs              = require('fs/promises');
+const path            = require('path');
+const { deleteFile, UPLOAD_DIR, buildUrl } = require('./pdiFormularioStorage');
+const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
+const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
 const { replaceWordDocument } = require('./pdiFormularioWordDocument');
 
 // ── Formularios ────────────────────────────────────────────────────────────
@@ -68,15 +72,44 @@ const remove = async (id) => {
     for (const r of respuestas) {
         for (const resp of r.respuestas) {
             if (resp.filename) deleteFile(resp.filename);
+            if (resp.drive_file_id) await deleteDriveFile(resp.drive_file_id);
         }
         if (r.word_filename) deleteFile(r.word_filename);
+        if (r.word_drive_file_id) await deleteDriveFile(r.word_drive_file_id);
         if (r.documento_filename) deleteFile(r.documento_filename);
+        if (r.documento_drive_file_id) await deleteDriveFile(r.documento_drive_file_id);
     }
     await Respuesta.deleteMany({ formulario_id: id });
     return Formulario.findByIdAndDelete(id);
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+// Sube el documento de evidencia a Drive (solo al momento de enviar)
+const uploadDocumentoARespuesta = async (doc) => {
+    if (!doc.documento_filename || doc.documento_drive_file_id) return null;
+    const filePath = path.join(UPLOAD_DIR, doc.documento_filename);
+    let buffer;
+    try { buffer = await fs.readFile(filePath); } catch { return null; }
+    const { jerarquia } = await getHierarchyForIndicador(doc.indicador_id);
+    const uploaded = await uploadDriveFile(
+        buffer,
+        doc.documento_nombre_original || doc.documento_filename,
+        doc.documento_mimetype || 'application/octet-stream',
+        jerarquia
+    );
+    await Respuesta.findByIdAndUpdate(doc._id, {
+        documento_drive_file_id:          uploaded.fileId,
+        documento_url:                    uploaded.webViewLink || uploaded.webContentLink || '',
+        documento_drive_web_view_link:    uploaded.webViewLink || '',
+        documento_drive_web_content_link: uploaded.webContentLink || '',
+    });
+    doc.documento_drive_file_id         = uploaded.fileId;
+    doc.documento_url                   = uploaded.webViewLink || uploaded.webContentLink || '';
+    doc.documento_drive_web_view_link   = uploaded.webViewLink || '';
+    doc.documento_drive_web_content_link = uploaded.webContentLink || '';
+    return uploaded;
+};
 
 const getLiderEmailForIndicador = async (indicador_id) => {
     if (!indicador_id) return '';
@@ -239,6 +272,16 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     }
 
     if (existing) {
+        const prevEstado       = existing.estado;
+        const prevFechaEnvio   = existing.fecha_envio;
+        const prevAval         = {
+            estado_aval:      existing.estado_aval,
+            lider_email_aval: existing.lider_email_aval,
+            aval_por:         existing.aval_por,
+            aval_comentario:  existing.aval_comentario,
+            aval_fecha:       existing.aval_fecha,
+        };
+
         existing.respuestas    = respuestas ?? existing.respuestas;
         existing.indicador_id  = indicador_id || null;
         if (estado) {
@@ -258,8 +301,38 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
                 fecha_envio: existing.fecha_envio ?? new Date(),
             });
         }
-        const hydrated = await ensureWordDocumentIfSent(existing);
-        return { doc: hydrated, justSent: existing.estado === 'Enviado' && (!wasAlreadySent || wasRejected) };
+
+        let docSubido = null;
+        try {
+            if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
+                docSubido = await uploadDocumentoARespuesta(existing);
+            }
+            const hydrated = await ensureWordDocumentIfSent(existing);
+            return { doc: hydrated, justSent: existing.estado === 'Enviado' && (!wasAlreadySent || wasRejected) };
+        } catch (driveErr) {
+            // Revertir: el envío falló, dejar todo como estaba
+            await Respuesta.findByIdAndUpdate(existing._id, {
+                estado:          prevEstado,
+                fecha_envio:     prevFechaEnvio,
+                ...prevAval,
+                ...(docSubido?.fileId ? {
+                    documento_drive_file_id:          '',
+                    documento_url:                    buildUrl(existing.documento_filename),
+                    documento_drive_web_view_link:    '',
+                    documento_drive_web_content_link: '',
+                } : {}),
+            });
+            if (docSubido?.fileId) deleteDriveFile(docSubido.fileId).catch(() => {});
+            if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
+                await syncPeriodoReporte({
+                    indicador_id, corte,
+                    estado_reporte: 'Borrador',
+                    reportado_por:  '',
+                    fecha_envio:    null,
+                });
+            }
+            throw new Error(`No se pudo subir el documento a Google Drive. Verifica la configuración de la carpeta. Detalle: ${driveErr.message}`);
+        }
     }
 
     const created = await Respuesta.create({
@@ -281,8 +354,28 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
             fecha_envio: created.fecha_envio ?? new Date(),
         });
     }
-    const hydrated = await ensureWordDocumentIfSent(created);
-    return { doc: hydrated, justSent: created.estado === 'Enviado' };
+
+    let docSubidoCreado = null;
+    try {
+        if (becomingEnviado) {
+            docSubidoCreado = await uploadDocumentoARespuesta(created);
+        }
+        const hydrated = await ensureWordDocumentIfSent(created);
+        return { doc: hydrated, justSent: created.estado === 'Enviado' };
+    } catch (driveErr) {
+        // Revertir: eliminar el documento recién creado y limpiar el periodo
+        await Respuesta.findByIdAndDelete(created._id);
+        if (docSubidoCreado?.fileId) deleteDriveFile(docSubidoCreado.fileId).catch(() => {});
+        if (becomingEnviado) {
+            await syncPeriodoReporte({
+                indicador_id, corte,
+                estado_reporte: 'Borrador',
+                reportado_por:  '',
+                fecha_envio:    null,
+            });
+        }
+        throw new Error(`No se pudo subir el documento a Google Drive. Verifica la configuración de la carpeta. Detalle: ${driveErr.message}`);
+    }
 };
 
 const deleteRespuesta = async (id) => {
@@ -290,9 +383,12 @@ const deleteRespuesta = async (id) => {
     if (!doc) return null;
     for (const r of doc.respuestas) {
         if (r.filename) deleteFile(r.filename);
+        if (r.drive_file_id) await deleteDriveFile(r.drive_file_id);
     }
     if (doc.word_filename) deleteFile(doc.word_filename);
+    if (doc.word_drive_file_id) await deleteDriveFile(doc.word_drive_file_id);
     if (doc.documento_filename) deleteFile(doc.documento_filename);
+    if (doc.documento_drive_file_id) await deleteDriveFile(doc.documento_drive_file_id);
     return Respuesta.findByIdAndDelete(id);
 };
 

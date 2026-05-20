@@ -9,6 +9,7 @@ const {
 const UPLOAD_DIR = path.join(__dirname, '../uploads/pdi/informes');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+const DOCX_MIMETYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const BASE_URL = () => process.env.BACKEND_URL || 'http://localhost:3456';
 const buildUrl = (filename) => `${BASE_URL()}/uploads/pdi/informes/${filename}`;
 
@@ -66,6 +67,16 @@ const separadorFino = () => new Paragraph({
 
 const formatCOP = (v) =>
     new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v ?? 0);
+
+function saveDocumentBuffer(buffer, filename) {
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
+    return {
+        filename,
+        url: buildUrl(filename),
+        buffer,
+        mimetype: DOCX_MIMETYPE,
+    };
+}
 
 // ── Ordenar periodos ───────────────────────────────────────────────────────────────
 function ordenarPeriodos(periodos = []) {
@@ -207,6 +218,10 @@ function seccionFormularios(respuestas = [], corte = null) {
             }
         }
 
+        if (r.word_url) {
+            bloques.push(campo('Formato Word del formulario', `${r.word_nombre_original || r.word_filename || 'Formulario generado'}  ${r.word_url}`));
+        }
+
         // Documento final adjunto
         if (r.documento_url) {
             bloques.push(campo('Documento de evidencia adjunto', `${r.documento_nombre_original || r.documento_filename}  ${r.documento_url}`));
@@ -271,6 +286,64 @@ function seccionAccion(accion, indicadores, respuestasPorIndicador, corte = null
 
 // ── Generadores principales ───────────────────────────────────────────────────────
 
+async function generarInformeIndicador({ indicador, respuestasInd = [], corte = null }) {
+    const subtitulo = corte ? `Corte: ${corte}` : 'Todos los cortes';
+    const children = [
+        new Paragraph({
+            heading: HeadingLevel.TITLE,
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 300 },
+            children: [new TextRun({ text: 'Informe de Evidencias - Indicador PDI', bold: true, size: 36 })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 100 },
+            children: [new TextRun({ text: subtitulo, color: '7C3AED', bold: true })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 600 },
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+        }),
+        ...seccionIndicador(indicador, respuestasInd, corte),
+    ];
+
+    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const buffer = await Packer.toBuffer(doc);
+    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
+    const filename = `informe_indicador_${sanitize(indicador.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    return saveDocumentBuffer(buffer, filename);
+}
+
+async function generarInformeAccion({ accion, indicadores = [], respuestasPorIndicador = {}, corte = null }) {
+    const subtitulo = corte ? `Corte: ${corte}` : 'Todos los cortes';
+    const children = [
+        new Paragraph({
+            heading: HeadingLevel.TITLE,
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 300 },
+            children: [new TextRun({ text: 'Informe de Avance - Accion PDI', bold: true, size: 36 })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 100 },
+            children: [new TextRun({ text: subtitulo, color: '7C3AED', bold: true })],
+        }),
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 0, after: 600 },
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+        }),
+        ...seccionAccion(accion, indicadores, respuestasPorIndicador, corte),
+    ];
+
+    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const buffer = await Packer.toBuffer(doc);
+    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
+    const filename = `informe_accion_${sanitize(accion.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    return saveDocumentBuffer(buffer, filename);
+}
+
 async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion, respuestasPorIndicador = {}, corte = null }) {
     const subtitulo = corte ? `Corte: ${corte}` : 'Todos los cortes';
     const children = [
@@ -308,8 +381,7 @@ async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion
     const buffer = await Packer.toBuffer(doc);
     const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
     const filename = `informe_proyecto_${sanitize(proyecto.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
-    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
-    return { filename, url: buildUrl(filename) };
+    return saveDocumentBuffer(buffer, filename);
 }
 
 async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador = {}, corte = null }) {
@@ -358,8 +430,14 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
     const buffer = await Packer.toBuffer(doc);
     const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
     const filename = `informe_macro_${sanitize(macro.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
-    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
-    return { filename, url: buildUrl(filename) };
+    return saveDocumentBuffer(buffer, filename);
 }
 
-module.exports = { generarInformeProyecto, generarInformeMacro, UPLOAD_DIR, buildUrl };
+module.exports = {
+    generarInformeIndicador,
+    generarInformeAccion,
+    generarInformeProyecto,
+    generarInformeMacro,
+    UPLOAD_DIR,
+    buildUrl,
+};
