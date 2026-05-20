@@ -3,6 +3,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
 const { UPLOAD_DIR, buildUrl, deleteFile } = require('./pdiFormularioStorage');
+const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
+const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
+
+const DOCX_MIMETYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 const sanitizeFilePart = (value) =>
     String(value ?? '')
@@ -47,6 +51,33 @@ const buildAnswerParagraphs = (respuestas = []) => {
     return blocks;
 };
 
+const buildEvidenciaSection = (respuesta) => {
+    const blocks = [];
+    if (!respuesta.documento_url && !respuesta.documento_nombre_original) return blocks;
+
+    blocks.push(
+        new Paragraph({
+            spacing: { before: 400, after: 100 },
+            children: [new TextRun({ text: 'Evidencia adjunta', bold: true, size: 26 })],
+        })
+    );
+
+    const nombre = respuesta.documento_nombre_original || respuesta.documento_filename || 'Archivo adjunto';
+    blocks.push(
+        new Paragraph({
+            children: [new TextRun(`Archivo: ${nombre}`)],
+        })
+    );
+
+    if (respuesta.documento_url) {
+        blocks.push(
+            new Paragraph({ children: [new TextRun(`URL: ${respuesta.documento_url}`)] })
+        );
+    }
+
+    return blocks;
+};
+
 const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicadorNombre, indicadorCodigo }) => {
     const doc = new Document({
         sections: [{
@@ -65,6 +96,7 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
                     children: [new TextRun(`Fecha de envío: ${respuesta.fecha_envio ? new Date(respuesta.fecha_envio).toLocaleDateString('es-CO') : 'Sin fecha'}`)],
                 }),
                 ...buildAnswerParagraphs(respuesta.respuestas),
+                ...buildEvidenciaSection(respuesta),
             ],
         }],
     });
@@ -79,12 +111,17 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
     return {
         filename,
         url: buildUrl(filename),
+        buffer,
+        mimetype: DOCX_MIMETYPE,
     };
 };
 
 const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombre, indicadorCodigo }) => {
     if (respuesta.word_filename) {
         deleteFile(respuesta.word_filename);
+    }
+    if (respuesta.word_drive_file_id) {
+        await deleteDriveFile(respuesta.word_drive_file_id);
     }
 
     const generated = await generateWordForRespuesta({
@@ -94,9 +131,28 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
         indicadorCodigo,
     });
 
+    const indicadorId = typeof respuesta.indicador_id === 'object'
+        ? respuesta.indicador_id?._id
+        : respuesta.indicador_id;
+
+    const uploaded = indicadorId
+        ? await (async () => {
+            const { jerarquia } = await getHierarchyForIndicador(indicadorId);
+            return uploadDriveFile(
+                generated.buffer,
+                generated.filename,
+                generated.mimetype,
+                jerarquia
+            );
+        })()
+        : null;
+
     respuesta.word_filename = generated.filename;
-    respuesta.word_url = generated.url;
+    respuesta.word_url = uploaded?.webViewLink || uploaded?.webContentLink || generated.url;
     respuesta.word_nombre_original = generated.filename;
+    respuesta.word_drive_file_id = uploaded?.fileId || '';
+    respuesta.word_drive_web_view_link = uploaded?.webViewLink || '';
+    respuesta.word_drive_web_content_link = uploaded?.webContentLink || '';
     await respuesta.save();
 
     return respuesta;

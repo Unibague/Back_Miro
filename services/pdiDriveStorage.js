@@ -2,12 +2,28 @@ const { google } = require('googleapis');
 const { Readable } = require('stream');
 const path = require('path');
 
-const ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_PDI_FOLDER_ID;
-const KEY_FILE = path.resolve(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+const getRootFolderId = () => {
+    const rootFolderId = process.env.GOOGLE_DRIVE_PDI_FOLDER_ID;
+    if (!rootFolderId) {
+        throw new Error('GOOGLE_DRIVE_PDI_FOLDER_ID no esta configurado.');
+    }
+    return rootFolderId;
+};
+
+const getKeyFile = () => {
+    const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (!keyFile) {
+        throw new Error('GOOGLE_APPLICATION_CREDENTIALS no esta configurado.');
+    }
+    return path.resolve(keyFile);
+};
+
+const escapeDriveQueryValue = (value) =>
+    String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 function getDriveClient() {
     const auth = new google.auth.GoogleAuth({
-        keyFile: KEY_FILE,
+        keyFile: getKeyFile(),
         scopes: ['https://www.googleapis.com/auth/drive'],
     });
     return google.drive({ version: 'v3', auth });
@@ -15,20 +31,26 @@ function getDriveClient() {
 
 // Busca o crea una subcarpeta por nombre dentro de un padre
 async function getOrCreateFolder(drive, nombre, parentId) {
+    const folderName = String(nombre ?? '').trim();
+    if (!folderName) return parentId;
+
     const res = await drive.files.list({
-        q: `name='${nombre}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`,
+        q: `name='${escapeDriveQueryValue(folderName)}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`,
         fields: 'files(id, name)',
         spaces: 'drive',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
     });
     if (res.data.files.length > 0) return res.data.files[0].id;
 
     const created = await drive.files.create({
         requestBody: {
-            name: nombre,
+            name: folderName,
             mimeType: 'application/vnd.google-apps.folder',
             parents: [parentId],
         },
         fields: 'id',
+        supportsAllDrives: true,
     });
     return created.data.id;
 }
@@ -36,7 +58,7 @@ async function getOrCreateFolder(drive, nombre, parentId) {
 // Resuelve (creando si no existen) las carpetas de la jerarquía PDI
 // jerarquia: { macro, proyecto, accion, indicador, corte }
 async function resolverJerarquia(drive, { macro, proyecto, accion, indicador, corte }) {
-    let folderId = ROOT_FOLDER_ID;
+    let folderId = getRootFolderId();
     if (macro)      folderId = await getOrCreateFolder(drive, macro,      folderId);
     if (proyecto)   folderId = await getOrCreateFolder(drive, proyecto,   folderId);
     if (accion)     folderId = await getOrCreateFolder(drive, accion,     folderId);
@@ -67,13 +89,19 @@ async function uploadFile(buffer, nombreOriginal, mimetype, jerarquia = {}) {
             body: Readable.from(buffer),
         },
         fields: 'id, webViewLink, webContentLink, name',
+        supportsAllDrives: true,
     });
 
     // Hacer el archivo accesible con el link (solo lectura para cualquiera con el enlace)
-    await drive.permissions.create({
-        fileId: res.data.id,
-        requestBody: { role: 'reader', type: 'anyone' },
-    });
+    try {
+        await drive.permissions.create({
+            fileId: res.data.id,
+            requestBody: { role: 'reader', type: 'anyone' },
+            supportsAllDrives: true,
+        });
+    } catch (e) {
+        console.warn('Drive permissions warning:', e.message);
+    }
 
     return {
         fileId:          res.data.id,
@@ -90,10 +118,10 @@ async function deleteFile(fileId) {
     if (!fileId) return;
     try {
         const drive = getDriveClient();
-        await drive.files.delete({ fileId });
+        await drive.files.delete({ fileId, supportsAllDrives: true });
     } catch (e) {
         console.error('Drive deleteFile error:', e.message);
     }
 }
 
-module.exports = { uploadFile, deleteFile, getOrCreateFolder };
+module.exports = { uploadFile, deleteFile, getOrCreateFolder, resolverJerarquia, getDriveClient };
