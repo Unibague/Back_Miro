@@ -23,7 +23,7 @@ router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 // ── Documento de evidencia (PDF o Word) ligado a la respuesta ─────────────
 router.post(
     '/:id/respuestas/:respuestaId/documento-final',
-    upload.single('archivo'),
+    upload.array('archivo', 20),
     ctrl.uploadDocumentoFinal
 );
 router.delete(

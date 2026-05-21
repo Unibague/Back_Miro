@@ -19,24 +19,28 @@ const storage = multer.diskStorage({
     },
 });
 
-const ALLOWED_MIMETYPES = new Set([
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_PDF_MIMETYPES = new Set([
     'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/x-pdf',
+    'application/octet-stream',
+    'binary/octet-stream',
 ]);
 
 const fileFilter = (_req, file, cb) => {
-    if (ALLOWED_MIMETYPES.has(file.mimetype)) {
+    const isPdf = ALLOWED_PDF_MIMETYPES.has(file.mimetype) ||
+                  file.originalname.toLowerCase().endsWith('.pdf');
+    if (isPdf) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten archivos PDF o Word'), false);
+        cb(new Error('Solo se permiten archivos PDF'), false);
     }
 };
 
 const upload = multer({
     storage,
     fileFilter,
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
+    limits: { fileSize: MAX_FILE_SIZE_BYTES },
 });
 
 const deleteFile = (filename) => {
@@ -50,4 +54,4 @@ const buildUrl = (filename) => {
     return `${base}/uploads/pdi/formularios/${filename}`;
 };
 
-module.exports = { upload, deleteFile, buildUrl, UPLOAD_DIR };
+module.exports = { upload, deleteFile, buildUrl, UPLOAD_DIR, MAX_FILE_SIZE_BYTES };

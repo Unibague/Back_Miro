@@ -6,6 +6,35 @@ const Macro      = require('../models/pdiMacroproyecto');
 
 const ctrl = {};
 
+const bogotaDateKey = (value = new Date()) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Bogota',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(date);
+
+    const year = parts.find((p) => p.type === 'year')?.value;
+    const month = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+    return Number(`${year}${month}${day}`);
+};
+
+const isCorteVigente = (corte, todayKey = bogotaDateKey()) => {
+    if (!corte.activo) return false;
+    if (!corte.fecha_inicio && !corte.fecha_fin) return true;
+
+    const desde = corte.fecha_inicio ? bogotaDateKey(corte.fecha_inicio) : null;
+    const hasta = corte.fecha_fin ? bogotaDateKey(corte.fecha_fin) : null;
+
+    if (desde && todayKey < desde) return false;
+    if (hasta && todayKey > hasta) return false;
+    return true;
+};
+
 ctrl.getAll = async (req, res) => {
     try {
         const docs = await Corte.find().sort({ orden: 1, nombre: 1 });
@@ -27,16 +56,9 @@ ctrl.getActivos = async (req, res) => {
 // Retorna los cortes activos cuya ventana de calificación está vigente hoy
 ctrl.getVigentes = async (req, res) => {
     try {
-        const hoy = new Date();
+        const todayKey = bogotaDateKey();
         const docs = await Corte.find({ activo: true }).sort({ orden: 1, nombre: 1 });
-        const vigentes = docs.filter(c => {
-            if (!c.fecha_inicio && !c.fecha_fin) return true; // sin fechas = siempre abierto
-            const desde = c.fecha_inicio ? new Date(c.fecha_inicio) : null;
-            const hasta = c.fecha_fin    ? new Date(c.fecha_fin)    : null;
-            if (desde && hoy < desde) return false;
-            if (hasta && hoy > hasta) return false;
-            return true;
-        });
+        const vigentes = docs.filter(c => isCorteVigente(c, todayKey));
         res.json(vigentes);
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
