@@ -15,7 +15,7 @@ router.post('/recalcular-todos', ctrl.recalcularTodos);
 
 // Evidencias
 router.get('/:id/evidencias',                      ctrl.getEvidencias);
-router.post('/:id/evidencias', upload.single('pdf'), ctrl.uploadEvidencia);
+router.post('/:id/evidencias', upload.array('pdf', 20), ctrl.uploadEvidencia);
 router.patch('/:id/evidencias/:evidenciaId/estado', ctrl.updateEvidenciaEstado);
 router.delete('/:id/evidencias/:evidenciaId',      ctrl.deleteEvidencia);
 

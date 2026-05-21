@@ -5,6 +5,12 @@ const fs = require('fs/promises');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { parseExecutedWorkbook, getSheetNames, normalizeCode, DEFAULT_SHEET_NAME } = require('../services/pdiBudgetImport');
 
+function invalidatePresupuestoCache() {
+    try {
+        require('./pdiPresupuesto').invalidateCache?.();
+    } catch (_) { /* cache invalidation is best-effort */ }
+}
+
 function normalizePeso(peso) {
     const value = Number(peso) || 0;
     return value <= 1 ? value * 100 : value;
@@ -349,6 +355,8 @@ ctrl.importExecuted = async (req, res) => {
                 summary.presupuesto_ejecutado = await recalcularPresupuestoEjecutadoProyecto(proyectoId);
             }
         }
+
+        invalidatePresupuestoCache();
 
         const actualizadosList = Array.from(actualizados.values()).sort((a, b) => a.codigo.localeCompare(b.codigo));
 

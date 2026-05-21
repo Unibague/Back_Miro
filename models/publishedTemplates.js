@@ -63,6 +63,10 @@ const publishedTemplateSchema = new Schema({
       message: props => `Dependency already uploaded data: ${props.value.map(ld => ld.dependency).join(', ')}`
     }
   },
+  qr_draft_data: {
+    type: [producersData],
+    default: []
+  },
   deadline: {
     type: Date,
     required: true

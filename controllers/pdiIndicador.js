@@ -389,6 +389,59 @@ ctrl.uploadEvidencia = async (req, res) => {
     }
 };
 
+ctrl.uploadEvidencia = async (req, res) => {
+    const files = req.files?.length ? req.files : (req.file ? [req.file] : []);
+    const uploadedFiles = [];
+    try {
+        if (!files.length) return res.status(400).json({ error: 'No se recibio ningun archivo PDF' });
+        const doc = await Indicador.findById(req.params.id);
+        if (!doc) {
+            files.forEach((file) => deleteFile(file.filename));
+            return res.status(404).json({ error: 'Indicador no encontrado' });
+        }
+
+        const { jerarquia } = await getHierarchyForIndicador(doc);
+        const evidencias = [];
+
+        for (const file of files) {
+            const buffer = await fs.readFile(file.path);
+            const uploaded = await uploadDriveFile(
+                buffer,
+                file.originalname,
+                file.mimetype,
+                jerarquia
+            );
+            uploadedFiles.push(uploaded);
+            deleteFile(file.filename);
+
+            evidencias.push({
+                nombre_original: file.originalname,
+                filename: file.filename,
+                url: uploaded.webViewLink || uploaded.webContentLink || buildUrl(file.filename),
+                drive_file_id: uploaded.fileId,
+                drive_web_view_link: uploaded.webViewLink || '',
+                drive_web_content_link: uploaded.webContentLink || '',
+                subido_por: req.body.subido_por ?? '',
+                periodo: req.body.periodo ?? '',
+                descripcion: req.body.descripcion ?? '',
+            });
+        }
+
+        doc.evidencias.push(...evidencias);
+        await doc.save();
+        const created = doc.evidencias.slice(-evidencias.length);
+        res.status(201).json(created.length === 1 ? created[0] : created);
+    } catch (e) {
+        files.forEach((file) => {
+            if (file?.filename) deleteFile(file.filename);
+        });
+        for (const uploaded of uploadedFiles) {
+            if (uploaded?.fileId) await deleteDriveFile(uploaded.fileId);
+        }
+        res.status(500).json({ error: e.message });
+    }
+};
+
 ctrl.deleteEvidencia = async (req, res) => {
     try {
         const doc = await Indicador.findById(req.params.id);

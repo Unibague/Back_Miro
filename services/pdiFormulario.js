@@ -76,8 +76,15 @@ const remove = async (id) => {
         }
         if (r.word_filename) deleteFile(r.word_filename);
         if (r.word_drive_file_id) await deleteDriveFile(r.word_drive_file_id);
-        if (r.documento_filename) deleteFile(r.documento_filename);
-        if (r.documento_drive_file_id) await deleteDriveFile(r.documento_drive_file_id);
+        if (r.documentos?.length) {
+            for (const documento of r.documentos) {
+                if (documento.filename) deleteFile(documento.filename);
+                if (documento.drive_file_id) await deleteDriveFile(documento.drive_file_id);
+            }
+        } else {
+            if (r.documento_filename) deleteFile(r.documento_filename);
+            if (r.documento_drive_file_id) await deleteDriveFile(r.documento_drive_file_id);
+        }
     }
     await Respuesta.deleteMany({ formulario_id: id });
     return Formulario.findByIdAndDelete(id);
@@ -86,29 +93,87 @@ const remove = async (id) => {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 // Sube el documento de evidencia a Drive (solo al momento de enviar)
+const hasLegacyDocumento = (doc) =>
+    Boolean(doc?.documento_filename || doc?.documento_url || doc?.documento_nombre_original);
+
+const buildLegacyDocumento = (doc) => ({
+    nombre_original: doc.documento_nombre_original || '',
+    filename: doc.documento_filename || '',
+    url: doc.documento_url || '',
+    mimetype: doc.documento_mimetype || '',
+    size: doc.documento_size || 0,
+    drive_file_id: doc.documento_drive_file_id || '',
+    drive_web_view_link: doc.documento_drive_web_view_link || '',
+    drive_web_content_link: doc.documento_drive_web_content_link || '',
+});
+
+const syncLegacyDocumentoFields = (doc) => {
+    const first = doc.documentos?.[0];
+    doc.documento_filename = first?.filename || '';
+    doc.documento_url = first?.url || '';
+    doc.documento_nombre_original = first?.nombre_original || '';
+    doc.documento_mimetype = first?.mimetype || '';
+    doc.documento_size = first?.size || 0;
+    doc.documento_drive_file_id = first?.drive_file_id || '';
+    doc.documento_drive_web_view_link = first?.drive_web_view_link || '';
+    doc.documento_drive_web_content_link = first?.drive_web_content_link || '';
+};
+
 const uploadDocumentoARespuesta = async (doc) => {
-    if (!doc.documento_filename || doc.documento_drive_file_id) return null;
-    const filePath = path.join(UPLOAD_DIR, doc.documento_filename);
-    let buffer;
-    try { buffer = await fs.readFile(filePath); } catch { return null; }
+    if (!doc.documentos?.length && hasLegacyDocumento(doc)) {
+        doc.documentos.push(buildLegacyDocumento(doc));
+    }
+    if (!doc.documentos?.length) return [];
+
     const { jerarquia } = await getHierarchyForIndicador(doc.indicador_id);
-    const uploaded = await uploadDriveFile(
-        buffer,
-        doc.documento_nombre_original || doc.documento_filename,
-        doc.documento_mimetype || 'application/octet-stream',
-        jerarquia
-    );
-    await Respuesta.findByIdAndUpdate(doc._id, {
-        documento_drive_file_id:          uploaded.fileId,
-        documento_url:                    uploaded.webViewLink || uploaded.webContentLink || '',
-        documento_drive_web_view_link:    uploaded.webViewLink || '',
-        documento_drive_web_content_link: uploaded.webContentLink || '',
-    });
-    doc.documento_drive_file_id         = uploaded.fileId;
-    doc.documento_url                   = uploaded.webViewLink || uploaded.webContentLink || '';
-    doc.documento_drive_web_view_link   = uploaded.webViewLink || '';
-    doc.documento_drive_web_content_link = uploaded.webContentLink || '';
-    return uploaded;
+    const uploadedFiles = [];
+
+    for (const documento of doc.documentos) {
+        if (!documento.filename || documento.drive_file_id) continue;
+        const filePath = path.join(UPLOAD_DIR, documento.filename);
+        let buffer;
+        try { buffer = await fs.readFile(filePath); } catch { continue; }
+
+        const uploaded = await uploadDriveFile(
+            buffer,
+            documento.nombre_original || documento.filename,
+            documento.mimetype || 'application/pdf',
+            jerarquia
+        );
+
+        documento.drive_file_id = uploaded.fileId;
+        documento.url = uploaded.webViewLink || uploaded.webContentLink || '';
+        documento.drive_web_view_link = uploaded.webViewLink || '';
+        documento.drive_web_content_link = uploaded.webContentLink || '';
+        uploadedFiles.push({ documentoId: String(documento._id), ...uploaded });
+    }
+
+    syncLegacyDocumentoFields(doc);
+    await doc.save();
+    return uploadedFiles;
+};
+
+const rollbackDocumentosSubidos = async (respuestaId, uploadedFiles = []) => {
+    const files = Array.isArray(uploadedFiles) ? uploadedFiles : [];
+    if (!files.length) return;
+
+    const doc = await Respuesta.findById(respuestaId);
+    if (doc?.documentos?.length) {
+        const uploadedIds = new Set(files.map((item) => item.documentoId));
+        for (const documento of doc.documentos) {
+            if (!uploadedIds.has(String(documento._id))) continue;
+            documento.drive_file_id = '';
+            documento.url = documento.filename ? buildUrl(documento.filename) : '';
+            documento.drive_web_view_link = '';
+            documento.drive_web_content_link = '';
+        }
+        syncLegacyDocumentoFields(doc);
+        await doc.save();
+    }
+
+    for (const uploaded of files) {
+        if (uploaded.fileId) deleteDriveFile(uploaded.fileId).catch(() => {});
+    }
 };
 
 const getLiderEmailForIndicador = async (indicador_id) => {
@@ -311,18 +376,12 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
             return { doc: hydrated, justSent: existing.estado === 'Enviado' && (!wasAlreadySent || wasRejected) };
         } catch (driveErr) {
             // Revertir: el envío falló, dejar todo como estaba
+            await rollbackDocumentosSubidos(existing._id, docSubido);
             await Respuesta.findByIdAndUpdate(existing._id, {
-                estado:          prevEstado,
-                fecha_envio:     prevFechaEnvio,
+                estado:      prevEstado,
+                fecha_envio: prevFechaEnvio,
                 ...prevAval,
-                ...(docSubido?.fileId ? {
-                    documento_drive_file_id:          '',
-                    documento_url:                    buildUrl(existing.documento_filename),
-                    documento_drive_web_view_link:    '',
-                    documento_drive_web_content_link: '',
-                } : {}),
             });
-            if (docSubido?.fileId) deleteDriveFile(docSubido.fileId).catch(() => {});
             if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
                 await syncPeriodoReporte({
                     indicador_id, corte,
@@ -365,7 +424,9 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     } catch (driveErr) {
         // Revertir: eliminar el documento recién creado y limpiar el periodo
         await Respuesta.findByIdAndDelete(created._id);
-        if (docSubidoCreado?.fileId) deleteDriveFile(docSubidoCreado.fileId).catch(() => {});
+        for (const uploaded of (Array.isArray(docSubidoCreado) ? docSubidoCreado : [])) {
+            if (uploaded.fileId) deleteDriveFile(uploaded.fileId).catch(() => {});
+        }
         if (becomingEnviado) {
             await syncPeriodoReporte({
                 indicador_id, corte,
@@ -387,8 +448,15 @@ const deleteRespuesta = async (id) => {
     }
     if (doc.word_filename) deleteFile(doc.word_filename);
     if (doc.word_drive_file_id) await deleteDriveFile(doc.word_drive_file_id);
-    if (doc.documento_filename) deleteFile(doc.documento_filename);
-    if (doc.documento_drive_file_id) await deleteDriveFile(doc.documento_drive_file_id);
+    if (doc.documentos?.length) {
+        for (const documento of doc.documentos) {
+            if (documento.filename) deleteFile(documento.filename);
+            if (documento.drive_file_id) await deleteDriveFile(documento.drive_file_id);
+        }
+    } else {
+        if (doc.documento_filename) deleteFile(doc.documento_filename);
+        if (doc.documento_drive_file_id) await deleteDriveFile(doc.documento_drive_file_id);
+    }
     return Respuesta.findByIdAndDelete(id);
 };
 
@@ -397,10 +465,15 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     const doc = await Respuesta.findById(respuestaId);
     if (!doc) throw new Error('Respuesta no encontrada');
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden avalar respuestas enviadas');
-    doc.estado_aval    = estado_aval;
-    doc.aval_por       = aval_por ?? '';
+    doc.estado_aval     = estado_aval;
+    doc.aval_por        = aval_por ?? '';
     doc.aval_comentario = aval_comentario ?? '';
-    doc.aval_fecha     = new Date();
+    doc.aval_fecha      = new Date();
+    // Al rechazar, el responsable debe corregir y re-enviar
+    if (estado_aval === 'Rechazado') {
+        doc.estado      = 'Borrador';
+        doc.fecha_envio = null;
+    }
     await doc.save();
     await syncPeriodoReporte({
         indicador_id: doc.indicador_id,

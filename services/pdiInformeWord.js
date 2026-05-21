@@ -222,10 +222,19 @@ function seccionFormularios(respuestas = [], corte = null) {
             bloques.push(campo('Formato Word del formulario', `${r.word_nombre_original || r.word_filename || 'Formulario generado'}  ${r.word_url}`));
         }
 
-        // Documento final adjunto
-        if (r.documento_url) {
-            bloques.push(campo('Documento de evidencia adjunto', `${r.documento_nombre_original || r.documento_filename}  ${r.documento_url}`));
-        }
+        const documentosEvidencia = Array.isArray(r.documentos) && r.documentos.length
+            ? r.documentos
+            : (r.documento_url ? [{
+                nombre_original: r.documento_nombre_original,
+                filename: r.documento_filename,
+                url: r.documento_url,
+            }] : []);
+        documentosEvidencia.forEach((documento, index) => {
+            bloques.push(campo(
+                `Documento de evidencia adjunto ${index + 1}`,
+                `${documento.nombre_original || documento.filename || 'Archivo adjunto'}  ${documento.url || ''}`
+            ));
+        });
 
         bloques.push(separadorFino());
     }

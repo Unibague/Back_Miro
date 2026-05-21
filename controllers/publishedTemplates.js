@@ -17,6 +17,33 @@ const axios = require('axios');
 
 const publTempController = {};
 
+const validateWithToText = (validateWith) => {
+  if (!validateWith) return '';
+  if (typeof validateWith === 'string') return validateWith;
+  if (typeof validateWith === 'object') return validateWith.name || '';
+  return String(validateWith);
+};
+
+// Recolecta todos los validators de una plantilla: campos top-level + todas las hojas de workbook
+const collectValidatorsForTemplate = async (templateData, periodId) => {
+  const topFields = templateData?.fields || [];
+  const sheetFields = (templateData?.workbook_sheets || []).flatMap(s => s.fields || []);
+  const allFields = [...topFields, ...sheetFields];
+  const seen = new Set();
+  const unique = allFields.filter(f => {
+    const validateWith = validateWithToText(f.validate_with);
+    if (!validateWith) return false;
+    const key = validateWith.split(' - ')[0].trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const results = await Promise.all(
+    unique.map(f => Validator.giveValidatorToExcel(validateWithToText(f.validate_with), periodId))
+  );
+  return results.filter(Boolean);
+};
+
 const isBlankOptionalValue = (value) => {
   if (value === null || value === undefined) return true;
   if (typeof value === 'number') return Number.isNaN(value);
@@ -595,15 +622,11 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     const total = await PublishedTemplate.countDocuments(query);
     
     const updated_templates = await Promise.all(published_templates.map(async template => {
-      const validators = await Promise.all(
-        template.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
-        })
-      );
-
       template = template.toObject();
-      validatorsFiltered = validators.filter(v => v !== undefined)
-      template.validators = validatorsFiltered // Añadir validators al objeto
+      template.validators = await collectValidatorsForTemplate(
+        template.template,
+        template.period?._id || template.period
+      );
 
       const dependencies = await Dependency.find(
         { dep_code: { $in: template.producers_dep_code } },
@@ -706,16 +729,11 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
     const total = await PublishedTemplate.countDocuments(query);
 
     const updatedTemplatesPromises = templates.map(async t => {
-      
-      const validators = await Promise.all(
-        t.template.fields.map(async (field) => {
-          return Validator.giveValidatorToExcel(field.validate_with, t.period?._id || t.period);
-        })
-      );
-
       t = t.toObject();
-      validatorsFiltered = validators.filter(v => v !== undefined)
-      t.validators = validatorsFiltered // Añadir validators al objeto
+      t.validators = await collectValidatorsForTemplate(
+        t.template,
+        t.period?._id || t.period
+      );
   
       let uploaded = false;
     
@@ -1112,13 +1130,20 @@ if (field.multiple) {
 
     // Verificar si ya existe data para esta dependencia
     const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
-    
+
     if (existingDataIndex > -1) {
       // Si ya existe, actualizar los datos existentes
       pubTem.loaded_data[existingDataIndex] = producersData;
     } else {
       // Si no existe, agregar nuevos datos
       pubTem.loaded_data.push(producersData);
+    }
+
+    // Limpiar borrador QR para todas las dependencias del usuario
+    if (pubTem.qr_draft_data?.length) {
+      pubTem.qr_draft_data = pubTem.qr_draft_data.filter(
+        d => !allUserDependencies.includes(d.dependency)
+      );
     }
 
     await pubTem.save();
@@ -1481,12 +1506,10 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
-        const validators = await Promise.all(
-          template.template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period);
-          })
+        template.validators = await collectValidatorsForTemplate(
+          template.template,
+          template.period?._id || template.period
         );
-        template.validators = validators.filter(v => v !== undefined);
         return template;
       })
     );
@@ -1590,6 +1613,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           ...template,
           template: {
             ...template.template,
+            workbook_sheets: originalTemplate?.workbook_sheets || template.template.workbook_sheets || [],
             category: {
               ...originalTemplate.category,
               templateSequence: sequence
@@ -1643,17 +1667,13 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     
     console.log(`Templates after filtering: ${filteredTemplates.length} of ${paginatedTemplates.length}`);
 
-    // Get validators for filtered templates
+    // Get validators for filtered templates (top-level fields + workbook sheet fields)
     const templatesWithValidators = await Promise.all(
       filteredTemplates.map(async (template) => {
-        const validators = (
-          await Promise.all(
-            template.template.fields.map(async (field) => 
-              Validator.giveValidatorToExcel(field.validate_with, template.period?._id || template.period)
-            )
-          )
-        ).filter(Boolean);
-
+        const validators = await collectValidatorsForTemplate(
+          template.template,
+          template.period?._id || template.period
+        );
         return { ...template, validators };
       })
     );
@@ -1736,14 +1756,51 @@ publTempController.getTemplateById = async (req, res) => {
       return field;
     }));
 
+    const snapshotId = publishedTemplate.template?._id || publishedTemplate.template?.id;
+    const liveTemplate = snapshotId ? await Template.findById(snapshotId) : null;
+    const templateDoc = liveTemplate || publishedTemplate.template?._doc || publishedTemplate.template || {};
+
+    // Enriquecer campos de workbook_sheets con IDs de validadores (igual que los campos top-level)
+    const rawSheets = templateDoc.workbook_sheets || [];
+    const periodId = publishedTemplate.period?._id || publishedTemplate.period;
+    const enrichedSheets = await Promise.all(rawSheets.map(async (sheet) => {
+      const enrichedFields = await Promise.all((sheet.fields || []).map(async (field) => {
+        if (!field.validate_with || typeof field.validate_with !== 'string') return field;
+        try {
+          const [validatorName, columnName] = field.validate_with.split(' - ');
+          const validator = await Validator.findValidatorByName(validatorName, periodId);
+          if (validator) {
+            const col = validator.columns.find(c => c.name === columnName && c.is_validator);
+            if (col) {
+              if (!validatorsMap.has(validator.name)) {
+                const values = validator.columns.reduce((acc, col) => {
+                  col.values.forEach((value, index) => {
+                    if (!acc[index]) acc[index] = {};
+                    acc[index][col.name] = value.$numberInt !== undefined ? value.$numberInt : value;
+                  });
+                  return acc;
+                }, []);
+                validatorsMap.set(validator.name, { name: validator.name, values });
+              }
+              return { ...field.toObject?.() || field, validate_with: { id: validator._id.toString(), name: `${validator.name} - ${col.name}` } };
+            }
+          }
+        } catch (_) { /* ignorar */ }
+        return field;
+      }));
+      return { ...sheet.toObject?.() || sheet, fields: enrichedFields };
+    }));
+
     const response = {
       name: publishedTemplate.name,
       template: {
         ...publishedTemplate.template._doc,
+        workbook_sheets: enrichedSheets,
         fields: fieldsWithValidatorIds,
         validators: Array.from(validatorsMap.values()),
       },
-      publishedTemplate: publishedTemplate
+      publishedTemplate: publishedTemplate,
+      qr_draft_data: publishedTemplate.qr_draft_data || [],
     };
 
     res.status(200).json(response);

@@ -1057,8 +1057,14 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 
 validatorController.giveValidatorToExcel = async (name, periodId = null) => {
     try {
-        name = name.split(' - ')[0];
-        const validator = await validatorController.findValidatorByName(name, periodId);
+        const parts = String(name || '').split(' - ');
+        const requestedValidatorName = (parts[0] || '').trim();
+        const requestedColumnName = parts.slice(1).join(' - ').trim();
+        let validator = await validatorController.findValidatorByName(requestedValidatorName, periodId);
+
+        if (!validator && requestedColumnName) {
+            validator = await validatorController.findValidatorByName(requestedColumnName, periodId);
+        }
 
         if (!validator) {
             return;
@@ -1067,7 +1073,7 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
         // Asegúrate de inicializar acc como un array de objetos vacíos
         const validatorFilled = {}
 
-        validatorFilled['name'] = name
+        validatorFilled['name'] = requestedValidatorName || validator.name
         
         validatorFilled['values'] = validator.columns.reduce((acc, item) => {
             item.values.forEach((value, index) => {

@@ -107,6 +107,10 @@ const workbookSheetSchema = new Schema({
         type: [Schema.Types.ObjectId],
         ref: 'dependencies',
         default: []
+    },
+    shared: {
+        type: Boolean,
+        default: false
     }
 }, {
     _id: false,

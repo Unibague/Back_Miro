@@ -6,7 +6,7 @@ const campoPdiSchema = new mongoose.Schema({
     requerido:            { type: Boolean, default: false },
     descripcion:          { type: String, default: '' },
     orden:                { type: Number, default: 0 },
-    max_caracteres:       { type: Number, default: null },
+    min_caracteres:       { type: Number, default: null, min: 0 },
     opciones:             { type: [String], default: [] },
     condicional_campo_id: { type: String, default: null },
     condicional_valor:    { type: String, default: null },

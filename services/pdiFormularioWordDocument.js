@@ -51,29 +51,44 @@ const buildAnswerParagraphs = (respuestas = []) => {
     return blocks;
 };
 
+const getDocumentosEvidencia = (respuesta) => {
+    const documentos = Array.isArray(respuesta.documentos)
+        ? respuesta.documentos.filter((doc) => doc?.url || doc?.nombre_original || doc?.filename)
+        : [];
+    if (documentos.length) return documentos;
+    if (!respuesta.documento_url && !respuesta.documento_nombre_original && !respuesta.documento_filename) return [];
+    return [{
+        nombre_original: respuesta.documento_nombre_original,
+        filename: respuesta.documento_filename,
+        url: respuesta.documento_url,
+    }];
+};
+
 const buildEvidenciaSection = (respuesta) => {
     const blocks = [];
-    if (!respuesta.documento_url && !respuesta.documento_nombre_original) return blocks;
+    const documentos = getDocumentosEvidencia(respuesta);
+    if (!documentos.length) return blocks;
 
     blocks.push(
         new Paragraph({
             spacing: { before: 400, after: 100 },
-            children: [new TextRun({ text: 'Evidencia adjunta', bold: true, size: 26 })],
+            children: [new TextRun({ text: 'Evidencias adjuntas', bold: true, size: 26 })],
         })
     );
 
-    const nombre = respuesta.documento_nombre_original || respuesta.documento_filename || 'Archivo adjunto';
-    blocks.push(
-        new Paragraph({
-            children: [new TextRun(`Archivo: ${nombre}`)],
-        })
-    );
-
-    if (respuesta.documento_url) {
+    documentos.forEach((documento, index) => {
+        const nombre = documento.nombre_original || documento.filename || 'Archivo adjunto';
         blocks.push(
-            new Paragraph({ children: [new TextRun(`URL: ${respuesta.documento_url}`)] })
+            new Paragraph({
+                children: [new TextRun(`Archivo ${index + 1}: ${nombre}`)],
+            })
         );
-    }
+        if (documento.url) {
+            blocks.push(
+                new Paragraph({ children: [new TextRun(`URL: ${documento.url}`)] })
+            );
+        }
+    });
 
     return blocks;
 };
@@ -96,7 +111,6 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
                     children: [new TextRun(`Fecha de envío: ${respuesta.fecha_envio ? new Date(respuesta.fecha_envio).toLocaleDateString('es-CO') : 'Sin fecha'}`)],
                 }),
                 ...buildAnswerParagraphs(respuesta.respuestas),
-                ...buildEvidenciaSection(respuesta),
             ],
         }],
     });
@@ -104,12 +118,14 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
     const buffer = await Packer.toBuffer(doc);
     const unique = crypto.randomBytes(8).toString('hex');
     const filename = `formulario_${sanitizeFilePart(formularioNombre)}_${sanitizeFilePart(respuesta.corte)}_${unique}.docx`;
+    const driveNombre = `Reporte de avances - ${indicadorCodigo || indicadorNombre || formularioNombre}.docx`;
     const outputPath = path.join(UPLOAD_DIR, filename);
 
     fs.writeFileSync(outputPath, buffer);
 
     return {
         filename,
+        driveNombre,
         url: buildUrl(filename),
         buffer,
         mimetype: DOCX_MIMETYPE,
@@ -140,7 +156,7 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
             const { jerarquia } = await getHierarchyForIndicador(indicadorId);
             return uploadDriveFile(
                 generated.buffer,
-                generated.filename,
+                generated.driveNombre,
                 generated.mimetype,
                 jerarquia
             );
@@ -149,7 +165,7 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
 
     respuesta.word_filename = generated.filename;
     respuesta.word_url = uploaded?.webViewLink || uploaded?.webContentLink || generated.url;
-    respuesta.word_nombre_original = generated.filename;
+    respuesta.word_nombre_original = generated.driveNombre;
     respuesta.word_drive_file_id = uploaded?.fileId || '';
     respuesta.word_drive_web_view_link = uploaded?.webViewLink || '';
     respuesta.word_drive_web_content_link = uploaded?.webContentLink || '';
