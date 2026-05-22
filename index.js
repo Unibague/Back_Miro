@@ -53,10 +53,15 @@ app.use((req, res, next) => {
 
 if (process.env.NODE_ENV === 'production') {
   app.use((req, res, next) => {
+    const host = req.headers.host || '';
+    // Las llamadas internas desde Next.js (localhost) no deben redirigirse a HTTPS
+    if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
+      return next();
+    }
     if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
       next();
     } else {
-      res.redirect(`https://${req.headers.host}${req.url}`);
+      res.redirect(`https://${host}${req.url}`);
     }
   });
 }
