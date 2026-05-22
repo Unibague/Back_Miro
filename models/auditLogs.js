@@ -13,7 +13,18 @@ const auditLogSchema = new mongoose.Schema({
     action: {
         type: String,
         required: true,
-        enum: ['CREATE', 'UPDATE', 'DELETE', 'LOGIN', 'UPLOAD', 'DOWNLOAD', 'IMPERSONATE']
+        enum: [
+            'CREATE',
+            'UPDATE',
+            'DELETE',
+            'LOGIN',
+            'UPLOAD',
+            'DOWNLOAD',
+            'IMPERSONATE',
+            'READ',
+            'FIELD_CONFIG',
+            'MULTI_DOWNLOAD'
+        ]
     },
     entity_type: {
         type: String,
@@ -21,7 +32,10 @@ const auditLogSchema = new mongoose.Schema({
         enum: ['DEPENDENCY', 'USER', 'SCOPE', 'TEMPLATE', 'REPORT', 'FILE', 'DIMENSION', 
                'dimension', 'template', 'report', 'publishedReport', 'publishedTemplate', 
                'publishedTemplateData', 'producerReport', 'publishedProducerReport', 
-               'validator', 'homeInfoSection', 'user', 'templateFilter', 'userDependencies']
+               'validator', 'homeInfoSection', 'user', 'templateFilter', 'userDependencies',
+               'publishedTemplateEmptyData', 'publishedTemplateMergedData',
+               'publishedTemplateDeadline', 'exportPendingTemplates',
+               'publishedTemplatesFiltered', 'template_filters', 'published_template']
     },
     entity_name: {
         type: String,

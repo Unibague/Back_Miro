@@ -427,6 +427,7 @@ templateController.updatePlantilla = async (req, res) => {
       "template.dimensions": updatedTemplate.dimensions,
       "template.active": updatedTemplate.active,
       "template.shared": updatedTemplate.shared ?? false,
+      "template.allows_qr": updatedTemplate.allows_qr ?? false,
     };
 
     const updatedPublishedTemplates = await PublishedTemplate.updateMany(

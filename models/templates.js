@@ -173,6 +173,10 @@ const templateSchema = new Schema({
     shared: {
       type: Boolean,
       default: false
+    },
+    allows_qr: {
+      type: Boolean,
+      default: false
     }
 },
 {

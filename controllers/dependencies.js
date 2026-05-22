@@ -304,12 +304,21 @@ dependencyController.getAllDependencies = async (req, res) => {
   try {
     const email = req.params.email;
     console.log("Fetching dependencies for user:", email);
+
+    if (!email || email === "undefined" || email === "null") {
+      return res.status(400).json({ error: "Email is required" });
+    }
+
     await UserService.findUserByEmail(email);
     const dependencies = await Dependency.find({}, "dep_code name responsible dep_father members visualizers");
 
     res.status(200).json(dependencies);
   } catch (error) {
     console.error("Error fetching dependencies:", error);
+    if (error.message === "User not found.") {
+      return res.status(404).json({ error: "User not found or inactive" });
+    }
+
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

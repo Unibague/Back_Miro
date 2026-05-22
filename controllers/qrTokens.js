@@ -98,6 +98,16 @@ qrController.generateToken = async (req, res) => {
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
 
+    // Verificar que la plantilla publicada permite QR
+    const pubTem = await PublishedTemplate.findById(pubTemId).populate('template');
+    if (!pubTem) return res.status(404).json({ error: 'Plantilla publicada no encontrada' });
+    const snapshotId = pubTem.template?._id || pubTem.template?.id;
+    const liveTemplate = snapshotId ? await Template.findById(snapshotId) : null;
+    const allowsQr = liveTemplate?.allows_qr ?? pubTem.template?.allows_qr ?? false;
+    if (!allowsQr) {
+      return res.status(403).json({ error: 'Esta plantilla no tiene habilitada la generación de código QR.' });
+    }
+
     // Reusar token activo si ya existe para esta dependencia + plantilla
     const existing = await QrToken.findOne({
       publishedTemplateId: pubTemId,
@@ -196,10 +206,11 @@ qrController.getFormData = async (req, res) => {
       : [];
 
     // Construir hojas accesibles para esta dependencia
+    const templateShared = templateData.shared || false;
     let sheets = [];
     if (wbSheets.length) {
       const accessible = wbSheets.filter(sheet => {
-        if (!sheet.producers?.length || sheet.shared) return true;
+        if (!sheet.producers?.length || sheet.shared || templateShared) return true;
         return sheet.producers.some(p => p.toString() === depId);
       });
       for (const sheet of accessible) {
@@ -336,6 +347,31 @@ qrController.submitFormData = async (req, res) => {
     return res.status(200).json({ status: 'Información guardada. El productor deberá confirmar el envío.' });
   } catch (error) {
     console.error('Error submitting QR form data:', error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
+// GET /qr/has-qr/template/:templateId — verifica si la plantilla tiene QR activos
+qrController.hasActiveQrForTemplate = async (req, res) => {
+  const { templateId } = req.params;
+  try {
+    const pubTems = await PublishedTemplate.find({}, { _id: 1, template: 1 }).lean();
+    const matchingIds = pubTems
+      .filter(pt => {
+        const tmplId = pt.template?._id || pt.template?.id;
+        return tmplId && tmplId.toString() === templateId;
+      })
+      .map(pt => pt._id);
+
+    if (!matchingIds.length) return res.status(200).json({ hasQr: false });
+
+    const count = await QrToken.countDocuments({
+      publishedTemplateId: { $in: matchingIds },
+      active: true,
+    });
+    return res.status(200).json({ hasQr: count > 0 });
+  } catch (error) {
+    console.error('Error checking QR for template:', error);
     return res.status(500).json({ error: error.message });
   }
 };
