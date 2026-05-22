@@ -169,8 +169,12 @@ const templateSchema = new Schema({
       type: [Schema.Types.ObjectId],
       ref: 'dependencies',
       required: true
+    },
+    shared: {
+      type: Boolean,
+      default: false
     }
-}, 
+},
 {
     versionKey: false,
     timestamps: true

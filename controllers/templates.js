@@ -426,6 +426,7 @@ templateController.updatePlantilla = async (req, res) => {
       "template.producers": newProducersAsObjectIds,
       "template.dimensions": updatedTemplate.dimensions,
       "template.active": updatedTemplate.active,
+      "template.shared": updatedTemplate.shared ?? false,
     };
 
     const updatedPublishedTemplates = await PublishedTemplate.updateMany(

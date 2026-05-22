@@ -1791,6 +1791,28 @@ publTempController.getTemplateById = async (req, res) => {
       return { ...sheet.toObject?.() || sheet, fields: enrichedFields };
     }));
 
+    // Recopilar datos ya enviados por otros productores cuando template.shared=true
+    const templateShared = liveTemplate?.shared || publishedTemplate.template?.shared || false;
+    const sharedSheetsData = {};
+    if (templateShared) {
+      const allProducerEntries = publishedTemplate.loaded_data || [];
+      for (const sheet of enrichedSheets) {
+        const sheetFieldNames = new Set((sheet.fields || []).map(f => f.name));
+        const rows = [];
+        for (const entry of allProducerEntries) {
+          const relevantFields = (entry.filled_data || []).filter(f => sheetFieldNames.has(f.field_name));
+          if (relevantFields.length === 0) continue;
+          const maxLen = Math.max(...relevantFields.map(f => f.values?.length || 0), 1);
+          for (let i = 0; i < maxLen; i++) {
+            const row = {};
+            relevantFields.forEach(f => { row[f.field_name] = f.values?.[i] ?? null; });
+            rows.push(row);
+          }
+        }
+        if (rows.length > 0) sharedSheetsData[sheet.name] = rows;
+      }
+    }
+
     const response = {
       name: publishedTemplate.name,
       template: {
@@ -1798,9 +1820,11 @@ publTempController.getTemplateById = async (req, res) => {
         workbook_sheets: enrichedSheets,
         fields: fieldsWithValidatorIds,
         validators: Array.from(validatorsMap.values()),
+        shared: templateShared,
       },
       publishedTemplate: publishedTemplate,
       qr_draft_data: publishedTemplate.qr_draft_data || [],
+      shared_sheets_data: sharedSheetsData,
     };
 
     res.status(200).json(response);
