@@ -13,8 +13,8 @@ const auditLogger = require('../services/auditLogger');
 const userController = {}
 
 USERS_ENDPOINT = process.env.USERS_ENDPOINT;
-
-const roles = ["Administrador", "Responsable", "Productor","Usuario"];
+// Added 'Chat' role to the list of available roles
+const roles = ["Administrador", "Responsable", "Productor", "Usuario"];
 const profiles = ["Ver", "Administrar", "Gestionar"];
 const viewPermissionOptions = [
     { key: "dashboard", label: "Inicio", path: "/dashboard", group: "General" },
@@ -38,14 +38,15 @@ const viewPermissionOptions = [
     { key: "snies", label: "SNIES", path: "/snies/templates", group: "Modulos" },
     { key: "cna", label: "CNA", path: "/cna/templates", group: "Modulos" },
     { key: "supportTemplates", label: "Cruce de apoyos", path: "/apoyos-plantillas", group: "Modulos" },
-    { key: "dateReview", label: "Gestion de procesos", path: "/date-review", group: "Gestion de procesos" },
-    { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/date-review", group: "Gestion de procesos" },
-    { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/date-review?section=alertas", group: "Gestion de procesos" },
-    { key: "dateReviewHistory", label: "Historial de procesos", path: "/date-review?section=historial", group: "Gestion de procesos" },
-    { key: "dateReviewProgram", label: "Ficha de programa", path: "/date-review/program/:programId", group: "Gestion de procesos" },
-    { key: "dateReviewProgramProcess", label: "Gestionar proceso por programa", path: "/date-review?programId=:programId&gestionar=1", group: "Gestion de procesos" },
-    { key: "dateReviewRc", label: "Procesos Registro calificado", path: "/date-review?tipo=registro-calificado", group: "Gestion de procesos" },
-    { key: "dateReviewAv", label: "Procesos Acreditacion voluntaria", path: "/date-review?tipo=acreditacion-voluntaria", group: "Gestion de procesos" },
+    { key: "dateReview", label: "Gestion de procesos", path: "/processes-MEN", group: "Gestion de procesos" },
+    { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/processes-MEN", group: "Gestion de procesos" },
+    { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/processes-MEN?section=alertas", group: "Gestion de procesos" },
+    { key: "dateReviewHistory", label: "Historial de procesos", path: "/processes-MEN?section=historial", group: "Gestion de procesos" },
+    { key: "dateReviewProgram", label: "Ficha de programa", path: "/processes-MEN/program/:programId", group: "Gestion de procesos" },
+    { key: "dateReviewProgramProcess", label: "Gestionar proceso por programa", path: "/processes-MEN?programId=:programId&gestionar=1", group: "Gestion de procesos" },
+    { key: "dateReviewRc", label: "Procesos Registro calificado", path: "/processes-MEN?tipo=registro-calificado", group: "Gestion de procesos" },
+    { key: "dateReviewAv", label: "Procesos Acreditacion voluntaria", path: "/processes-MEN?tipo=acreditacion-voluntaria", group: "Gestion de procesos" },
+    { key: "dateReviewAdmin", label: "Administrar importacion procesos", path: "/processes-MEN/admin", group: "Gestion de procesos" },
     { key: "pdi", label: "PDI", path: "/pdi", group: "PDI" },
     { key: "pdiMine", label: "Mis indicadores PDI", path: "/pdi/mis-indicadores", group: "PDI" },
     { key: "pdiDashboard", label: "Tablero PDI", path: "/pdi/dashboard", group: "PDI" },
@@ -343,18 +344,42 @@ userController.getUserRoles = async (req, res) => {
     const email = req.query.email;
     try {
         const user = await User.findOne({ email, isActive: true });
-        if (user) {
-            const positionPermissions = await PositionViewPermission.findOne({ position: normalizePosition(user.position) });
-            res.status(200).json({
-                roles: user.roles,
-                activeRole: user.activeRole,
-                profiles: user.profiles || [],
-                position: user.position,
-                viewPermissions: normalizeViewPermissions(positionPermissions?.permissions || {})
-            });
-        } else {
-            res.status(404).json({ error: "User not found" });
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
         }
+
+        const normalizedPosition = normalizePosition(user.position);
+
+        // Buscar perfiles que contengan este cargo
+        const profilesWithPosition = await AccessProfile.find({ positions: normalizedPosition }).lean();
+
+        // Recopilar todos los cargos: el del usuario + los de todos sus perfiles
+        const profilePositionNames = profilesWithPosition.flatMap(p => normalizePositions(p.positions || []));
+        const allPositionNames = Array.from(new Set([normalizedPosition, ...profilePositionNames]));
+
+        // Buscar permisos de todos esos cargos
+        const allPermissionDocs = await PositionViewPermission.find({ position: { $in: allPositionNames } });
+
+        // Fusionar todos los permisos encontrados
+        const mergedPermissions = allPermissionDocs.reduce((merged, doc) => {
+            const perms = typeof doc.permissions.toObject === 'function' ? doc.permissions.toObject() : doc.permissions || {};
+            Object.entries(perms).forEach(([key, levels]) => {
+                if (!merged[key]) merged[key] = [];
+                merged[key] = Array.from(new Set([...merged[key], ...(Array.isArray(levels) ? levels : [])]));
+            });
+            return merged;
+        }, {});
+
+        console.log(`[getUserRoles] user=${email} position=${normalizedPosition} profiles=${profilesWithPosition.length} permDocs=${allPermissionDocs.length} keys=${Object.keys(mergedPermissions).join(',')}`);
+
+        res.status(200).json({
+            roles: user.roles,
+            activeRole: user.activeRole,
+            profiles: user.profiles || [],
+            position: user.position,
+            accessProfiles: profilesWithPosition.map(p => p._id.toString()),
+            viewPermissions: normalizeViewPermissions(mergedPermissions)
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -1093,6 +1118,12 @@ userController.updatePositionViewPermissions = async (req, res) => {
         }
 
         const normalizedPermissions = normalizeViewPermissions(permissions);
+
+        // Validar que al menos un permiso esté seleccionado
+        const totalPermissions = Object.values(normalizedPermissions).reduce((count, profiles) => count + profiles.length, 0);
+        if (totalPermissions === 0) {
+            return res.status(400).json({ error: "Debe seleccionar al menos un permiso de vista antes de guardar" });
+        }
 
         const permissionConfigs = await Promise.all(
             normalizedPositions.map((normalizedPosition) =>
