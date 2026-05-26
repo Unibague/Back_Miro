@@ -1,10 +1,41 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
+const {
+    Document, Packer, Paragraph, TextRun, HeadingLevel,
+    ImageRun, Header,
+    HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
+} = require('docx');
 const { UPLOAD_DIR, buildUrl, deleteFile } = require('./pdiFormularioStorage');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
 const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
+
+const MEMBRETE_PATH = path.join(__dirname, '../assets/pdi/membrete-header.jpeg');
+const MEMBRETE_W = 794;
+const MEMBRETE_H = Math.round(794 * 3300 / 2550);
+
+function buildMembreteHeader() {
+    if (!fs.existsSync(MEMBRETE_PATH)) return null;
+    return new Header({
+        children: [
+            new Paragraph({
+                children: [
+                    new ImageRun({
+                        type: 'jpg',
+                        data: fs.readFileSync(MEMBRETE_PATH),
+                        transformation: { width: MEMBRETE_W, height: MEMBRETE_H },
+                        floating: {
+                            horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: 0 },
+                            verticalPosition:   { relative: VerticalPositionRelativeFrom.PAGE,   offset: 0 },
+                            behindDocument: true,
+                            allowOverlap:   true,
+                        },
+                    }),
+                ],
+            }),
+        ],
+    });
+}
 
 const DOCX_MIMETYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -94,26 +125,26 @@ const buildEvidenciaSection = (respuesta) => {
 };
 
 const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicadorNombre, indicadorCodigo }) => {
-    const doc = new Document({
-        sections: [{
-            properties: {},
-            children: [
-                new Paragraph({
-                    heading: HeadingLevel.TITLE,
-                    children: [new TextRun({ text: formularioNombre || 'Formulario de evidencias', bold: true })],
-                }),
-                new Paragraph({
-                    children: [new TextRun(`Indicador: ${indicadorCodigo ? `${indicadorCodigo} · ` : ''}${indicadorNombre || 'Sin indicador'}`)],
-                }),
-                new Paragraph({ children: [new TextRun(`Periodo: ${respuesta.corte || 'Sin periodo'}`)] }),
-                new Paragraph({ children: [new TextRun(`Responsable: ${respuesta.respondido_por || 'Sin responsable'}`)] }),
-                new Paragraph({
-                    children: [new TextRun(`Fecha de envío: ${respuesta.fecha_envio ? new Date(respuesta.fecha_envio).toLocaleDateString('es-CO') : 'Sin fecha'}`)],
-                }),
-                ...buildAnswerParagraphs(respuesta.respuestas),
-            ],
-        }],
-    });
+    const membreteHeader = buildMembreteHeader();
+    const section = {
+        children: [
+            new Paragraph({
+                heading: HeadingLevel.TITLE,
+                children: [new TextRun({ text: formularioNombre || 'Formulario de evidencias', bold: true })],
+            }),
+            new Paragraph({
+                children: [new TextRun(`Indicador: ${indicadorCodigo ? `${indicadorCodigo} · ` : ''}${indicadorNombre || 'Sin indicador'}`)],
+            }),
+            new Paragraph({ children: [new TextRun(`Periodo: ${respuesta.corte || 'Sin periodo'}`)] }),
+            new Paragraph({ children: [new TextRun(`Responsable: ${respuesta.respondido_por || 'Sin responsable'}`)] }),
+            new Paragraph({
+                children: [new TextRun(`Fecha de envío: ${respuesta.fecha_envio ? new Date(respuesta.fecha_envio).toLocaleDateString('es-CO') : 'Sin fecha'}`)],
+            }),
+            ...buildAnswerParagraphs(respuesta.respuestas),
+        ],
+    };
+    if (membreteHeader) section.headers = { default: membreteHeader };
+    const doc = new Document({ sections: [section] });
 
     const buffer = await Packer.toBuffer(doc);
     const unique = crypto.randomBytes(8).toString('hex');
