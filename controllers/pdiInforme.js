@@ -9,7 +9,7 @@ const {
     generarInformeProyecto,
     generarInformeMacro,
 } = require('../services/pdiInformeWord');
-const { uploadFile: uploadDriveFile } = require('../services/pdiDriveStorage');
+const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
 const {
     getHierarchyForIndicador,
     getHierarchyForAccion,
@@ -98,7 +98,7 @@ ctrl.informeAccion = async (req, res) => {
 ctrl.informeProyecto = async (req, res) => {
     try {
         const corte = req.query.corte || null;
-        const proyecto = await Proyecto.findById(req.params.id).lean();
+        const proyecto = await Proyecto.findById(req.params.id);
         if (!proyecto) return res.status(404).json({ error: 'Proyecto no encontrado' });
 
         const acciones = await Accion.find({ proyecto_id: proyecto._id }).lean();
@@ -115,9 +115,18 @@ ctrl.informeProyecto = async (req, res) => {
 
         const respuestasPorIndicador = await getRespuestasPorIndicador(indicadorIds);
 
-        const generated = await generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion, respuestasPorIndicador, corte });
-        const { jerarquia } = await getHierarchyForProyecto(proyecto);
+        if (proyecto.informe_drive_file_id) {
+            await deleteDriveFile(proyecto.informe_drive_file_id).catch(() => {});
+        }
+
+        const generated = await generarInformeProyecto({ proyecto: proyecto.toObject(), acciones, indicadoresPorAccion, respuestasPorIndicador, corte });
+        const { jerarquia } = await getHierarchyForProyecto(proyecto.toObject());
         const payload = await uploadInformeToDrive(generated, jerarquia);
+
+        proyecto.informe_drive_file_id      = payload.drive_file_id;
+        proyecto.informe_drive_web_view_link = payload.drive_web_view_link;
+        await proyecto.save();
+
         res.json(payload);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -128,7 +137,7 @@ ctrl.informeProyecto = async (req, res) => {
 ctrl.informeMacro = async (req, res) => {
     try {
         const corte = req.query.corte || null;
-        const macro = await Macroproyecto.findById(req.params.id).lean();
+        const macro = await Macroproyecto.findById(req.params.id);
         if (!macro) return res.status(404).json({ error: 'Macroproyecto no encontrado' });
 
         const proyectos = await Proyecto.find({ macroproyecto_id: macro._id }).lean();
@@ -153,9 +162,18 @@ ctrl.informeMacro = async (req, res) => {
 
         const respuestasPorIndicador = await getRespuestasPorIndicador(indicadorIds);
 
-        const generated = await generarInformeMacro({ macro, proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador, corte });
-        const { jerarquia } = await getHierarchyForMacro(macro);
+        if (macro.informe_drive_file_id) {
+            await deleteDriveFile(macro.informe_drive_file_id).catch(() => {});
+        }
+
+        const generated = await generarInformeMacro({ macro: macro.toObject(), proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador, corte });
+        const { jerarquia } = await getHierarchyForMacro(macro.toObject());
         const payload = await uploadInformeToDrive(generated, jerarquia);
+
+        macro.informe_drive_file_id      = payload.drive_file_id;
+        macro.informe_drive_web_view_link = payload.drive_web_view_link;
+        await macro.save();
+
         res.json(payload);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -207,6 +225,7 @@ ctrl.lista = async (req, res) => {
                 nombre: p.nombre,
                 avance: p.avance,
                 responsable: p.responsable,
+                informe_drive_web_view_link: p.informe_drive_web_view_link || null,
                 acciones: accionesPorProyecto[String(p._id)] ?? [],
             });
         }
@@ -217,6 +236,7 @@ ctrl.lista = async (req, res) => {
             nombre:    m.nombre,
             avance:    m.avance,
             lider:     m.lider,
+            informe_drive_web_view_link: m.informe_drive_web_view_link || null,
             proyectos: proyectosPorMacro[String(m._id)] ?? [],
         })));
     } catch (e) {

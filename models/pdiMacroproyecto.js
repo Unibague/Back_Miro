@@ -10,6 +10,8 @@ const pdiMacroproyectoSchema = new mongoose.Schema({
     avance: { type: Number, default: 0, min: 0, max: 100 },
     presupuesto:          { type: Number, default: 0 },
     presupuesto_ejecutado: { type: Number, default: 0 },
+    informe_drive_file_id:      { type: String, default: null },
+    informe_drive_web_view_link: { type: String, default: null },
 },
 {
     versionKey: false,

@@ -12,8 +12,10 @@ const pdiProyectoSchema = new mongoose.Schema({
     responsable_email:   { type: String, default: '' },
     fecha_inicio:        { type: String, default: null },
     fecha_fin:           { type: String, default: null },
-    presupuesto:         { type: Number, default: 0 },          // Presupuesto asignado (COP)
-    presupuesto_ejecutado: { type: Number, default: 0 },        // Presupuesto ejecutado (COP)
+    presupuesto:         { type: Number, default: 0 },
+    presupuesto_ejecutado: { type: Number, default: 0 },
+    informe_drive_file_id:      { type: String, default: null },
+    informe_drive_web_view_link: { type: String, default: null },
     macroproyecto_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'pdiMacroproyecto',
