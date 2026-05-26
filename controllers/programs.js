@@ -5,6 +5,11 @@ const Phase            = require('../models/phases');
 const FASES_BASE_RC    = require('../helpers/fasesBaseRC');
 const FASES_BASE_AV    = require('../helpers/fasesBaseAV');
 const { calcularFechas } = require('./processes');
+const {
+  applyDepCodeProgramaToCreatePayload,
+  depCodeProgramaMongoUpdateFragments,
+} = require('../helpers/depCodePrograma');
+const { assertNombreProgramaDisponible } = require('../helpers/nombreProgramaUnico');
 
 async function crearProcesosParaPrograma(program_code, nombre_programa, programData) {
   // Solo se crean automáticamente RC y AV; el Plan de Mejoramiento (PM)
@@ -96,14 +101,15 @@ programController.getById = async (req, res) => {
 programController.create = async (req, res) => {
   try {
     const body = { ...req.body };
-    if (body.dep_code_programa != null) {
-      const trimmed = String(body.dep_code_programa).trim();
-      body.dep_code_programa = trimmed || null;
-    }
+    applyDepCodeProgramaToCreatePayload(body);
+    await assertNombreProgramaDisponible(Program, body.nombre);
     const program = await Program.create(body);
     res.status(201).json(program);
   } catch (error) {
     console.error('Error creando programa:', error);
+    if (error?.statusCode === 409) {
+      return res.status(409).json({ error: error.message });
+    }
     if (error?.code === 11000) {
       return res.status(409).json({ error: 'Ese código de programa ya existe. Usa otro código.' });
     }
@@ -119,26 +125,44 @@ programController.update = async (req, res) => {
       return res.status(400).json({ error: 'ID de programa no válido' });
     }
 
+    const currentProgram = await Program.findById(rawId).lean();
+    if (!currentProgram) return res.status(404).json({ error: 'Programa no encontrado' });
 
     const patch = { ...req.body };
-
-    if (patch.dep_code_programa !== undefined) {
-      const trimmed = String(patch.dep_code_programa ?? '').trim();
-      patch.dep_code_programa = trimmed || null;
-      if (patch.dep_code_programa) {
+    if (patch.nombre !== undefined) {
+      await assertNombreProgramaDisponible(Program, patch.nombre, rawId);
+    }
+    const depCodeFrag = depCodeProgramaMongoUpdateFragments(patch.dep_code_programa);
+    if (depCodeFrag) {
+      delete patch.dep_code_programa;
+      if (depCodeFrag.set.dep_code_programa) {
         const dupe = await Program.findOne({
-          dep_code_programa: patch.dep_code_programa,
+          dep_code_programa: depCodeFrag.set.dep_code_programa,
           _id: { $ne: rawId },
         }).select('_id').lean();
         if (dupe) {
           return res.status(409).json({ error: 'Ese código de programa ya está en uso.' });
         }
+        patch.dep_code_programa = depCodeFrag.set.dep_code_programa;
       }
+    }
+
+    const mongoUpdate = { $set: patch };
+    if (depCodeFrag?.unset) mongoUpdate.$unset = depCodeFrag.unset;
+
+    const estadoMenResultante = patch.estado !== undefined ? patch.estado : currentProgram.estado;
+    if (patch.activo_universidad === true && estadoMenResultante === 'Inactivo') {
+      return res.status(400).json({
+        error: 'No puedes activar el programa en universidad si está Inactivo ante MEN.',
+      });
+    }
+    if (patch.estado === 'Inactivo') {
+      mongoUpdate.$set.activo_universidad = false;
     }
 
     const program = await Program.findByIdAndUpdate(
       rawId,
-      patch,
+      mongoUpdate,
       { new: true, runValidators: true }
     );
     if (!program) return res.status(404).json({ error: 'Programa no encontrado' });
@@ -200,6 +224,9 @@ programController.update = async (req, res) => {
     res.status(200).json(program);
   } catch (error) {
     console.error('Error actualizando programa:', error);
+    if (error?.statusCode === 409) {
+      return res.status(409).json({ error: error.message });
+    }
     if (error?.code === 11000) {
       return res.status(409).json({ error: 'Ese código de programa ya está en uso.' });
     }

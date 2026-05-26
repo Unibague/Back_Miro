@@ -11,7 +11,6 @@ const programSchema = new mongoose.Schema({
   },
   dep_code_programa: {
     type: String,
-    default: null,
     unique: true,
     sparse: true,
   },
@@ -38,6 +37,11 @@ const programSchema = new mongoose.Schema({
     type: Number,
     default: null,
   },
+  /** Periodos de duración del plan de estudios (distinto de N° semestres si aplica en la fuente). */
+  periodos_duracion: {
+    type: Number,
+    default: null,
+  },
   num_semestres: {
     type: Number,
     default: null,
@@ -54,6 +58,16 @@ const programSchema = new mongoose.Schema({
     type: String,
     enum: ['Activo', 'Inactivo'],
     default: 'Activo',
+  },
+  /** Estado interno en la Universidad. Solo editable si el programa sigue activo ante MEN. */
+  activo_universidad: {
+    type: Boolean,
+    default: true,
+  },
+  /** Elegibilidad interna para acreditación voluntaria / estadísticas. */
+  es_acreditable: {
+    type: Boolean,
+    default: false,
   },
 
   /* ── Clasificación Internacional Normalizada de Educación CINE F 2013 AC ── */
@@ -122,6 +136,18 @@ const programSchema = new mongoose.Schema({
 {
   versionKey: false,
   timestamps: true,
+});
+
+/** Evita guardar null/'' (solo un null cabría en el índice unique sparse). */
+programSchema.pre('save', function preSaveDepCodePrograma(next) {
+  if (!this.isModified('dep_code_programa')) return next();
+  const trimmed = this.dep_code_programa == null ? '' : String(this.dep_code_programa).trim();
+  if (trimmed) {
+    this.dep_code_programa = trimmed;
+  } else {
+    this.dep_code_programa = undefined;
+  }
+  next();
 });
 
 module.exports = mongoose.model('programs', programSchema);

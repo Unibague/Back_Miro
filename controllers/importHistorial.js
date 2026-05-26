@@ -21,7 +21,7 @@
  *   - columna codigo_historia_padre: código de resolución del AV/AE padre para vincular
  *
  * RC — Reforma curricular / Renovación + reforma (APROBADO):
- *   - Columnas T–AB (20–28): solo el valor NUEVO por campo del programa (opcional por columna).
+ *   - Columnas AB–AK (28–37): solo el valor NUEVO por campo del programa (opcional por columna).
  *   - En blanco en una columna = ese atributo no cambia. Si el valor difiere del programa actual,
  *     se guarda en programa_cambios (antes/después) y se actualiza Program.
  *
@@ -38,10 +38,27 @@ const Process        = require('../models/processes');
 const FASES_RC       = require('../helpers/fasesBaseRC');
 const FASES_AV       = require('../helpers/fasesBaseAV');
 const FASES_PM       = require('../helpers/fasesBasePM');
+const {
+  aplicarVigenciaProgramaImport,
+  countRcHistorialContable,
+} = require('../helpers/aplicarVigenciaProgramaImport');
+
+function filasInfoCaso(casoIdx, programId, programCodeExcel, tipo_proceso) {
+  const k1 = `${programId}|${tipo_proceso}`;
+  const k2 = `${programCodeExcel}|${tipo_proceso}`;
+  return casoIdx[k1] || casoIdx[k2] || [];
+}
 
 const upload = multer({ storage: multer.memoryStorage() });
-/** Columnas T–AB (20–28): nuevos valores del programa (solo RC reforma / renovación+reforma, APROBADO). */
+/** Columnas AB–AK (28–37): nuevos valores del programa (solo RC reforma / renovación+reforma, APROBADO). */
 const SUBTIPOS_REFORMA_IMPORT = ['Reforma curricular', 'Renovación + reforma'];
+
+function normalizarAliasSubtipoRC(subtipo) {
+  const t = String(subtipo ?? '').trim().toLowerCase();
+  if (t === 'modificacion' || t === 'modificación') return 'Reforma curricular';
+  if (t === 'renovacion + modificacion' || t === 'renovación + modificación') return 'Renovación + reforma';
+  return subtipo;
+}
 
 const LABELS_PROGRAMA_REFORMA = {
   nombre: 'Nombre del programa',
@@ -50,28 +67,30 @@ const LABELS_PROGRAMA_REFORMA = {
   nivel_academico: 'Nivel académico',
   nivel_formacion: 'Nivel de formación',
   num_creditos: 'N° de créditos',
+  periodos_duracion: 'Periodos de duración',
   num_semestres: 'N° de semestres',
   admision_estudiantes: 'Admisión de estudiantes',
   num_estudiantes_saces: 'N° estudiantes SACES',
 };
 
 /**
- * Lee columnas 20–28 de PROCESOS; si hay valores, arma diff y update $set para programs.
+ * Lee columnas 28–37 de PROCESOS; si hay valores, arma diff y update $set para programs.
  */
 function programaCambiosDesdeFilaProcesos(row, programa) {
   /** @type {{ campo: string; label: string; antes: unknown; despues: unknown }[]} */
   const cambios = [];
   const updateProg = {};
   const spec = [
-    { key: 'nombre', col: 20, tipo: 'str' },
-    { key: 'codigo_snies', col: 21, tipo: 'str' },
-    { key: 'modalidad', col: 22, tipo: 'str' },
-    { key: 'nivel_academico', col: 23, tipo: 'str' },
-    { key: 'nivel_formacion', col: 24, tipo: 'str' },
-    { key: 'num_creditos', col: 25, tipo: 'num' },
-    { key: 'num_semestres', col: 26, tipo: 'num' },
-    { key: 'admision_estudiantes', col: 27, tipo: 'str' },
-    { key: 'num_estudiantes_saces', col: 28, tipo: 'num' },
+    { key: 'nombre', col: 28, tipo: 'str' },
+    { key: 'codigo_snies', col: 29, tipo: 'str' },
+    { key: 'modalidad', col: 30, tipo: 'str' },
+    { key: 'nivel_academico', col: 31, tipo: 'str' },
+    { key: 'nivel_formacion', col: 32, tipo: 'str' },
+    { key: 'num_creditos', col: 33, tipo: 'num' },
+    { key: 'periodos_duracion', col: 34, tipo: 'num' },
+    { key: 'num_semestres', col: 35, tipo: 'num' },
+    { key: 'admision_estudiantes', col: 36, tipo: 'str' },
+    { key: 'num_estudiantes_saces', col: 37, tipo: 'num' },
   ];
   for (const { key, col, tipo } of spec) {
     const raw = str(row.getCell(col));
@@ -258,15 +277,14 @@ module.exports.descargarPlantilla = async (req, res) => {
     ['VINCULACIÓN ENTRE HOJAS', true],
     ['  Las hojas INFO_CASO, ACTIVIDADES y SUBACTIVIDADES usan "program_code" + "tipo_proceso"', false],
     ['  para saber a qué proceso de PROCESOS pertenecen.', false],
-    ['  Pon exactamente el mismo código de programa que usaste en PROCESOS (ej. 22, 23, PROG_001...).', false],
+    ['  Mismo program_code en todas las hojas: _id Mongo del programa (recomendado) o dep_code_programa (ID_PROGRAMA).', false],
+    ['  Cierres APROBADO RC/AV/AE: actualizan ultimo_rc/ultimo_av, total_rc/total_av y flags de vigencia en la ficha.', false],
     ['', false],
     ['FECHAS DEL PROCESO', true],
-    ['  PROCESOS tiene dos bloques de fechas:', false],
+    ['  PROCESOS tiene dos bloques de fechas. Cada fecha puede llevar observaciones en su columna contigua, excepto fecha_vencimiento.', false],
     ['  • Fechas RC/AV/AE: fecha_vencimiento, fecha_inicio, fecha_documento_par, fecha_digitacion_saces, fecha_radicado_men', false],
     ['  • Fechas PM: envio_pm_vicerrectoria, entrega_pm_cna, envio_avance_vicerrectoria, radicacion_avance_cna', false],
-    ['  Si las dejas en blanco se autocalculan desde fecha_resolucion + duracion_resolucion.', false],
-    ['  • RC «Reforma curricular» importada sin resolución: no se genera ALERTA; el historial sí se crea.', false],
-    ['  Si las llenas, tu valor tiene prioridad sobre el cálculo automático.', false],
+    ['  • RC «Modificación» importada sin resolución: no se genera ALERTA; el historial sí se crea.', false],
     ['', false],
     ['PM (Plan de Mejoramiento)', true],
     ['  • subtipo: deja en blanco o pon "Plan de Mejoramiento AV" / "Plan de Mejoramiento AE"', false],
@@ -277,11 +295,11 @@ module.exports.descargarPlantilla = async (req, res) => {
     ['  tipo_proceso = RC, subtipo = Registro calificado de oficio', false],
     ['  En codigo_res_padre (col J) pon el código de resolución del AV padre.', false],
     ['', false],
-    ['RC — REFORMA / RENOVACIÓN + REFORMA', true],
-    ['  Si subtipo es "Reforma curricular" o "Renovación + reforma" y estado es APROBADO,', false],
-    ['  usa las columnas T–AB en PROCESOS: una celda por dato del programa = solo el VALOR NUEVO', false],
-    ['  tras la reforma (no vas “antes/después”: el anterior lo tiene ya Miró; vacío = sin cambio en ese campo).', false],
-    ['  Las celdas T–AB se resaltan cuando en la misma fila tipo=RC y el subtipo es reforma.', false],
+    ['RC — MODIFICACIÓN / RENOVACIÓN + MODIFICACIÓN', true],
+    ['  Si subtipo es "Modificación" o "Renovación + modificación" y estado es APROBADO,', false],
+    ['  usa las columnas AB–AK en PROCESOS: una celda por dato del programa = solo el VALOR NUEVO', false],
+    ['  tras la modificación (no vas “antes/después”: el anterior lo tiene ya Miró; vacío = sin cambio en ese campo).', false],
+    ['  Las celdas AB–AK se resaltan cuando en la misma fila tipo=RC y el subtipo es modificación.', false],
     ['  Solo se guardan campos con valor distinto al programa actual.', false],
     ['', false],
     ['DOCUMENTOS', true],
@@ -309,15 +327,18 @@ module.exports.descargarPlantilla = async (req, res) => {
      G estado_solicitud H fase_al_cierre
      I link_resolucion
      J codigo_res_padre  (RC de oficio: AV padre  |  PM: AV/AE padre)
-     — Fechas RC/AV/AE (autocalculadas si vacías) —
-     K fecha_vencimiento  L fecha_inicio  M fecha_documento_par
-     N fecha_digitacion_saces  O fecha_radicado_men
-     — Fechas PM (autocalculadas si vacías) —
-     P fecha_envio_pm_vicerrectoria  Q fecha_entrega_pm_cna
-     R fecha_envio_avance_vicerrectoria  S fecha_radicacion_avance_cna
-     — Reforma / renov.+reforma: columnas T–AB = valor NUEVO del programa (solo lo que cambió) —
-     T nombre (nuevo)  U SNIES  V modalidad  W nivel_acad
-     X nivel_formación  Y créditos  Z semestres  AA admisión  AB estudiantes SACES
+     — Fechas RC/AV/AE —
+     K fecha_vencimiento  L fecha_inicio  M obs_inicio
+     N fecha_documento_par O obs_documento_par P fecha_digitacion_saces Q obs_digitacion_saces
+     R fecha_radicado_men S obs_radicado_men
+     — Fechas PM —
+     T fecha_envio_pm_vicerrectoria  U obs_envio_pm_vicerrectoria
+     V fecha_entrega_pm_cna          W obs_entrega_pm_cna
+     X fecha_envio_avance_vicerrectoria Y obs_envio_avance_vicerrectoria
+     Z fecha_radicacion_avance_cna  AA obs_radicacion_avance_cna
+     — Reforma / renov.+reforma: columnas AB–AK = valor NUEVO del programa (solo lo que cambió) —
+     AB nombre (nuevo)  AC SNIES  AD modalidad  AE nivel_acad
+     AF nivel_formación  AG créditos  AH periodos duración  AI semestres  AJ admisión  AK estudiantes SACES
      ────────────────────────────────────────────────────────────── */
   const wsP = wb.addWorksheet('PROCESOS');
   addHeader(wsP, [
@@ -330,59 +351,70 @@ module.exports.descargarPlantilla = async (req, res) => {
     'Estado de la solicitud\n(APROBADO/NEGADO/CANCELADO)',
     'Fase al cierre\n(0 a 5)',
     'Link de la resolución\n(Google Drive — varios sep. por coma)',
-    'Código resolución padre\n(RC de oficio: código AV del mismo programa\nPM: código AV o AE padre)',
-    '— Solo RC/AV/AE —\nFecha de vencimiento\n(vacía = se calcula automáticamente)',
-    'Fecha de inicio\n(vacía = automática)',
-    'Fecha documento par\n(vacía = automática)',
-    'Fecha digitación SACES\n(vacía = automática)',
-    'Fecha radicado MEN\n(vacía = automática)',
+    'Código resolución AV/AE padre\n(RC de oficio: código AV del mismo programa\nPM: código AV o AE padre)',
+    '— Solo RC/AV/AE —\nFecha de vencimiento',
+    'Fecha de inicio',
+    'Observaciones\ninicio',
+    'Fecha documento par',
+    'Observaciones\ndocumento par',
+    'Fecha digitación SACES',
+    'Observaciones\ndigitación SACES',
+    'Fecha radicado MEN',
+    'Observaciones\nradicado MEN',
     '— Solo PM —\nFecha envío PM\na Vicerrectoría',
+    'Observaciones\nenvío PM',
     'Fecha entrega\nPM al CNA',
+    'Observaciones\nentrega PM',
     'Fecha envío avance\na Vicerrectoría',
+    'Observaciones\nenvío avance',
     'Fecha radicación\navance CNA',
-    'Reforma — nombre programa\n(valor nuevo post-reforma)',
-    'Reforma — código SNIES',
-    'Reforma — modalidad',
-    'Reforma — nivel académico',
-    'Reforma — nivel de formación',
-    'Reforma — N° de créditos',
-    'Reforma — N° semestres',
-    'Reforma — admisión estudiantes\n(ej. Semestral)',
-    'Reforma — N° estudiantes SACES',
-  ], [20,18,30,22,18,12,22,14,45,42,22,18,18,18,18,20,16,20,18, 30,16,18,18,22,14,13,13,24]);
+    'Observaciones\nradicación avance',
+    'Modificación — nombre programa\n(valor nuevo post-modificación)',
+    'Modificación — código SNIES',
+    'Modificación — modalidad',
+    'Modificación — nivel académico',
+    'Modificación — nivel de formación',
+    'Modificación — N° de créditos',
+    'Modificación — Periodos de duración',
+    'Modificación — N° semestres',
+    'Modificación — admisión estudiantes\n(ej. Semestral)',
+    'Modificación — N° estudiantes SACES',
+  ], [20,18,30,22,18,12,22,14,45,42,22,18,24,18,24,18,24,18,24,20,22,16,22,20,22,18,22,30,16,18,18,22,14,14,13,13,24]);
 
-  wsP.getCell('C1').note = 'RC: Nuevo | Renovación | No renovación | Renovación + reforma | Reforma curricular | Reactivación | Registro calificado de oficio\nAV: Nuevo | Renovación | No renovación | Reactivación\nAE: Autoevaluación\nPM: dejar vacío o "Plan de Mejoramiento AV" / "Plan de Mejoramiento AE"';
+  wsP.getCell('C1').note = 'RC: Nuevo | Renovación | No renovación | Renovación + modificación | Modificación | Reactivación | Registro calificado de oficio\nAV: Nuevo | Renovación | No renovación | Reactivación\nAE: Autoevaluación\nPM: dejar vacío o "Plan de Mejoramiento AV" / "Plan de Mejoramiento AE"';
   wsP.getCell('J1').note = 'RC de oficio: código de resolución del AV del mismo programa.\nPM: código de resolución del AV o AE padre.\nEl sistema busca ese historial y vincula los registros.';
-  wsP.getCell('T1').note = 'Casillas del programa (solo valor NUEVO tras la reforma). Aplica solo si tipo RC + subtipo «Reforma curricular» o «Renovación + reforma» y estado APROBADO.\nCada columna opcional; en blanco = ese dato del programa no cambia. El sistema calcula antes/después y guarda programa_cambios.';
+  wsP.getCell('AB1').note = 'Casillas del programa (solo valor NUEVO tras la modificación). Aplica solo si tipo RC + subtipo «Modificación» o «Renovación + modificación» y estado APROBADO.\nCada columna opcional; en blanco = ese dato del programa no cambia. El sistema calcula antes/después y guarda programa_cambios.';
 
-  const PROC_COLS = 28;
-  const nueveVacios = ['','','','','','','','',''];
+  const PROC_COLS = 37;
+  const fechasRcAvVacias = Array(9).fill('');
+  const fechasPmVacias = Array(8).fill('');
+  const reformaVacios = Array(10).fill('');
 
   // 2 RC, 1 RC reforma de ejemplo y 1 AV (fila en blanco entre cada uno)
-  ejRow(wsP, ['22','RC','Renovación','Res-1234-2022','2022-08-10',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_1/view','','','','','','','','','','', ...nueveVacios]);
+  ejRow(wsP, ['22','RC','Renovación','Res-1234-2022','2022-08-10',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_1/view','', ...fechasRcAvVacias, ...fechasPmVacias, ...reformaVacios]);
   blankRow(wsP, PROC_COLS);
-  ejRow(wsP, ['23','RC','Renovación','Res-5678-2023','2023-03-20',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_2/view','','','','','','','','','','', ...nueveVacios]);
+  ejRow(wsP, ['23','RC','Renovación','Res-5678-2023','2023-03-20',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_2/view','', ...fechasRcAvVacias, ...fechasPmVacias, ...reformaVacios]);
   blankRow(wsP, PROC_COLS);
-  ejRow(wsP, ['22','RC','Reforma curricular','Res-RF-2024','2024-01-15',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_RF/view','','','','','','','','','','',
-    'Nombre programa actualizado (ejemplo)','','Presencial','Pregrado','Profesional','180','10','Semestral','25']);
+  ejRow(wsP, ['22','RC','Modificación','Res-RF-2024','2024-01-15',7,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_RF/view','', ...fechasRcAvVacias, ...fechasPmVacias,
+    'Nombre programa actualizado (ejemplo)','','Presencial','Pregrado','Profesional','180','10','10','Semestral','25']);
   blankRow(wsP, PROC_COLS);
-  ejRow(wsP, ['22','AV','Renovación','Res-9012-2021','2021-11-05',4,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_3/view','','','','','','','','','','', ...nueveVacios]);
+  ejRow(wsP, ['22','AV','Renovación','Res-9012-2021','2021-11-05',4,'APROBADO',5,'https://drive.google.com/file/d/EJEMPLO_ID_3/view','', ...fechasRcAvVacias, ...fechasPmVacias, ...reformaVacios]);
 
   for (let r = 2; r <= 200; r++) {
     wsP.getCell(`B${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"RC,AV,AE,PM"'] };
     wsP.getCell(`G${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"APROBADO,NEGADO,CANCELADO"'] };
-    wsP.getCell(`V${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Presencial,Virtual,Híbrido"'] };
-    wsP.getCell(`W${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Pregrado,Posgrado"'] };
-    wsP.getCell(`X${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Profesional,Tecnológico,Técnico,Especialización,Maestría,Doctorado"'] };
+    wsP.getCell(`AD${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Presencial,Virtual,Híbrido"'] };
+    wsP.getCell(`AE${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Pregrado,Posgrado"'] };
+    wsP.getCell(`AF${r}`).dataValidation = { type:'list', allowBlank:true, formulae:['"Profesional,Tecnológico,Técnico,Especialización,Maestría,Doctorado"'] };
   }
 
-  wsP.views = [{ state:'frozen', xSplit:19, ySplit:1, topLeftCell:'T2', activeCell:'A2' }];
+  wsP.views = [{ state:'frozen', xSplit:27, ySplit:1, topLeftCell:'AB2', activeCell:'A2' }];
   wsP.addConditionalFormatting({
-    ref: 'T2:AB250',
+    ref: 'AB2:AK250',
     rules: [{
       type: 'expression',
       priority: 1,
-      formulae: ['AND($B2="RC",OR($C2="Reforma curricular",$C2="Renovación + reforma"))'],
+      formulae: ['AND($B2="RC",OR($C2="Reforma curricular",$C2="Modificación",$C2="Renovación + reforma",$C2="Renovación + modificación"))'],
       style: {
         fill: { type:'pattern', pattern:'solid', fgColor:{ argb:'FFFFF4DD' } },
       },
@@ -666,9 +698,12 @@ module.exports.importar = async (req, res) => {
     const tipo_proceso        = str(row.getCell(2)).toUpperCase();
     const subtipoRaw          = str(row.getCell(3));
     // Para PM: si el subtipo está vacío se asume "Plan de Mejoramiento AV"
-    const subtipo             = (tipo_proceso === 'PM' && !subtipoRaw)
+    const subtipoBase         = (tipo_proceso === 'PM' && !subtipoRaw)
                                   ? 'Plan de Mejoramiento AV'
                                   : subtipoRaw;
+    const subtipo             = tipo_proceso === 'RC'
+                                  ? normalizarAliasSubtipoRC(subtipoBase)
+                                  : subtipoBase;
     const codigo_resolucion   = str(row.getCell(4));
     const fecha_resolucion    = str(row.getCell(5)) || null;
     const duracion_resolucion = num(row.getCell(6));
@@ -678,18 +713,26 @@ module.exports.importar = async (req, res) => {
     const linkResolucion      = str(row.getCell(9));
     const codigoResPadre      = str(row.getCell(10));
 
-    // Fechas RC/AV/AE (cols K–O)
-    const fVenc    = fecha(row.getCell(11));
-    const fInicio  = fecha(row.getCell(12));
-    const fDocPar  = fecha(row.getCell(13));
-    const fDigit   = fecha(row.getCell(14));
-    const fRadMEN  = fecha(row.getCell(15));
+    // Fechas RC/AV/AE (cols K–S: fecha + observación, salvo vencimiento)
+    const fVenc      = fecha(row.getCell(11));
+    const fInicio    = fecha(row.getCell(12));
+    const obsInicio  = str(row.getCell(13));
+    const fDocPar    = fecha(row.getCell(14));
+    const obsDocPar  = str(row.getCell(15));
+    const fDigit     = fecha(row.getCell(16));
+    const obsDigit   = str(row.getCell(17));
+    const fRadMEN    = fecha(row.getCell(18));
+    const obsRadMEN  = str(row.getCell(19));
 
-    // Fechas PM (cols P–S)
-    const fEnvioPM   = fecha(row.getCell(16));
-    const fEntregaPM = fecha(row.getCell(17));
-    const fEnvioAv   = fecha(row.getCell(18));
-    const fRadAv     = fecha(row.getCell(19));
+    // Fechas PM (cols T–AA: fecha + observación)
+    const fEnvioPM    = fecha(row.getCell(20));
+    const obsEnvioPM  = str(row.getCell(21));
+    const fEntregaPM  = fecha(row.getCell(22));
+    const obsEntregaPM= str(row.getCell(23));
+    const fEnvioAv    = fecha(row.getCell(24));
+    const obsEnvioAv  = str(row.getCell(25));
+    const fRadAv      = fecha(row.getCell(26));
+    const obsRadAv    = str(row.getCell(27));
 
     if (!tipo_proceso) continue;
     if (!['RC','AV','AE','PM'].includes(tipo_proceso)) {
@@ -707,7 +750,8 @@ module.exports.importar = async (req, res) => {
     if (!programa) {
       errores.push({ fila: rn, error: `Programa no encontrado: "${program_code}"` }); continue;
     }
-    const nombrePrograma = programa.nombre || program_code;
+    const programId = String(programa._id);
+    const nombrePrograma = programa.nombre || programId;
 
     /* ── Calcular / usar fechas explícitas ── */
     const esPM = tipo_proceso === 'PM';
@@ -727,17 +771,29 @@ module.exports.importar = async (req, res) => {
       fecha_digitacion_saces: fDigit  || fechasAuto.fecha_digitacion_saces  || null,
       fecha_radicado_men:     fRadMEN || fechasAuto.fecha_radicado_men      || null,
     };
+    const obsRCAV = {
+      obs_inicio:           obsInicio,
+      obs_documento_par:    obsDocPar,
+      obs_digitacion_saces: obsDigit,
+      obs_radicado_men:     obsRadMEN,
+    };
     const fechasPM = {
       fecha_envio_pm_vicerrectoria:     fEnvioPM   || fechasAuto.fecha_envio_pm_vicerrectoria     || null,
       fecha_entrega_pm_cna:             fEntregaPM || fechasAuto.fecha_entrega_pm_cna             || null,
       fecha_envio_avance_vicerrectoria: fEnvioAv   || fechasAuto.fecha_envio_avance_vicerrectoria || null,
       fecha_radicacion_avance_cna:      fRadAv     || fechasAuto.fecha_radicacion_avance_cna      || null,
     };
+    const obsPM = {
+      obs_envio_pm_vicerrectoria:     obsEnvioPM,
+      obs_entrega_pm_cna:             obsEntregaPM,
+      obs_envio_avance_vicerrectoria: obsEnvioAv,
+      obs_radicacion_avance_cna:      obsRadAv,
+    };
 
     const fasesBase = esPM ? FASES_PM
                     : (tipo_proceso === 'AV' || tipo_proceso === 'AE') ? FASES_AV
                     : FASES_RC;
-    const claveProc = `${program_code}|${tipo_proceso}`;
+    const claveProc = `${programId}|${tipo_proceso}`;
 
     /* ── Mapa de actividades y subactividades ── */
     const actMap = {};
@@ -793,7 +849,7 @@ module.exports.importar = async (req, res) => {
     let histDoc;
     try {
       histDoc = await ProcessHistory.create({
-        program_code,
+        program_code:       programId,
         dep_code_facultad:  programa.dep_code_facultad || null,
         nombre_programa:    nombrePrograma,
         process_id:         null,
@@ -804,6 +860,7 @@ module.exports.importar = async (req, res) => {
         fecha_resolucion,
         duracion_resolucion,
         ...(esPM ? fechasPM : fechasRCAV),
+        ...(esPM ? obsPM : obsRCAV),
         fase_al_cierre,
         estado_solicitud,
         fases:              fasesSnapshot,
@@ -814,15 +871,15 @@ module.exports.importar = async (req, res) => {
     }
 
     // Registrar para linking posterior
-    if (codigo_resolucion) histPorCodigo[`${program_code}|${codigo_resolucion}`] = histDoc._id;
+    if (codigo_resolucion) histPorCodigo[`${programId}|${codigo_resolucion}`] = histDoc._id;
 
     /* ── Linking RC de oficio → AV padre  /  PM → AV/AE padre ── */
     const esRcOficio = tipo_proceso === 'RC' && subtipo === 'Registro calificado de oficio';
     if ((esRcOficio || esPM) && codigoResPadre) {
-      let padreId = histPorCodigo[`${program_code}|${codigoResPadre}`] ?? null;
+      let padreId = histPorCodigo[`${programId}|${codigoResPadre}`] ?? null;
       if (!padreId) {
         const padreHist = await ProcessHistory.findOne({
-          program_code,
+          program_code: programId,
           tipo_proceso: esPM ? { $in: ['AV','AE'] } : 'AV',
           codigo_resolucion: codigoResPadre,
         }).select('_id').lean();
@@ -856,7 +913,7 @@ module.exports.importar = async (req, res) => {
     }
 
     /* ── INFO_CASO ── */
-    const casoRows = casoIdx[claveProc] || [];
+    const casoRows = filasInfoCaso(casoIdx, programId, program_code, tipo_proceso);
     if (casoRows.length > 0) {
       const Caso = require('../models/casos');
       const cr = casoRows[0];
@@ -916,20 +973,54 @@ module.exports.importar = async (req, res) => {
             });
           }
         }
+
+        const { buildCasoSnapshot } = require('../helpers/casoSnapshotHistorial');
+        const casoSnapshot = await buildCasoSnapshot(histDoc._id, undefined, fasesSnapshot);
+        if (casoSnapshot) {
+          await ProcessHistory.findByIdAndUpdate(histDoc._id, { $set: { caso_snapshot: casoSnapshot } });
+        }
       } catch (e) {
         errores.push({ fila: rn, advertencia: `Historial creado, pero falló INFO_CASO: ${e.message}` });
       }
     }
 
+    /* ── Vigencia en ficha + contadores (APROBADO RC/AV/AE, como cierre en app) ── */
+    let vigencia_actualizada = false;
+    let total_rc = null;
+    let total_av = null;
+    const esNegado = ['NEGADO', 'CANCELADO'].includes(estado_solicitud);
+    if (estado_solicitud === 'APROBADO' && ['RC', 'AV', 'AE'].includes(tipo_proceso)) {
+      try {
+        const vig = await aplicarVigenciaProgramaImport(
+          programa,
+          histDoc,
+          tipo_proceso,
+          subtipo,
+          docsRes[0]?.view_link ?? null,
+        );
+        vigencia_actualizada = vig.vigencia_actualizada === true;
+        total_rc = vig.total_rc ?? null;
+        total_av = vig.total_av ?? null;
+      } catch (e) {
+        errores.push({ fila: rn, advertencia: `Historial OK; falló vigencia/contadores en programa: ${e.message}` });
+      }
+    } else if (['RC', 'AV', 'AE'].includes(tipo_proceso)) {
+      const totalRC = await countRcHistorialContable(programId);
+      const totalAV = await ProcessHistory.countDocuments({ program_code: programId, tipo_proceso: 'AV' });
+      await Program.findByIdAndUpdate(programa._id, { $set: { total_rc: totalRC, total_av: totalAV } });
+      total_rc = totalRC;
+      total_av = totalAV;
+    }
+
     /* ── ALERTA (no aplica a RC Reforma curricular: proceso interno sin alerta poscierre) ── */
-    const esNegado = ['NEGADO','CANCELADO'].includes(estado_solicitud);
     const esReformaSoloSinAlerta = tipo_proceso === 'RC' && subtipo === 'Reforma curricular';
     let alertaId = null;
+    let alerta_actualizada = false;
     if (!esNegado && !esReformaSoloSinAlerta) {
       try {
         const alertaData = {
           name:                       `Alerta (${tipo_proceso}) - ${nombrePrograma}`,
-          program_code,
+          program_code:               programId,
           tipo_proceso:               'ALERTA',
           alert_para_tipo:            tipo_proceso,
           subtipo:                    subtipo || null,
@@ -940,14 +1031,37 @@ module.exports.importar = async (req, res) => {
           cerrado_process_history_id: histDoc._id,
           ...(esPM ? fechasPM : fechasRCAV),
         };
-        const alerta = await Process.create(alertaData);
-        alertaId = alerta._id;
+        const alertaExistente = await Process.findOne({
+          program_code: programId,
+          tipo_proceso: 'ALERTA',
+          alert_para_tipo: tipo_proceso,
+        }).select('_id').lean();
+        if (alertaExistente) {
+          await Process.findByIdAndUpdate(alertaExistente._id, { $set: alertaData });
+          alertaId = alertaExistente._id;
+          alerta_actualizada = true;
+        } else {
+          const alerta = await Process.create(alertaData);
+          alertaId = alerta._id;
+        }
       } catch (e) {
         errores.push({ fila: rn, advertencia: `Historial creado (id: ${histDoc._id}), falló la ALERTA: ${e.message}` });
       }
     }
 
-    resultados.push({ fila: rn, program_code, tipo_proceso, subtipo, history_id: histDoc._id, alerta_creada: !!alertaId, alerta_id: alertaId });
+    resultados.push({
+      fila: rn,
+      program_code: programId,
+      tipo_proceso,
+      subtipo,
+      history_id: histDoc._id,
+      alerta_creada: !!alertaId && !alerta_actualizada,
+      alerta_actualizada,
+      alerta_id: alertaId,
+      vigencia_actualizada,
+      total_rc,
+      total_av,
+    });
   }
 
   res.status(200).json({

@@ -9,6 +9,13 @@ const { crearPMAutomatico } = require('../helpers/pmAutoCreate');
 const { siguienteDiaHabil } = require('../helpers/diasHabilesColombia');
 const { findProgramByProcessCode } = require('../helpers/programByCode');
 
+function normalizarAliasSubtipoRC(subtipo) {
+  const t = String(subtipo ?? '').trim().toLowerCase();
+  if (t === 'modificacion' || t === 'modificación') return 'Reforma curricular';
+  if (t === 'renovacion + modificacion' || t === 'renovación + modificación') return 'Renovación + reforma';
+  return subtipo;
+}
+
 function getFasesParaTipo(tipo_proceso) {
   if (tipo_proceso === 'RC') return FASES_BASE_RC;
   if (tipo_proceso === 'AV') return FASES_BASE_AV;
@@ -159,6 +166,9 @@ processController.create = async (req, res) => {
       const t = String(subtipo).trim();
       subtipo = t === '' ? undefined : t;
     }
+    if (tipo_proceso === 'RC' && subtipo) {
+      subtipo = normalizarAliasSubtipoRC(subtipo);
+    }
     /* Compatibilidad: acreditación antigua «Primera vez» → mismo criterio que RC «Nuevo» */
     if (tipo_proceso === 'AV' && subtipo === 'Primera vez') {
       subtipo = 'Nuevo';
@@ -184,11 +194,11 @@ processController.create = async (req, res) => {
       (tipo_proceso === 'RC' || tipo_proceso === 'AV' || tipo_proceso === 'AE');
 
     if (creaProgramaDesdeCuerpo) {
-      let pd = { ...program_data };
-      if (pd.dep_code_programa != null) {
-        const trimmed = String(pd.dep_code_programa).trim();
-        pd.dep_code_programa = trimmed || null;
-      }
+      const pd = { ...program_data };
+      const { applyDepCodeProgramaToCreatePayload } = require('../helpers/depCodePrograma');
+      const { assertNombreProgramaDisponible } = require('../helpers/nombreProgramaUnico');
+      applyDepCodeProgramaToCreatePayload(pd);
+      await assertNombreProgramaDisponible(Program, pd.nombre);
       program = await Program.create(pd);
     } else if (existingProgramCode) {
       program = await findProgramByProcessCode(Program, existingProgramCode);
@@ -416,7 +426,7 @@ processController.create = async (req, res) => {
       }
       if (program.estado !== 'Inactivo') {
         return res.status(400).json({
-          error: 'La reactivación de registro calificado solo aplica a programas en estado Inactivo (p. ej. tras una no renovación).',
+          error: 'La reactivación de registro calificado solo aplica a programas Inactivos ante MEN (p. ej. tras una no renovación).',
         });
       }
     }
@@ -593,6 +603,9 @@ processController.create = async (req, res) => {
     res.status(201).json({ process: newProcess, program, pm: pmCreado ?? undefined });
   } catch (error) {
     console.error('Error creando proceso:', error);
+    if (error?.statusCode === 409) {
+      return res.status(409).json({ error: error.message });
+    }
     if (error?.code === 11000) {
       return res.status(409).json({ error: 'Ese código de programa ya existe. Usa otro código o deja vacío para generar uno nuevo.' });
     }
