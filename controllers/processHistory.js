@@ -354,6 +354,7 @@ function computeProgramaCambiosReforma(programDoc, pr) {
     nivel_academico: 'Nivel académico',
     nivel_formacion: 'Nivel de formación',
     num_creditos: 'N° de créditos',
+    periodos_duracion: 'Periodos de duración',
     num_semestres: 'N° de semestres',
     admision_estudiantes: 'Admisión de estudiantes',
     num_estudiantes_saces: 'N° estudiantes SACES',
@@ -368,7 +369,7 @@ function computeProgramaCambiosReforma(programDoc, pr) {
     nbc: 'NBC — Núcleo básico del conocimiento',
   };
   const campos = ['dep_code_programa', 'nombre', 'codigo_snies', 'modalidad', 'nivel_academico', 'nivel_formacion',
-    'num_creditos', 'num_semestres', 'admision_estudiantes', 'num_estudiantes_saces'];
+    'num_creditos', 'periodos_duracion', 'num_semestres', 'admision_estudiantes', 'num_estudiantes_saces'];
   const out = [];
   const p = programDoc.toObject ? programDoc.toObject() : programDoc;
   for (const k of campos) {
@@ -416,6 +417,11 @@ function computeProgramaCambiosReforma(programDoc, pr) {
 
 async function aplicarNuevosValoresProgramaReforma(programDoc, pr) {
   const mergeTxt = mergeTxtReforma;
+  const { assertNombreProgramaDisponible } = require('../helpers/nombreProgramaUnico');
+
+  if (Object.prototype.hasOwnProperty.call(pr, 'nombre')) {
+    await assertNombreProgramaDisponible(Program, pr.nombre, programDoc._id);
+  }
 
   /** Código institucional: solo valida unicidad en ficha; procesos siguen ligados por `_id` del programa. */
   if (Object.prototype.hasOwnProperty.call(pr, 'dep_code_programa')) {
@@ -433,13 +439,20 @@ async function aplicarNuevosValoresProgramaReforma(programDoc, pr) {
     }
   }
 
+  const { trimDepCodePrograma } = require('../helpers/depCodePrograma');
+  let unsetDepCodePrograma = false;
   const camposPermitidos = ['dep_code_programa', 'nombre', 'codigo_snies', 'modalidad', 'nivel_academico', 'nivel_formacion',
-    'num_creditos', 'num_semestres', 'admision_estudiantes', 'num_estudiantes_saces'];
+    'num_creditos', 'periodos_duracion', 'num_semestres', 'admision_estudiantes', 'num_estudiantes_saces'];
   const update = {};
   for (const campo of camposPermitidos) {
-    if (Object.prototype.hasOwnProperty.call(pr, campo)) {
-      update[campo] = campo === 'dep_code_programa' ? mergeTxt(pr[campo]) : pr[campo];
+    if (!Object.prototype.hasOwnProperty.call(pr, campo)) continue;
+    if (campo === 'dep_code_programa') {
+      const trimmed = trimDepCodePrograma(pr[campo]);
+      if (trimmed) update.dep_code_programa = trimmed;
+      else unsetDepCodePrograma = true;
+      continue;
     }
+    update[campo] = pr[campo];
   }
   if (pr.cine_f && typeof pr.cine_f === 'object') {
     const prev = {
@@ -466,8 +479,10 @@ async function aplicarNuevosValoresProgramaReforma(programDoc, pr) {
     }
     update.nbc = prev;
   }
-  if (Object.keys(update).length > 0) {
-    await Program.findByIdAndUpdate(programDoc._id, { $set: update });
+  if (Object.keys(update).length > 0 || unsetDepCodePrograma) {
+    const mongoUpdate = Object.keys(update).length > 0 ? { $set: update } : {};
+    if (unsetDepCodePrograma) mongoUpdate.$unset = { dep_code_programa: 1 };
+    await Program.findByIdAndUpdate(programDoc._id, mongoUpdate);
   }
 }
 
@@ -1221,6 +1236,7 @@ processHistoryController.close = async (req, res) => {
       /* RC «No renovación» cerrada como aprobada: el programa pasa a Inactivo. Negado/cancelado no cambia el estado en ficha. */
       if (!esNegado && esRcNoRenov) {
         programaUpdate.estado = 'Inactivo';
+        programaUpdate.activo_universidad = false;
       }
       /* Reactivación RC aprobada: reabre el programa como activo en la ficha. */
       if (!esNegado && proc.tipo_proceso === 'RC' && String(proc.subtipo ?? '').trim() === 'Reactivación') {
