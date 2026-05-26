@@ -4,10 +4,70 @@ const crypto = require('crypto');
 const {
     Document, Packer, Paragraph, TextRun, HeadingLevel,
     AlignmentType, BorderStyle, Table, TableRow, TableCell, WidthType,
+    ImageRun, Header,
+    HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
 } = require('docx');
 
-const UPLOAD_DIR = path.join(__dirname, '../uploads/pdi/informes');
+const UPLOAD_DIR   = path.join(__dirname, '../uploads/pdi/informes');
+const MEMBRETE_PATH = path.join(__dirname, '../assets/pdi/membrete-header.jpeg');
+const PORTADA_PATH  = path.join(__dirname, '../assets/pdi/portada.jpeg');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// A4 a 96 DPI (px). Membrete: 2550×3300 → escalar al ancho A4 manteniendo relación.
+const MEMBRETE_W = 794;
+const MEMBRETE_H = Math.round(794 * 3300 / 2550); // ≈ 1027
+
+// Portada: 1236×1600 → escalar al ancho A4 manteniendo relación.
+const PORTADA_W  = 794;
+const PORTADA_H  = Math.round(794 * 1600 / 1236); // ≈ 1027
+
+function buildMembreteHeader() {
+    if (!fs.existsSync(MEMBRETE_PATH)) return null;
+    return new Header({
+        children: [
+            new Paragraph({
+                children: [
+                    new ImageRun({
+                        type: 'jpg',
+                        data: fs.readFileSync(MEMBRETE_PATH),
+                        transformation: { width: MEMBRETE_W, height: MEMBRETE_H },
+                        floating: {
+                            horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: 0 },
+                            verticalPosition:   { relative: VerticalPositionRelativeFrom.PAGE,   offset: 0 },
+                            behindDocument: true,
+                            allowOverlap:   true,
+                        },
+                    }),
+                ],
+            }),
+        ],
+    });
+}
+
+function buildPortadaSection() {
+    if (!fs.existsSync(PORTADA_PATH)) return null;
+    return {
+        properties: { page: { margin: { top: 0, right: 0, bottom: 0, left: 0, header: 0 } } },
+        children: [
+            new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 0, after: 0 },
+                children: [
+                    new ImageRun({
+                        type: 'jpg',
+                        data: fs.readFileSync(PORTADA_PATH),
+                        transformation: { width: PORTADA_W, height: PORTADA_H },
+                    }),
+                ],
+            }),
+        ],
+    };
+}
+
+function buildContentSection(children) {
+    const header = buildMembreteHeader();
+    return header ? { headers: { default: header }, children } : { children };
+}
 
 const DOCX_MIMETYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const BASE_URL = () => process.env.BACKEND_URL || 'http://localhost:3456';
@@ -317,7 +377,7 @@ async function generarInformeIndicador({ indicador, respuestasInd = [], corte = 
         ...seccionIndicador(indicador, respuestasInd, corte),
     ];
 
-    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const doc = new Document({ sections: [buildContentSection(children)] });
     const buffer = await Packer.toBuffer(doc);
     const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
     const filename = `informe_indicador_${sanitize(indicador.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
@@ -346,7 +406,7 @@ async function generarInformeAccion({ accion, indicadores = [], respuestasPorInd
         ...seccionAccion(accion, indicadores, respuestasPorIndicador, corte),
     ];
 
-    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const doc = new Document({ sections: [buildContentSection(children)] });
     const buffer = await Packer.toBuffer(doc);
     const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
     const filename = `informe_accion_${sanitize(accion.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
@@ -386,10 +446,13 @@ async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion
         ),
     ];
 
-    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const portada = buildPortadaSection();
+    const sections = portada
+        ? [portada, buildContentSection(children)]
+        : [buildContentSection(children)];
+    const doc = new Document({ sections });
     const buffer = await Packer.toBuffer(doc);
-    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
-    const filename = `informe_proyecto_${sanitize(proyecto.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    const filename = `informe_proyecto_${sanitize(proyecto.codigo)}.docx`;
     return saveDocumentBuffer(buffer, filename);
 }
 
@@ -435,10 +498,13 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
         }
     }
 
-    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const portada = buildPortadaSection();
+    const sections = portada
+        ? [portada, buildContentSection(children)]
+        : [buildContentSection(children)];
+    const doc = new Document({ sections });
     const buffer = await Packer.toBuffer(doc);
-    const cortePart = corte ? `_${sanitize(corte)}` : '_todos';
-    const filename = `informe_macro_${sanitize(macro.codigo)}${cortePart}_${crypto.randomBytes(6).toString('hex')}.docx`;
+    const filename = `informe_macro_${sanitize(macro.codigo)}.docx`;
     return saveDocumentBuffer(buffer, filename);
 }
 

@@ -21,20 +21,26 @@ const storage = multer.diskStorage({
     },
 });
 
-const ALLOWED_PDF_MIMETYPES = new Set([
+const ALLOWED_MIMETYPES = new Set([
     'application/pdf',
     'application/x-pdf',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'image/jpeg',
+    'image/png',
     'application/octet-stream',
     'binary/octet-stream',
 ]);
 
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png']);
+
 const fileFilter = (_req, file, cb) => {
-    const isPdf = ALLOWED_PDF_MIMETYPES.has(file.mimetype) ||
-                  file.originalname.toLowerCase().endsWith('.pdf');
-    if (isPdf) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = ALLOWED_MIMETYPES.has(file.mimetype) || ALLOWED_EXTENSIONS.has(ext);
+    if (allowed) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten archivos PDF'), false);
+        cb(new Error('Solo se permiten archivos PDF, Excel (.xlsx, .xls) e imágenes (.jpg, .jpeg, .png)'), false);
     }
 };
 
