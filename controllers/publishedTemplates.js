@@ -12,6 +12,7 @@ const UserService = require('../services/users.js');
 const Category = require('../models/categories.js');  
 const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
+const RemindersService = require('../services/reminders');
 
 const axios = require('axios');
 
@@ -42,6 +43,124 @@ const collectValidatorsForTemplate = async (templateData, periodId) => {
     unique.map(f => Validator.giveValidatorToExcel(validateWithToText(f.validate_with), periodId))
   );
   return results.filter(Boolean);
+};
+
+const validatorValueToPlain = (value) => {
+  if (value && typeof value === 'object' && value.$numberInt !== undefined) return value.$numberInt;
+  if (value && typeof value === 'object' && value.$numberDouble !== undefined) return value.$numberDouble;
+  return value;
+};
+
+const validatorRowsFromColumns = (columns = []) => (
+  (columns || []).reduce((acc, col) => {
+    (col.values || []).forEach((value, index) => {
+      if (!acc[index]) acc[index] = {};
+      acc[index][col.name] = validatorValueToPlain(value);
+    });
+    return acc;
+  }, [])
+);
+
+const splitValidateWithReference = (validateWith) => {
+  const text = validateWithToText(validateWith);
+  const parts = text.split(' - ');
+  return {
+    text,
+    validatorName: (parts[0] || '').trim(),
+    columnName: parts.slice(1).join(' - ').trim(),
+  };
+};
+
+const normalizeValidatorText = (value = '') =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+
+const isValidatorDescriptionColumn = (columnName = '') => {
+  const normalized = normalizeValidatorText(columnName);
+  return normalized.includes('DESCRIPCION') || normalized.includes('NOMBRE') || normalized.startsWith('DESC');
+};
+
+const addValidatorToResponseMap = (validatorsMap, validator) => {
+  if (!validator?.name || validatorsMap.has(validator.name)) return;
+  validatorsMap.set(validator.name, {
+    name: validator.name,
+    values: validatorRowsFromColumns(validator.columns || []),
+  });
+};
+
+const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) => {
+  const plainField = field?.toObject?.() || field;
+  const { validatorName, columnName } = splitValidateWithReference(plainField?.validate_with);
+  if (!validatorName) return plainField;
+
+  const validator = await Validator.findValidatorByName(validatorName, periodId);
+  if (!validator) return plainField;
+
+  const column = (columnName
+    ? (validator.columns || []).find(col => col.name === columnName)
+    : null)
+    || (validator.columns || []).find(col => col.is_validator)
+    || (validator.columns || [])[0];
+
+  if (!column) return plainField;
+
+  addValidatorToResponseMap(validatorsMap, validator);
+
+  const optName = column.name.trim().toLowerCase() === validator.name.trim().toLowerCase()
+    ? validator.name
+    : `${validator.name} - ${column.name}`;
+
+  return {
+    ...plainField,
+    validate_with: {
+      id: String(validator._id || validator.name),
+      name: optName,
+    },
+    validator_values: (column.values || []).map(validatorValueToPlain),
+    validator_type: column.type,
+  };
+};
+
+const toPlainObject = (value) => value?.toObject?.() || value || {};
+
+const enrichQrDraftsWithDependencyInfo = async (qrDraftData = []) => {
+  const plainDrafts = (qrDraftData || []).map(toPlainObject);
+  const dependencyCodes = [...new Set(plainDrafts.map(draft => draft.dependency).filter(Boolean))];
+
+  if (!dependencyCodes.length) return plainDrafts;
+
+  const dependencies = await Dependency.find(
+    { dep_code: { $in: dependencyCodes } },
+    'dep_code name'
+  ).lean();
+  const dependencyByCode = new Map(dependencies.map(dep => [dep.dep_code, dep]));
+
+  return plainDrafts.map((draft) => {
+    const dependency = dependencyByCode.get(draft.dependency);
+    const sender = toPlainObject(draft.send_by);
+
+    return {
+      ...draft,
+      dependency_code: draft.dependency,
+      dependency_name: dependency?.name || draft.dependency,
+      sender_name: sender.full_name || sender.name || sender.email || 'QR publico',
+      sender_email: sender.email || null,
+    };
+  });
+};
+
+const replaceDraftDataForDependency = (publishedTemplate, producerEntry) => {
+  const existingDrafts = Array.isArray(publishedTemplate.qr_draft_data)
+    ? publishedTemplate.qr_draft_data
+    : [];
+
+  publishedTemplate.qr_draft_data = existingDrafts
+    .filter(draft => draft.dependency !== producerEntry.dependency);
+  publishedTemplate.qr_draft_data.push(producerEntry);
+  publishedTemplate.markModified('qr_draft_data');
 };
 
 const isBlankOptionalValue = (value) => {
@@ -85,6 +204,9 @@ const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
     currentFields !== latestFields ||
     currentWorkbookSheets !== latestWorkbookSheets ||
     String(publishedTemplate.template.original_workbook_base64 || "") !== String(latestTemplate.original_workbook_base64 || "") ||
+    Boolean(publishedTemplate.template.shared) !== Boolean(latestTemplate.shared) ||
+    Boolean(publishedTemplate.template.allows_qr) !== Boolean(latestTemplate.allows_qr) ||
+    JSON.stringify(publishedTemplate.template.responsible_producers || []) !== JSON.stringify(latestTemplate.responsible_producers || []) ||
     JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
     JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
   ) {
@@ -210,17 +332,31 @@ const convertIdToDescriptive = async (fieldName, value, templateField = null, pe
   // 2. Si no encuentra en mapeos estáticos, verificar validador externo
   if (templateField && templateField.validate_with) {
     try {
-      const [validatorName, columnName] = templateField.validate_with.split(' - ');
+      const validateWithText = typeof templateField.validate_with === 'string'
+        ? templateField.validate_with
+        : (templateField.validate_with?.name || '');
+      const [validatorName, columnName] = validateWithText.split(' - ');
       const validator = await Validator.findValidatorByName(validatorName, periodId);
-      
+
       if (validator) {
-        const column = validator.columns.find(col => col.name === columnName);
+        const column = (columnName
+          ? validator.columns.find(col => col.name === columnName)
+          : null)
+          || validator.columns.find(col => col.is_validator)
+          || validator.columns[0];
         if (column && column.values) {
-          const foundValue = column.values.find(val => 
-            String(val.id || val.value || val).trim() === stringValue
+          const foundIndex = column.values.findIndex(val =>
+            String(validatorValueToPlain(val?.id || val?.value || val)).trim() === stringValue
           );
-          if (foundValue) {
-            const result = foundValue.name || foundValue.label || foundValue.text || foundValue;
+          const foundValue = foundIndex >= 0 ? column.values[foundIndex] : null;
+          if (foundIndex >= 0) {
+            const descriptionColumn = (validator.columns || []).find((col) => (
+              col.name !== column.name && isValidatorDescriptionColumn(col.name)
+            ));
+            const descriptionValue = descriptionColumn?.values?.[foundIndex];
+            const result = descriptionValue !== undefined && descriptionValue !== null
+              ? validatorValueToPlain(descriptionValue)
+              : (foundValue.name || foundValue.label || foundValue.text || validatorValueToPlain(foundValue));
 
             return result;
           }
@@ -449,6 +585,67 @@ const hasLoadedDataValues = (loadedData) =>
     Array.isArray(fieldData?.values) && fieldData.values.some((value) => isMeaningfulMergedValue(value))
   );
 
+const getEntryDependencyCode = (entry = {}) => entry.dependency || entry.dependency_code || '';
+
+const getFieldDataSheetName = (fieldData = {}) =>
+  fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || null;
+
+const normalizeFilledEntry = (entry) => {
+  const plainEntry = toPlainObject(entry);
+  return {
+    ...plainEntry,
+    dependency: getEntryDependencyCode(plainEntry),
+    send_by: toPlainObject(plainEntry.send_by),
+    filled_data: Array.isArray(plainEntry.filled_data)
+      ? plainEntry.filled_data.map(toPlainObject)
+      : [],
+  };
+};
+
+const getLoadedDataIncludingQrDrafts = (publishedTemplate) => {
+  const loadedData = (publishedTemplate?.loaded_data || [])
+    .map(normalizeFilledEntry)
+    .filter(entry => entry.dependency);
+  const loadedDependencies = new Set(loadedData.map(entry => entry.dependency));
+
+  const qrDraftData = (publishedTemplate?.qr_draft_data || [])
+    .map(normalizeFilledEntry)
+    .filter(entry => entry.dependency && !loadedDependencies.has(entry.dependency));
+
+  return [...loadedData, ...qrDraftData];
+};
+
+const getAllTemplateFields = (templateData = {}) => {
+  const fieldMap = new Map();
+  const addField = (field) => {
+    const plainField = field?.toObject?.() || field;
+    if (plainField?.name && !fieldMap.has(plainField.name)) {
+      fieldMap.set(plainField.name, plainField);
+    }
+  };
+
+  (templateData.fields || []).forEach(addField);
+  (templateData.workbook_sheets || []).forEach((sheet) => {
+    (sheet.fields || []).forEach(addField);
+  });
+
+  return Array.from(fieldMap.values());
+};
+
+const buildRowsFromFilledFields = (filledFields = [], rowBase = {}) => {
+  const maxLen = Math.max(...filledFields.map(field => field.values?.length || 0), 1);
+
+  return Array.from({ length: maxLen }, (_, rowIndex) => {
+    const row = { ...rowBase };
+
+    filledFields.forEach((fieldData) => {
+      row[fieldData.field_name] = fieldData.values?.[rowIndex] ?? null;
+    });
+
+    return row;
+  });
+};
+
 const hasMergedRowInformation = (row = {}) =>
   Object.entries(row).some(([key, value]) => key !== 'Dependencia' && isMeaningfulMergedValue(value));
 
@@ -481,15 +678,21 @@ publTempController.publishTemplate = async (req, res) => {
     const category = template.category;  
     const sequence = template.sequence;  
 
+    const fechaFinal = req.body.fecha_final || req.body.deadline || template.fecha_final || null;
     const newPublTemp = new PublishedTemplate({
       name: req.body.name || template.name,
       published_by: userForPublish,
       template: template,
       period: req.body.period_id,
-      deadline: req.body.deadline,
+      deadline: fechaFinal,
+      fecha_inicio: req.body.fecha_inicio || template.fecha_inicio || null,
+      fecha_final_productores: req.body.fecha_final_productores || template.fecha_final_productores || null,
+      fecha_final_responsables: req.body.fecha_final_responsables || template.fecha_final_responsables || null,
+      fecha_final: fechaFinal,
+      responsible_producers: template.responsible_producers || [],
       published_date: datetime_now(),
-      category: category,  
-      sequence: sequence   
+      category: category,
+      sequence: sequence
     })
 
     await newPublTemp.save()
@@ -895,7 +1098,7 @@ publTempController.exportPendingTemplates = async (req, res) => {
 }
 
 publTempController.loadProducerData = async (req, res) => {
-  const { email, pubTem_id, data, edit } = req.body;
+  const { email, pubTem_id, data, sheetsData, edit, asDraft } = req.body;
 
 
 
@@ -918,24 +1121,38 @@ publTempController.loadProducerData = async (req, res) => {
 
     await refreshPublishedTemplateSnapshot(pubTem);
 
-    const now = new Date(datetime_now());
-    const deadline = new Date(pubTem.deadline);
-    
-    // Establecer deadline a las 23:59:59 del día
-    deadline.setHours(23, 59, 59, 999);
-    
-    if (deadline < now) {
-      return res.status(403).json({ status: 'The period is closed' });
-    }
+    const saveAsDraft = asDraft === true || asDraft === 'true';
 
-    // Verificar si el usuario puede enviar datos desde alguna de sus dependencias
+    // allUserDependencies se necesita tanto en borradores como en envíos definitivos
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
     const userDependencyIds = userDependencies.map(dep => dep._id.toString());
-    
-    const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
-    if (!canSubmit) {
-      return res.status(403).json({ status: 'User is not assigned to this published template' });
+
+    // Las verificaciones de fecha y permisos solo aplican a envíos definitivos, no a borradores
+    if (!saveAsDraft) {
+      const now = new Date(datetime_now());
+
+      // Verificar fecha_inicio: el productor no puede enviar antes de esta fecha
+      if (pubTem.fecha_inicio) {
+        const fechaInicio = new Date(pubTem.fecha_inicio);
+        fechaInicio.setHours(0, 0, 0, 0);
+        if (now < fechaInicio) {
+          return res.status(403).json({ status: 'El período de carga aún no ha comenzado' });
+        }
+      }
+
+      // Verificar fecha límite para productores (fecha_final_productores > fecha_final > deadline)
+      const fechaLimiteProductores = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
+      const fechaLimite = new Date(fechaLimiteProductores);
+      fechaLimite.setHours(23, 59, 59, 999);
+      if (fechaLimite < now) {
+        return res.status(403).json({ status: 'The period is closed' });
+      }
+
+      const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
+      if (!canSubmit) {
+        return res.status(403).json({ status: 'User is not assigned to this published template' });
+      }
     }
 
     if (!pubTem.published_date) {
@@ -943,12 +1160,123 @@ publTempController.loadProducerData = async (req, res) => {
     }
 
     // VALIDACIÓN PREVIA: Verificar que las columnas del Excel coincidan
-    if (data && data.length > 0) {
-      const excelColumns = Object.keys(data[0]);
-      const templateColumns = pubTem.template.fields.map(f => f.name);
+    const workbookSheets = pubTem.template?.workbook_sheets || [];
+    const incomingSheetsData = Array.isArray(sheetsData) ? sheetsData : [];
+    const isSheetSubmission = incomingSheetsData.length > 0 && workbookSheets.length > 0;
+    const rowsForLoad = Array.isArray(data) ? data : [];
+    const toPlainField = (field, sheetName = null) => ({
+      ...(field?.toObject?.() || field || {}),
+      ...(sheetName ? { sheet_name: sheetName } : {}),
+    });
+    const fieldsForLoad = isSheetSubmission
+      ? incomingSheetsData.flatMap(({ name }) => {
+          const sheet = workbookSheets.find((item) => item.name === name);
+          return (sheet?.fields || []).map((field) => toPlainField(field, sheet?.name));
+        })
+      : ((pubTem.template.fields?.length ? pubTem.template.fields : workbookSheets.flatMap((sheet) => (
+          (sheet.fields || []).map((field) => toPlainField(field, sheet.name))
+        ))) || []);
+
+    const normalizeProducerValue = (rawValue, field) => {
+      let val = rawValue;
+
+      if (typeof val === 'object' && val !== null) {
+        val = convertHyperlinkToText(val);
+      }
+
+      if (typeof val === 'string' && val === '[object Object]') {
+        console.warn(`Campo ${field.name} contiene '[object Object]' - problema en el frontend`);
+        val = null;
+      }
+
+      if (Array.isArray(val)) {
+        let normalizedVal = val;
+        while (Array.isArray(normalizedVal) && normalizedVal.length === 1) {
+          normalizedVal = normalizedVal[0];
+        }
+
+        if (typeof normalizedVal === 'string' && normalizedVal.startsWith('[') && normalizedVal.endsWith(']')) {
+          try {
+            const parsed = JSON.parse(normalizedVal);
+            if (Array.isArray(parsed) && parsed.length === 1) {
+              normalizedVal = parsed[0];
+            }
+          } catch (_) {}
+        }
+
+        val = normalizedVal;
+      }
+
+      if (typeof val === 'string' && ['null', 'nan'].includes(val.trim().toLowerCase())) {
+        val = null;
+      }
+
+      if (!field.required && isBlankOptionalValue(val)) {
+        val = null;
+      }
+
+      if (field.multiple) {
+        if (!field.required && isBlankOptionalValue(val)) return [];
+        if (val === null || val === undefined) return [];
+
+        const rawString = val.toString();
+        if (!rawString.includes(',')) {
+          return [rawString.trim()];
+        }
+
+        return rawString.split(',').map(v => v.trim());
+      }
+
+      return val;
+    };
+
+    // Para borradores, guardar sin validación de columnas ni de datos
+    if (saveAsDraft) {
+      let result;
+      if (isSheetSubmission) {
+        result = fieldsForLoad.map((field) => ({
+          sheet_name: field.sheet_name,
+          field_name: field.name,
+          values: (incomingSheetsData.find(({ name }) => name === field.sheet_name)?.data || [])
+            .map(row => normalizeProducerValue(row[field.name], field)),
+        }));
+      } else {
+        const fieldsToMap = pubTem.template.fields?.length
+          ? pubTem.template.fields
+          : fieldsForLoad;
+        result = fieldsToMap.map((field) => ({
+          field_name: field.name,
+          values: rowsForLoad.map(row => normalizeProducerValue(row[field.name], field)),
+        }));
+      }
+
+      const producersData = {
+        dependency: user.dep_code,
+        send_by: user,
+        filled_data: result,
+        loaded_date: datetime_now(),
+      };
+
+      replaceDraftDataForDependency(pubTem, producersData);
+      await pubTem.save();
+
+      const recordsLoaded = isSheetSubmission
+        ? incomingSheetsData.reduce((total, sheet) => total + (sheet.data?.length || 0), 0)
+        : rowsForLoad.length;
+
+      return res.status(200).json({
+        status: 'Draft saved successfully',
+        recordsLoaded,
+        draft: true,
+      });
+    }
+
+    if (!isSheetSubmission && rowsForLoad.length > 0) {
+      const excelColumns = Object.keys(rowsForLoad[0]);
+      const templateColumns = fieldsForLoad.map(f => f.name);
       
       // Solo considerar como faltantes las columnas que son obligatorias (required = true)
-      const missingColumns = pubTem.template.fields
+      const missingColumns = fieldsForLoad
         .filter(field => field.required && !excelColumns.includes(field.name))
         .map(field => field.name);
       const extraColumns = excelColumns.filter(col => !templateColumns.includes(col));
@@ -989,6 +1317,119 @@ publTempController.loadProducerData = async (req, res) => {
     }
 
 // Construcción robusta de `result` considerando `multiple
+    if (isSheetSubmission) {
+      const result = fieldsForLoad.map((field) => {
+        const sheetRows = incomingSheetsData.find(({ name }) => name === field.sheet_name)?.data || [];
+        return {
+          sheet_name: field.sheet_name,
+          field_name: field.name,
+          values: sheetRows.map(row => normalizeProducerValue(row[field.name], field)),
+        };
+      });
+
+      const validations = result.map(async fieldData => {
+        const templateField = fieldsForLoad.find(field => (
+          field.name === fieldData.field_name && field.sheet_name === fieldData.sheet_name
+        ));
+        if (!templateField) {
+          throw new Error(`Field ${fieldData.field_name} not found in template`);
+        }
+
+        if (templateField.validate_with) {
+          const validateWithText = typeof templateField.validate_with === 'string'
+            ? templateField.validate_with
+            : (templateField.validate_with?.name || '');
+          const [validatorName, columnName] = validateWithText.split(" - ");
+          const validator = await Validator.findValidatorByName(validatorName, pubTem.period?._id || pubTem.period);
+
+          if (validator) {
+            const validatorColumn = (columnName
+              ? validator.columns.find(c => c.name === columnName)
+              : null)
+              || validator.columns.find(c => c.is_validator)
+              || validator.columns[0];
+            if (validatorColumn) {
+              templateField.validator_values = validatorColumn.values;
+              templateField.validator_type = validatorColumn.type;
+            }
+          }
+        }
+
+        templateField.values = fieldData.values;
+        return Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
+      });
+
+      const validationResults = await Promise.all(validations);
+      const validationErrors = validationResults.filter(v => v.status === false);
+
+      if (validationErrors.length > 0) {
+        const sanitizedErrors = validationErrors.map(err => ({
+          column: err.column ?? "Campo desconocido",
+          errors: (err.errors ?? []).map(e => ({
+            register: e.register ?? 1,
+            value: e.value ?? "Sin valor",
+            message: e.message ?? "Error desconocido"
+          }))
+        }));
+
+        await Log.create({
+          user: user,
+          published_template: pubTem._id,
+          date: datetime_now(),
+          errors: sanitizedErrors
+        });
+
+        return res.status(400).json({ status: 'Validation error', details: sanitizedErrors });
+      }
+
+      const producersData = {
+        dependency: user.dep_code,
+        send_by: user,
+        filled_data: result,
+        loaded_date: datetime_now()
+      };
+
+      const recordsLoaded = incomingSheetsData.reduce((total, sheet) => total + (sheet.data?.length || 0), 0);
+
+      if (saveAsDraft) {
+        replaceDraftDataForDependency(pubTem, producersData);
+        await pubTem.save();
+
+        return res.status(200).json({
+          status: 'Draft saved successfully',
+          recordsLoaded,
+          draft: true,
+        });
+      }
+
+      const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
+      if (existingDataIndex > -1) {
+        pubTem.loaded_data[existingDataIndex] = producersData;
+      } else {
+        pubTem.loaded_data.push(producersData);
+      }
+
+      if (pubTem.qr_draft_data?.length) {
+        pubTem.qr_draft_data = pubTem.qr_draft_data.filter(
+          d => !allUserDependencies.includes(d.dependency)
+        );
+      }
+
+      await pubTem.save();
+
+      await auditLogger.logCreate(req, user, 'publishedTemplateData', {
+        publishedTemplateId: pubTem_id,
+        templateName: pubTem.name,
+        dependency: user.dep_code,
+        recordsLoaded
+      });
+
+      return res.status(200).json({
+        status: 'Data loaded successfully',
+        recordsLoaded
+      });
+    }
+
 const result = pubTem.template.fields.map((field) => {
   const values = data.map(row => {
     let val = row[field.name];
@@ -1076,11 +1517,18 @@ if (field.multiple) {
 
       // 🚀 NUEVO: si tiene validate_with, traer valores válidos
       if (templateField.validate_with) {
-        const [validatorName, columnName] = templateField.validate_with.split(" - ");
+        const validateWithText = typeof templateField.validate_with === 'string'
+          ? templateField.validate_with
+          : (templateField.validate_with?.name || '');
+        const [validatorName, columnName] = validateWithText.split(" - ");
         const validator = await Validator.findValidatorByName(validatorName, pubTem.period?._id || pubTem.period);
 
         if (validator) {
-          const validatorColumn = validator.columns.find(c => c.name === columnName);
+          const validatorColumn = (columnName
+            ? validator.columns.find(c => c.name === columnName)
+            : null)
+            || validator.columns.find(c => c.is_validator)
+            || validator.columns[0];
           if (validatorColumn) {
             templateField.validator_values = validatorColumn.values;
             templateField.validator_type = validatorColumn.type;
@@ -1128,6 +1576,17 @@ if (field.multiple) {
       loaded_date: datetime_now()
     };
 
+    if (saveAsDraft) {
+      replaceDraftDataForDependency(pubTem, producersData);
+      await pubTem.save();
+
+      return res.status(200).json({
+        status: 'Draft saved successfully',
+        recordsLoaded: data.length,
+        draft: true,
+      });
+    }
+
     // Verificar si ya existe data para esta dependencia
     const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
 
@@ -1156,8 +1615,42 @@ if (field.multiple) {
       recordsLoaded: data.length
     });
 
-    return res.status(200).json({ 
-      status: 'Data loaded successfully', 
+    const depName = userDependencies[0]?.name || user.dep_code;
+    if (process.env.NOTIFY_ENCARGADO_ON_UPLOAD === 'true') {
+      setImmediate(async () => {
+        try {
+          const rawResp = pubTem.responsible_producers?.length > 0
+            ? pubTem.responsible_producers
+            : pubTem.template?.responsible_producers;
+          if (!rawResp?.length) return;
+
+          const encargadoDep = await Dependency.findById(rawResp[0]).lean();
+          if (!encargadoDep) return;
+
+          const encargadoUsers = await User.find({
+            dep_code: encargadoDep.dep_code,
+            roles: 'Productor',
+            isActive: true
+          }, 'email name full_name').lean();
+
+          for (const eu of encargadoUsers) {
+            if (eu.email && eu.email !== user.email) {
+              await RemindersService.sendUploadNotificationEmail(
+                eu.email,
+                eu.full_name || eu.name || eu.email,
+                pubTem.name,
+                depName,
+                `${user.full_name || user.name || user.email}`,
+                new Date()
+              ).catch(() => {});
+            }
+          }
+        } catch (_) {}
+      });
+    }
+
+    return res.status(200).json({
+      status: 'Data loaded successfully',
       recordsLoaded: data.length
     });
 
@@ -1190,7 +1683,23 @@ publTempController.submitEmptyData = async (req, res) => {
     if (!pubTem) {
       throw new Error('Published template not found');
     }
-        
+
+    // Solo el productor responsable puede enviar en ceros
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+    const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+
+    const rawResponsibleSubmit = pubTem.responsible_producers?.length > 0
+      ? pubTem.responsible_producers
+      : pubTem.template?.responsible_producers;
+    const responsibleProducers = (rawResponsibleSubmit || []).map(id => id.toString());
+    if (responsibleProducers.length > 0) {
+      const isResponsible = userDependencyIds.some(id => responsibleProducers.includes(id));
+      if (!isResponsible) {
+        return res.status(403).json({ status: 'Solo el productor responsable puede enviar información en esta plantilla' });
+      }
+    }
+
     const producersData = {
       dependency: user.dep_code,
       send_by: user,
@@ -1300,8 +1809,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       templateName: template.name
     });
 
-    // Filtrar datos por dependencia del usuario si se solicita
-    let filteredLoadedData = Array.isArray(template.loaded_data) ? template.loaded_data : [];
+    const allTemplateFields = getAllTemplateFields(template.template || {});
+
+    // Filtrar datos por dependencia del usuario si se solicita. Incluye borradores QR
+    // sin carga confirmada para que tambien aparezcan en las descargas.
+    let filteredLoadedData = getLoadedDataIncludingQrDrafts(template);
     
     if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
       // Obtener todas las dependencias del usuario
@@ -1331,7 +1843,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
   };
 
   // Añadir todas las columnas vacías según template.fields
-  template.template.fields.forEach(field => {
+  allTemplateFields.forEach(field => {
     const cleanFieldName = normalizeFieldName(field.name);
     emptyRow[cleanFieldName] = "";
   });
@@ -1357,8 +1869,7 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
               }
               
               // Convertir IDs a valores descriptivos (buscar campo en template para validadores)
-              const templateField = template.template.fields ? 
-                template.template.fields.find(f => f.name === item.field_name) : null;
+              const templateField = allTemplateFields.find(f => f.name === item.field_name) || null;
               cleanValue = await convertIdToDescriptive(item.field_name, cleanValue, templateField, template.period?._id || template.period);
               
               return { value: cleanValue, index };
@@ -1614,6 +2125,9 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           template: {
             ...template.template,
             workbook_sheets: originalTemplate?.workbook_sheets || template.template.workbook_sheets || [],
+            allows_qr: originalTemplate?.allows_qr ?? template.template.allows_qr ?? false,
+            shared: originalTemplate?.shared ?? template.template.shared ?? false,
+            responsible_producers: originalTemplate?.responsible_producers || template.template.responsible_producers || [],
             category: {
               ...originalTemplate.category,
               templateSequence: sequence
@@ -1667,14 +2181,20 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     
     console.log(`Templates after filtering: ${filteredTemplates.length} of ${paginatedTemplates.length}`);
 
-    // Get validators for filtered templates (top-level fields + workbook sheet fields)
+    // Get validators for filtered templates + marcar si el usuario es productor encargado
+    const userDepIds = dependencies.map(d => d._id.toString());
     const templatesWithValidators = await Promise.all(
       filteredTemplates.map(async (template) => {
         const validators = await collectValidatorsForTemplate(
           template.template,
           template.period?._id || template.period
         );
-        return { ...template, validators };
+        const rawResponsible = template.responsible_producers?.length > 0
+          ? template.responsible_producers
+          : template.template?.responsible_producers;
+        const responsibleIds = (rawResponsible || []).map(id => id.toString());
+        const isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
+        return { ...template, validators, isEncargado };
       })
     );
 
@@ -1712,48 +2232,15 @@ publTempController.getTemplateById = async (req, res) => {
     await refreshPublishedTemplateSnapshot(publishedTemplate);
 
     const validatorsMap = new Map();
+    const periodId = publishedTemplate.period?._id || publishedTemplate.period;
 
-    const fieldsWithValidatorIds = await Promise.all(publishedTemplate.template.fields.map(async (field) => {
-      if (field.validate_with) {
-        try {
-          // Extraer el nombre del template y el nombre de la columna desde field.validate_with
-          const [templateName, columnName] = field.validate_with.split(' - ');
-
-          // Buscar en la base de datos por el templateName y luego encontrar la columna correspondiente
-          const validator = await Validator.findValidatorByName(templateName, publishedTemplate.period?._id || publishedTemplate.period);
-
-          if (validator) {
-            // Encontrar la columna que es validadora
-            const column = validator.columns.find(col => col.name === columnName && col.is_validator);
-
-            if (column) {
-              field.validate_with = {
-                id: validator._id.toString(),
-                name: `${validator.name} - ${column.name}`,
-              };
-
-              // Recolectar datos del validator para incluirlos en la respuesta
-              if (!validatorsMap.has(validator.name)) {
-                const values = validator.columns.reduce((acc, col) => {
-                  col.values.forEach((value, index) => {
-                    if (!acc[index]) acc[index] = {};
-                    acc[index][col.name] = value.$numberInt !== undefined ? value.$numberInt : value;
-                  });
-                  return acc;
-                }, []);
-                validatorsMap.set(validator.name, { name: validator.name, values });
-              }
-            } else {
-              console.error(`Validator column not found for: ${columnName}`);
-            }
-          } else {
-            console.error(`Validator not found for template: ${templateName}`);
-          }
-        } catch (err) {
-          console.error(`Error during validator lookup: ${err.message}`);
-        }
+    const fieldsWithValidatorIds = await Promise.all((publishedTemplate.template.fields || []).map(async (field) => {
+      try {
+        return await enrichFieldWithCurrentValidator(field, periodId, validatorsMap);
+      } catch (err) {
+        console.error(`Error during validator lookup: ${err.message}`);
+        return field?.toObject?.() || field;
       }
-      return field;
     }));
 
     const snapshotId = publishedTemplate.template?._id || publishedTemplate.template?.id;
@@ -1762,56 +2249,89 @@ publTempController.getTemplateById = async (req, res) => {
 
     // Enriquecer campos de workbook_sheets con IDs de validadores (igual que los campos top-level)
     const rawSheets = templateDoc.workbook_sheets || [];
-    const periodId = publishedTemplate.period?._id || publishedTemplate.period;
     const enrichedSheets = await Promise.all(rawSheets.map(async (sheet) => {
       const enrichedFields = await Promise.all((sheet.fields || []).map(async (field) => {
-        if (!field.validate_with || typeof field.validate_with !== 'string') return field;
         try {
-          const [validatorName, columnName] = field.validate_with.split(' - ');
-          const validator = await Validator.findValidatorByName(validatorName, periodId);
-          if (validator) {
-            const col = validator.columns.find(c => c.name === columnName && c.is_validator);
-            if (col) {
-              if (!validatorsMap.has(validator.name)) {
-                const values = validator.columns.reduce((acc, col) => {
-                  col.values.forEach((value, index) => {
-                    if (!acc[index]) acc[index] = {};
-                    acc[index][col.name] = value.$numberInt !== undefined ? value.$numberInt : value;
-                  });
-                  return acc;
-                }, []);
-                validatorsMap.set(validator.name, { name: validator.name, values });
-              }
-              return { ...field.toObject?.() || field, validate_with: { id: validator._id.toString(), name: `${validator.name} - ${col.name}` } };
-            }
-          }
-        } catch (_) { /* ignorar */ }
-        return field;
+          return await enrichFieldWithCurrentValidator(field, periodId, validatorsMap);
+        } catch (_) {
+          return field?.toObject?.() || field;
+        }
       }));
       return { ...sheet.toObject?.() || sheet, fields: enrichedFields };
     }));
 
-    // Recopilar datos ya enviados por otros productores cuando template.shared=true
+    const getProducerRefId = (producerRef) => {
+      const plainProducer = toPlainObject(producerRef);
+      const explicitId = plainProducer?._id || plainProducer?.id;
+      if (explicitId) return String(explicitId);
+      if (typeof producerRef === 'string') return producerRef;
+      const fallbackId = producerRef?.toString?.() || '';
+      return fallbackId === '[object Object]' ? '' : fallbackId;
+    };
+
+    const sheetProducerIds = [...new Set(
+      enrichedSheets
+        .flatMap(sheet => sheet.producers || [])
+        .map(getProducerRefId)
+        .filter(Boolean)
+    )];
+    const sheetDependencies = sheetProducerIds.length
+      ? await Dependency.find({ _id: { $in: sheetProducerIds } }, '_id dep_code').lean()
+      : [];
+    const depCodeByProducerId = new Map(
+      sheetDependencies.map(dep => [String(dep._id), dep.dep_code])
+    );
+    const resolveProducerDepCode = (producerRef) => {
+      const plainProducer = toPlainObject(producerRef);
+      if (plainProducer?.dep_code) return plainProducer.dep_code;
+      return depCodeByProducerId.get(getProducerRefId(producerRef));
+    };
+
+    // Recopilar datos ya enviados por otros productores cuando template.shared=true.
+    // Incluye borradores QR sin carga confirmada.
     const templateShared = liveTemplate?.shared || publishedTemplate.template?.shared || false;
     const sharedSheetsData = {};
     if (templateShared) {
-      const allProducerEntries = publishedTemplate.loaded_data || [];
+      const allProducerEntries = getLoadedDataIncludingQrDrafts(publishedTemplate);
+      const allEntriesDepCodes = [...new Set(allProducerEntries.map(e => getEntryDependencyCode(e)).filter(Boolean))];
+      const entriesDeps = allEntriesDepCodes.length
+        ? await Dependency.find({ dep_code: { $in: allEntriesDepCodes } }, 'dep_code name').lean()
+        : [];
+      const depNameByCode = new Map(entriesDeps.map(d => [d.dep_code, d.name]));
       for (const sheet of enrichedSheets) {
+        if (!sheet.fields?.length) continue;
         const sheetFieldNames = new Set((sheet.fields || []).map(f => f.name));
+        const sheetProducerCodes = new Set(
+          (sheet.producers || []).map(resolveProducerDepCode).filter(Boolean)
+        );
         const rows = [];
         for (const entry of allProducerEntries) {
-          const relevantFields = (entry.filled_data || []).filter(f => sheetFieldNames.has(f.field_name));
+          const entryDependency = getEntryDependencyCode(entry);
+          if (sheetProducerCodes.size > 0 && !sheetProducerCodes.has(entryDependency)) continue;
+
+          const relevantFields = (entry.filled_data || []).filter(f => (
+            getFieldDataSheetName(f)
+              ? getFieldDataSheetName(f) === sheet.name
+              : sheetFieldNames.has(f.field_name)
+          ));
           if (relevantFields.length === 0) continue;
-          const maxLen = Math.max(...relevantFields.map(f => f.values?.length || 0), 1);
-          for (let i = 0; i < maxLen; i++) {
-            const row = {};
-            relevantFields.forEach(f => { row[f.field_name] = f.values?.[i] ?? null; });
-            rows.push(row);
-          }
+          const sendBy = entry.send_by || {};
+          const origin = {
+            code: entryDependency,
+            depName: depNameByCode.get(entryDependency) || entryDependency,
+            senderName: sendBy.full_name || sendBy.name || sendBy.email || entryDependency,
+            senderEmail: sendBy.email || null,
+          };
+          const builtRows = buildRowsFromFilledFields(relevantFields)
+            .filter(row => Object.values(row).some(value => isMeaningfulMergedValue(value)));
+          builtRows.forEach(row => { row.__origin__ = origin; });
+          rows.push(...builtRows);
         }
         if (rows.length > 0) sharedSheetsData[sheet.name] = rows;
       }
     }
+
+    const qrDraftData = await enrichQrDraftsWithDependencyInfo(publishedTemplate.qr_draft_data || []);
 
     const response = {
       name: publishedTemplate.name,
@@ -1823,7 +2343,7 @@ publTempController.getTemplateById = async (req, res) => {
         shared: templateShared,
       },
       publishedTemplate: publishedTemplate,
-      qr_draft_data: publishedTemplate.qr_draft_data || [],
+      qr_draft_data: qrDraftData,
       shared_sheets_data: sharedSheetsData,
     };
 
@@ -1932,23 +2452,28 @@ publTempController.deletePublishedTemplate = async (req, res) => {
 
 publTempController.updateDeadlines = async (req, res) => {
   try {
-    const { email, templateIds, deadline } = req.body;
-
-    console.log(req.body);
-
+    const { email, templateIds, deadline, fecha_inicio, fecha_final_productores, fecha_final_responsables, fecha_final } = req.body;
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
     const user = await User.findOne({ email });
-    
+
+    const fechaFinal = fecha_final || deadline || null;
+    const updateFields = {
+      ...(fechaFinal && { deadline: fechaFinal, fecha_final: fechaFinal }),
+      ...(fecha_inicio && { fecha_inicio }),
+      ...(fecha_final_productores && { fecha_final_productores }),
+      ...(fecha_final_responsables && { fecha_final_responsables }),
+    };
+
     for (const id of templateIds) {
-      const template = await PublishedTemplate.findByIdAndUpdate(id, { deadline });
-      
+      const template = await PublishedTemplate.findByIdAndUpdate(id, updateFields);
+
       // Audit log para cada plantilla actualizada
       await auditLogger.logUpdate(req, user, 'publishedTemplateDeadline', {
         publishedTemplateId: id,
         templateName: template?.name || 'Unknown',
-        newDeadline: deadline
+        newDeadline: fechaFinal
       });
     }
 
@@ -2030,6 +2555,84 @@ publTempController.cleanHyperlinkData = async (req, res) => {
 
 
 
+
+// Envío final al SNIES — solo el productor responsable puede ejecutarlo
+publTempController.confirmFinalSubmit = async (req, res) => {
+  const { pubTem_id, email } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'User not found' });
+    }
+
+    const pubTem = await PublishedTemplate.findById(pubTem_id)
+      .populate('period')
+      .populate({ path: 'template', populate: { path: 'producers', model: 'dependencies' } });
+
+    if (!pubTem) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+    const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+
+    // Verificar que sea productor asignado
+    const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
+    if (!canSubmit) {
+      return res.status(403).json({ status: 'User is not assigned to this published template' });
+    }
+
+    // Verificar que sea productor responsable
+    const rawResponsibleFinal = pubTem.responsible_producers?.length > 0
+      ? pubTem.responsible_producers
+      : pubTem.template?.responsible_producers;
+    const responsibleProducers = (rawResponsibleFinal || []).map(id => id.toString());
+    if (responsibleProducers.length > 0) {
+      const isResponsible = userDependencyIds.some(id => responsibleProducers.includes(id));
+      if (!isResponsible) {
+        return res.status(403).json({ status: 'Solo el productor responsable puede realizar el envío final' });
+      }
+    }
+
+    // Confirmar borradores pendientes: mover qr_draft_data → loaded_data para deps sin datos confirmados
+    const draftEntries = Array.isArray(pubTem.qr_draft_data) ? pubTem.qr_draft_data : [];
+    if (draftEntries.length > 0) {
+      const loadedDeps = new Set((pubTem.loaded_data || []).map(d => d.dependency));
+      const draftsToCommit = draftEntries.filter(d => !loadedDeps.has(d.dependency));
+      if (draftsToCommit.length > 0) {
+        pubTem.loaded_data.push(...draftsToCommit);
+        pubTem.qr_draft_data = draftEntries.filter(d => loadedDeps.has(d.dependency));
+        pubTem.markModified('loaded_data');
+        pubTem.markModified('qr_draft_data');
+      }
+    }
+
+    // Verificar que haya datos cargados por los productores antes del envío final
+    if (!pubTem.loaded_data || pubTem.loaded_data.length === 0) {
+      return res.status(400).json({ status: 'No hay datos cargados para enviar' });
+    }
+
+    // Marcar la plantilla como enviada al SNIES
+    pubTem.final_submitted = true;
+    pubTem.final_submitted_by = user;
+    pubTem.final_submitted_date = datetime_now();
+    await pubTem.save();
+
+    await auditLogger.logCreate(req, user, 'finalSubmitToSnies', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: user.dep_code,
+      totalProducers: pubTem.loaded_data.length
+    });
+
+    return res.status(200).json({ status: 'Envío final realizado exitosamente' });
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ status: 'Internal server error', details: error.message });
+  }
+};
 
 publTempController.hasData = async (req, res) => {
   try {

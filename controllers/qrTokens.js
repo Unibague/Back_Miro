@@ -91,6 +91,44 @@ const buildDropdownOptions = (validator, valueColumn) => {
   return options;
 };
 
+const toPlainDraftFieldData = (fieldData = {}) => fieldData?.toObject?.() || fieldData || {};
+
+const draftFieldKey = (fieldData = {}) => {
+  const plainFieldData = toPlainDraftFieldData(fieldData);
+  return `${plainFieldData.sheet_name || plainFieldData.sheet || plainFieldData.sheetName || ''}::${plainFieldData.field_name || ''}`;
+};
+
+const mergeDraftFilledData = (currentFilledData = [], incomingFilledData = []) => {
+  const merged = (currentFilledData || []).map((fieldData) => {
+    const plainFieldData = toPlainDraftFieldData(fieldData);
+    return {
+      ...plainFieldData,
+      values: Array.isArray(plainFieldData.values) ? [...plainFieldData.values] : [],
+    };
+  });
+  const indexByField = new Map(merged.map((fieldData, index) => [draftFieldKey(fieldData), index]));
+
+  (incomingFilledData || []).forEach((fieldData) => {
+    const plainFieldData = toPlainDraftFieldData(fieldData);
+    const key = draftFieldKey(plainFieldData);
+    const values = Array.isArray(plainFieldData.values) ? plainFieldData.values : [];
+    const existingIndex = indexByField.get(key);
+
+    if (existingIndex !== undefined) {
+      merged[existingIndex].values.push(...values);
+      return;
+    }
+
+    indexByField.set(key, merged.length);
+    merged.push({
+      ...plainFieldData,
+      values: [...values],
+    });
+  });
+
+  return merged;
+};
+
 // POST /qr/generate  — el productor genera un token para su plantilla
 qrController.generateToken = async (req, res) => {
   const { pubTemId, email } = req.body;
@@ -278,8 +316,9 @@ qrController.submitFormData = async (req, res) => {
     const wbSheets = templateData.workbook_sheets || [];
 
     // Resolver hojas con sus fields (filtrando por dependencia)
-    const buildFilledData = (fields, rows) =>
+    const buildFilledData = (fields, rows, sheetName = null) =>
       (fields || []).map((field) => ({
+        ...(sheetName ? { sheet_name: sheetName } : {}),
         field_name: field.name,
         values: (rows || []).map((row) => {
           let val = row[field.name] ?? null;
@@ -301,14 +340,14 @@ qrController.submitFormData = async (req, res) => {
           }
           const sheetFields = sheet.fields || [];
           if (sheetFields.length) {
-            filled_data = filled_data.concat(buildFilledData(sheetFields, rows));
+            filled_data = filled_data.concat(buildFilledData(sheetFields, rows, sheet.name));
             continue;
           }
         }
         // Hoja no encontrada o sin campos propios → usar campos de nivel superior
         const topFields2 = templateData.fields || [];
         if (topFields2.length) {
-          filled_data = filled_data.concat(buildFilledData(topFields2, rows));
+          filled_data = filled_data.concat(buildFilledData(topFields2, rows, name || null));
         }
       }
     }
@@ -318,7 +357,7 @@ qrController.submitFormData = async (req, res) => {
       const allFields = templateData.fields?.length
         ? templateData.fields
         : (wbSheets[0]?.fields || []);
-      filled_data = buildFilledData(allFields, data || sheetsData?.[0]?.data || []);
+      filled_data = buildFilledData(allFields, data || sheetsData?.[0]?.data || [], templateData.fields?.length ? null : wbSheets[0]?.name);
     }
 
     // Usar el usuario que generó el QR como remitente (igual que edición en línea)
@@ -338,10 +377,14 @@ qrController.submitFormData = async (req, res) => {
     if (!pubTem.qr_draft_data) pubTem.qr_draft_data = [];
     const existingIdx = pubTem.qr_draft_data.findIndex(d => d.dependency === qrToken.dependency);
     if (existingIdx > -1) {
-      pubTem.qr_draft_data[existingIdx] = producerEntry;
+      pubTem.qr_draft_data[existingIdx] = {
+        ...producerEntry,
+        filled_data: mergeDraftFilledData(pubTem.qr_draft_data[existingIdx].filled_data, filled_data),
+      };
     } else {
       pubTem.qr_draft_data.push(producerEntry);
     }
+    pubTem.markModified('qr_draft_data');
 
     await pubTem.save();
     return res.status(200).json({ status: 'Información guardada. El productor deberá confirmar el envío.' });

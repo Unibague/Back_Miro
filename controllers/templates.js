@@ -14,6 +14,23 @@ const { ObjectId } = mongoose.Types;
 
 const escapeRegExp = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const collectValidatorsForTemplate = async (template, periodId) => {
+  const topFields = template.fields || [];
+  const sheetFields = (template.workbook_sheets || []).flatMap(s => s.fields || []);
+  const allFields = [...topFields, ...sheetFields];
+  const seen = new Set();
+  const unique = allFields.filter(f => {
+    const key = String(f.validate_with || '').split(' - ')[0].trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const results = await Promise.all(
+    unique.map(f => Validator.giveValidatorToExcel(f.validate_with, periodId))
+  );
+  return results.filter(Boolean);
+};
+
 const datetime_now = () => {
   const now = new Date();
 
@@ -48,12 +65,6 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        const validators = await Promise.all(
-          template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with, periodId);
-          })
-        );
-
         template = template.toObject();
         if (periodId) {
           const publishedTemplate = await PubTemplate.findOne({
@@ -62,9 +73,7 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
           });
           template.published = !!publishedTemplate;
         }
-        validatorsFiltered = validators.filter((v) => v !== undefined);
-        template.validators = validatorsFiltered; // Add validators to object
-
+        template.validators = await collectValidatorsForTemplate(template, periodId);
         return template;
       })
     );
@@ -132,28 +141,15 @@ templateController.getPlantillas = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        const validators = await Promise.all(
-          template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with, periodId);
-          })
-        );
-
-        
         template = template.toObject();
         if (periodId) {
           const publishedTemplate = await PubTemplate.findOne({
             'template._id': template._id,
             'period': periodId
           });
-          if (publishedTemplate) {
-            template.published = true;
-          } else {
-            template.published = false;
-          }
+          template.published = !!publishedTemplate;
         }
-        validatorsFiltered = validators.filter((v) => v !== undefined);
-        template.validators = validatorsFiltered; // Añadir validators al objeto
-
+        template.validators = await collectValidatorsForTemplate(template, periodId);
         return template;
       })
     );
@@ -226,16 +222,8 @@ templateController.getPlantillasByCreator = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        const validators = await Promise.all(
-          template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with, periodId);
-          })
-        );
-
         template = template.toObject();
-        validatorsFiltered = validators.filter((v) => v !== undefined);
-        template.validators = validatorsFiltered; // Añadir validators al objeto
-
+        template.validators = await collectValidatorsForTemplate(template, periodId);
         return template;
       })
     );
@@ -378,6 +366,16 @@ templateController.updatePlantilla = async (req, res) => {
 
     if (!updatedFields.producers) {
       const updatedTemplate = await Template.findByIdAndUpdate(id, updatedFields, { new: true });
+      if (Array.isArray(updatedFields.fields)) {
+        try {
+          await Validator.createValidatorsFromDropdownOptions(
+            updatedFields.fields,
+            updatedFields.period || originalTemplate.period
+          );
+        } catch (autoValidatorError) {
+          console.warn('Auto-validator update failed (non-critical):', autoValidatorError.message);
+        }
+      }
       return res.status(200).json(updatedTemplate);
     }
 
@@ -410,6 +408,16 @@ templateController.updatePlantilla = async (req, res) => {
     }
 
     const updatedTemplate = await Template.findByIdAndUpdate(id, updatedFields, { new: true });
+    if (Array.isArray(updatedFields.fields)) {
+      try {
+        await Validator.createValidatorsFromDropdownOptions(
+          updatedFields.fields,
+          updatedFields.period || originalTemplate.period
+        );
+      } catch (autoValidatorError) {
+        console.warn('Auto-validator update failed (non-critical):', autoValidatorError.message);
+      }
+    }
 
     // 🔁 Se sincronizan los producers embebidos en publishedTemplates
     const objectId = new mongoose.Types.ObjectId(id);
@@ -428,6 +436,17 @@ templateController.updatePlantilla = async (req, res) => {
       "template.active": updatedTemplate.active,
       "template.shared": updatedTemplate.shared ?? false,
       "template.allows_qr": updatedTemplate.allows_qr ?? false,
+      "template.fecha_inicio": updatedTemplate.fecha_inicio ?? null,
+      "template.fecha_final_productores": updatedTemplate.fecha_final_productores ?? null,
+      "template.fecha_final_responsables": updatedTemplate.fecha_final_responsables ?? null,
+      "template.fecha_final": updatedTemplate.fecha_final ?? null,
+      "template.responsible_producers": updatedTemplate.responsible_producers ?? [],
+      // Sincronizar también al nivel raíz de publishedTemplate para que el frontend lo lea sin fallback profundo
+      responsible_producers: updatedTemplate.responsible_producers ?? [],
+      ...(updatedTemplate.fecha_final_productores != null && { fecha_final_productores: updatedTemplate.fecha_final_productores }),
+      ...(updatedTemplate.fecha_final_responsables != null && { fecha_final_responsables: updatedTemplate.fecha_final_responsables }),
+      ...(updatedTemplate.fecha_final != null && { fecha_final: updatedTemplate.fecha_final, deadline: updatedTemplate.fecha_final }),
+      ...(updatedTemplate.fecha_inicio != null && { fecha_inicio: updatedTemplate.fecha_inicio }),
     };
 
     const updatedPublishedTemplates = await PublishedTemplate.updateMany(

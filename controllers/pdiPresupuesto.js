@@ -1,8 +1,9 @@
 const { google } = require('googleapis');
 const path = require('path');
 const fs = require('fs');
+const Macroproyecto = require('../models/pdiMacroproyecto');
+const Proyecto = require('../models/pdiProyecto');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
-const { normalizeCode } = require('../services/pdiBudgetImport');
 
 const SPREADSHEET_ID = '1pGQkA-nu5kmy8HviHM4YzmC3AOmFrGoTS_X8U93f9YI';
 const CACHE_TTL_MS = 60 * 1000;
@@ -36,11 +37,156 @@ const sheetsService = google.sheets({ version: 'v4', auth });
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const normalizeNum = (val) => {
+  if (typeof val === 'number' && Number.isFinite(val)) return val;
   if (val === null || val === undefined || val === '') return 0;
-  const str = String(val).replace(/[$\s]/g, '').replace(/\./g, '').replace(',', '.');
-  const n = parseFloat(str);
-  return Number.isNaN(n) ? 0 : n;
+  let str = String(val).trim().replace(/\$/g, '').replace(/\s+/g, '');
+  if (!str) return 0;
+
+  const hasComma = str.includes(',');
+  const hasDot = str.includes('.');
+  if (hasComma) {
+    str = str.replace(/\./g, '').replace(',', '.');
+  } else if (hasDot) {
+    const parts = str.split('.');
+    const thousandsLike = parts.length > 1 && parts.slice(1).every((part) => /^\d{3}$/.test(part));
+    if (thousandsLike) str = parts.join('');
+  }
+
+  const n = Number(str);
+  return Number.isFinite(n) ? n : 0;
 };
+
+const normalizeText = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+
+const findCol = (headers, labels, fallback, { exact = false } = {}) => {
+  const normalizedLabels = labels.map(normalizeText);
+  const idx = headers.findIndex((header) => {
+    const normalizedHeader = normalizeText(header);
+    return exact
+      ? normalizedLabels.includes(normalizedHeader)
+      : normalizedLabels.some((label) => normalizedHeader.includes(label));
+  });
+  return idx !== -1 ? idx : fallback;
+};
+
+const valueOrSplit = (value, ...splits) => {
+  const parsed = normalizeNum(value);
+  if (parsed) return parsed;
+  return splits.reduce((acc, item) => acc + (Number(item) || 0), 0);
+};
+
+const normalizeSystemCode = (value) => String(value || '')
+  .toUpperCase()
+  .replace(/[^A-Z0-9-]/g, '')
+  .trim();
+
+const cleanHierarchyName = (value) => normalizeText(
+  String(value || '')
+    .replace(/^macroproyecto\s*\d+\s*[:.-]?\s*/i, '')
+    .replace(/^proyecto\s*:\s*/i, '')
+    .replace(/^\d+(?:\.\d+)*\s*/, '')
+);
+
+const extractMacroNumber = (value) => {
+  const text = String(value || '');
+  const match = text.match(/macroproyecto\s*(\d+)/i)
+    || text.match(/^M?(\d+)\b/i)
+    || text.match(/\b(\d+)\./);
+  return match ? String(Number(match[1])) : '';
+};
+
+const extractProjectNumber = (value) => {
+  const match = String(value || '').match(/\b(\d+)\.(\d+)\b/);
+  return match ? `${Number(match[1])}.${Number(match[2])}` : '';
+};
+
+const buildImportedCausedByProject = (acciones = []) => {
+  const byProject = new Map();
+
+  for (const accion of acciones) {
+    const projectCode = normalizeSystemCode(accion.proyecto_id?.codigo);
+    if (!projectCode) continue;
+
+    const gasto = Number(accion.gasto) || 0;
+    const inversion = Number(accion.inversion) || 0;
+    const total = gasto + inversion || Number(accion.presupuesto_ejecutado) || 0;
+    if (!total) continue;
+
+    const current = byProject.get(projectCode) || { gasto: 0, inversion: 0, causado: 0 };
+    current.gasto += gasto;
+    current.inversion += inversion;
+    current.causado += total;
+    byProject.set(projectCode, current);
+  }
+
+  return byProject;
+};
+
+const buildSystemIndex = (macros = [], proyectos = [], acciones = []) => {
+  const macroByName = new Map();
+  const macroByNumber = new Map();
+  const projectByName = new Map();
+  const projectByNumber = new Map();
+  const importedCausedByProject = buildImportedCausedByProject(acciones);
+
+  for (const macro of macros) {
+    const code = normalizeSystemCode(macro.codigo);
+    const number = extractMacroNumber(code);
+    const name = cleanHierarchyName(macro.nombre);
+    if (name && !macroByName.has(name)) macroByName.set(name, macro);
+    if (number && !macroByNumber.has(number)) macroByNumber.set(number, macro);
+  }
+
+  for (const proyecto of proyectos) {
+    const code = normalizeSystemCode(proyecto.codigo);
+    const number = extractProjectNumber(code.replace(/^M/, '').replace('-P', '.'));
+    const name = cleanHierarchyName(proyecto.nombre);
+    if (name && !projectByName.has(name)) projectByName.set(name, proyecto);
+    if (number && !projectByNumber.has(number)) projectByNumber.set(number, proyecto);
+  }
+
+  return { macroByName, macroByNumber, projectByName, projectByNumber, importedCausedByProject };
+};
+
+const resolveByName = (map, label) => {
+  const name = cleanHierarchyName(label);
+  if (!name) return null;
+  if (map.has(name)) return map.get(name);
+
+  for (const [key, value] of map) {
+    if (name.length > 6 && (key.includes(name) || name.includes(key))) return value;
+  }
+  return null;
+};
+
+const resolveMacro = (systemIndex, ...labels) => {
+  for (const label of labels) {
+    const number = extractMacroNumber(label);
+    if (number && systemIndex.macroByNumber.has(number)) return systemIndex.macroByNumber.get(number);
+    const byName = resolveByName(systemIndex.macroByName, label);
+    if (byName) return byName;
+  }
+  return null;
+};
+
+const resolveProject = (systemIndex, ...labels) => {
+  for (const label of labels) {
+    const number = extractProjectNumber(label);
+    if (number && systemIndex.projectByNumber.has(number)) return systemIndex.projectByNumber.get(number);
+    const byName = resolveByName(systemIndex.projectByName, label);
+    if (byName) return byName;
+  }
+  return null;
+};
+
+const macroSystemLabel = (macro, fallback) => (
+  macro?.codigo ? `${macro.codigo} - ${macro.nombre || ''}`.trim() : fallback
+);
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 // Estructura real de la hoja:
@@ -48,7 +194,7 @@ const normalizeNum = (val) => {
 // Col 2: Proyecto        | Col 3: Acción estratégica | Col 4: Tipo (Gasto/Inversión)
 // Col 10: Valor (comprometido) | Col 20: Causado gasto | Col 21: Causado inversión
 
-const parseRows = (rows) => {
+const parseAuthorizationRows = (rows) => {
   if (rows.length < 2) return [];
 
   const headers = rows[0] || [];
@@ -63,10 +209,10 @@ const parseRows = (rows) => {
   const colMacro        = findCol(['centro de costo', 'macroproyecto', 'macro'], 1);
   const colProyecto     = findCol(['proyecto'], 2);
   const colCodificacion = findCol(['codificacion', 'codificación', 'codigo', 'código'], 3);
-  const colTipo         = findCol(['tipo'], 4);
-  const colValor        = findCol(['valor'], 10);
-  const colCausGasto    = findCol(['causado gasto'], 20);
-  const colCausInv      = findCol(['causado inversion', 'causado inversión'], 21);
+  const colTipo         = findCol(['tipo'], 5);
+  const colValor        = findCol(['valor'], 11);
+  const colCausGasto    = findCol(['causado gasto'], 21);
+  const colCausInv      = findCol(['causado inversion', 'causado inversión'], 22);
 
   const groups = {};
 
@@ -90,6 +236,8 @@ const parseRows = (rows) => {
         proyecto,
         codificacion,
         presupuesto:           0,
+        presupuestoGasto:      0,
+        presupuestoInversion:  0,
         comprometidoGasto:     0,
         comprometidoInversion: 0,
         comprometido:          0,
@@ -108,124 +256,94 @@ const parseRows = (rows) => {
     } else {
       g.comprometidoGasto += valor;
     }
-    g.comprometido    += valor;
-    g.causadoGasto    += causGasto;
-    g.causadoInversion += causInv;
-    g.causado         += causGasto + causInv;
-    g.autorizaciones  += 1;
+    g.comprometido       += valor;
+    g.causadoGasto       += causGasto;
+    g.causadoInversion   += causInv;
+    g.causado            += causGasto + causInv;
+    g.autorizaciones     += 1;
   }
 
   return Object.values(groups);
 };
 
-const codeVariants = (value) => {
-  const normalized = normalizeCode(value);
-  if (!normalized) return [];
+const parseProjectSummaryRows = (rows, headers, systemIndex) => {
+  const colCentro        = findCol(headers, ['centro de costo'], 0);
+  const colMacro         = findCol(headers, ['macroproyecto'], 1, { exact: true });
+  const colProyecto      = findCol(headers, ['proyecto'], 2, { exact: true });
+  const colAutorizacion  = findCol(headers, ['n autorizaciones', 'numero autorizaciones'], 11);
+  const colPresGasto     = findCol(headers, ['gasto'], 12, { exact: true });
+  const colPresInv       = findCol(headers, ['inversion'], 13, { exact: true });
+  const colPresTotal     = findCol(headers, ['total presupuesto'], 14);
+  const colCompGasto     = findCol(headers, ['comprometido gasto'], 15);
+  const colCompInv       = findCol(headers, ['comprometido inversion'], 16);
+  const colCompTotal     = findCol(headers, ['total comprometido'], 17);
+  const colCausGasto     = findCol(headers, ['causado gasto'], 18);
+  const colCausInv       = findCol(headers, ['causado inversion'], 19);
+  const colCausTotal     = findCol(headers, ['total causado'], 20);
 
-  const variants = new Set([normalized]);
-  variants.add(normalized.replace(/-AE(\d+)$/i, '-A$1'));
-  variants.add(normalized.replace(/-A(\d+)$/i, '-AE$1'));
-  return Array.from(variants);
-};
-
-const getImportedSplit = (accion, row = {}) => {
-  const ejecutado = Number(accion.presupuesto_ejecutado) || 0;
-  const gasto = Number(accion.gasto) || 0;
-  const inversion = Number(accion.inversion) || 0;
-
-  let causadoGasto = gasto;
-  let causadoInversion = inversion;
-
-  if (!causadoGasto && !causadoInversion && ejecutado > 0) {
-    if ((row.comprometidoInversion || 0) > 0 && !(row.comprometidoGasto || 0)) {
-      causadoInversion = ejecutado;
-    } else {
-      causadoGasto = ejecutado;
+  return rows.slice(1).map((row = [], index) => {
+    const rawMacro = String(row[colCentro] || '').trim();
+    const rawMacroName = String(row[colMacro] || '').trim();
+    const rawProject = String(row[colProyecto] || '').trim();
+    const normalizedMacro = normalizeText(rawMacro);
+    const normalizedProject = normalizeText(rawProject);
+    if ((!rawMacro && !rawProject) || normalizedMacro === 'total' || normalizedProject === 'total') {
+      return null;
     }
-  }
 
-  return {
-    ejecutado,
-    causadoGasto,
-    causadoInversion,
-    causado: causadoGasto + causadoInversion || ejecutado,
-  };
-};
+    const macro = resolveMacro(systemIndex, rawMacroName, rawMacro);
+    const proyecto = resolveProject(systemIndex, rawProject);
+    const presupuestoGasto = normalizeNum(row[colPresGasto]);
+    const presupuestoInversion = normalizeNum(row[colPresInv]);
+    const comprometidoGasto = normalizeNum(row[colCompGasto]);
+    const comprometidoInversion = normalizeNum(row[colCompInv]);
+    let causadoGasto = normalizeNum(row[colCausGasto]);
+    let causadoInversion = normalizeNum(row[colCausInv]);
+    let causado = valueOrSplit(row[colCausTotal], causadoGasto, causadoInversion);
 
-const macroLabel = (macro) => {
-  if (!macro) return 'Sin centro de costos';
-  const code = String(macro.codigo || '').replace(/^M/i, '');
-  return code ? `${code}. ${macro.nombre}` : macro.nombre || 'Sin centro de costos';
-};
+    const importedCaused = systemIndex.importedCausedByProject?.get(normalizeSystemCode(proyecto?.codigo));
+    if (importedCaused) {
+      causadoGasto = importedCaused.gasto;
+      causadoInversion = importedCaused.inversion;
+      causado = importedCaused.causado;
 
-const applyImportedExecution = async (rows) => {
-  const acciones = await AccionEstrategica.find(
-    {},
-    'codigo nombre presupuesto presupuesto_ejecutado gasto inversion proyecto_id'
-  )
-    .populate({
-      path: 'proyecto_id',
-      select: 'codigo nombre macroproyecto_id',
-      populate: { path: 'macroproyecto_id', select: 'codigo nombre' },
-    })
-    .lean();
-
-  const accionesPorCodigo = new Map();
-  for (const accion of acciones) {
-    for (const key of codeVariants(accion.codigo)) {
-      if (key && !accionesPorCodigo.has(key)) accionesPorCodigo.set(key, accion);
+      if (!causadoGasto && !causadoInversion && causado > 0) {
+        if (presupuestoInversion > 0 && !presupuestoGasto) {
+          causadoInversion = causado;
+        } else {
+          causadoGasto = causado;
+        }
+      }
     }
-  }
-
-  const usadas = new Set();
-  const mergedRows = rows.map((row) => {
-    const accion = codeVariants(row.codificacion)
-      .map((key) => accionesPorCodigo.get(key))
-      .find(Boolean);
-    if (!accion) return row;
-
-    const split = getImportedSplit(accion, row);
-    usadas.add(String(accion._id));
 
     return {
-      ...row,
-      presupuesto: Number(accion.presupuesto) || row.presupuesto || 0,
-      causadoGasto: split.causado ? split.causadoGasto : row.causadoGasto,
-      causadoInversion: split.causado ? split.causadoInversion : row.causadoInversion,
-      causado: split.causado || row.causado,
-      fuenteCausado: split.causado ? 'importado' : row.fuenteCausado,
+      macroproyecto: macroSystemLabel(macro, rawMacro),
+      proyecto: proyecto?.nombre || rawProject,
+      codificacion: proyecto?.codigo || '',
+      presupuesto: valueOrSplit(row[colPresTotal], presupuestoGasto, presupuestoInversion),
+      presupuestoGasto,
+      presupuestoInversion,
+      comprometidoGasto,
+      comprometidoInversion,
+      comprometido: valueOrSplit(row[colCompTotal], comprometidoGasto, comprometidoInversion),
+      causadoGasto,
+      causadoInversion,
+      causado,
+      autorizaciones: normalizeNum(row[colAutorizacion]),
+      rowIndex: index + 2,
     };
-  });
+  }).filter(Boolean);
+};
 
-  const extraRows = acciones
-    .filter((accion) => !usadas.has(String(accion._id)))
-    .map((accion) => {
-      const split = getImportedSplit(accion);
-      if (!split.causado && !accion.presupuesto) return null;
+const parseRows = (rows, systemIndex = buildSystemIndex()) => {
+  if (rows.length < 2) return [];
+  const headers = rows[0] || [];
+  const hasProjectSummary = findCol(headers, ['total presupuesto'], -1) !== -1
+    && findCol(headers, ['total comprometido'], -1) !== -1;
 
-      const proyecto = accion.proyecto_id || {};
-      const macro = proyecto.macroproyecto_id;
-      const presupuesto = Number(accion.presupuesto) || 0;
-      const comprometido = Number(accion.presupuesto) || 0;
-
-      return {
-        macroproyecto: macroLabel(macro),
-        proyecto: proyecto.nombre || proyecto.codigo || 'Sin proyecto',
-        codificacion: accion.codigo || accion.nombre || '',
-        presupuesto,
-        comprometidoGasto: 0,
-        comprometidoInversion: 0,
-        comprometido: 0,
-        causadoGasto: split.causadoGasto,
-        causadoInversion: split.causadoInversion,
-        causado: split.causado,
-        autorizaciones: 0,
-        fuenteCausado: 'importado',
-      };
-    })
-    .filter(Boolean);
-
-  return [...mergedRows, ...extraRows];
+  return hasProjectSummary
+    ? parseProjectSummaryRows(rows, headers, systemIndex)
+    : parseAuthorizationRows(rows);
 };
 
 // ── Controller ─────────────────────────────────────────────────────────────
@@ -245,25 +363,43 @@ controller.getData = async (req, res) => {
       return res.status(200).json(cache.data);
     }
 
-    const response = await sheetsService.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A:Z',
-    });
+    const [response, macros, proyectos, accionesConCausado] = await Promise.all([
+      sheetsService.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: 'Proyecto 2026!A:Z',
+      }),
+      Macroproyecto.find({}, 'codigo nombre').lean(),
+      Proyecto.find({}, 'codigo nombre').lean(),
+      AccionEstrategica.find(
+        {
+          $or: [
+            { presupuesto_ejecutado: { $gt: 0 } },
+            { gasto: { $gt: 0 } },
+            { inversion: { $gt: 0 } },
+          ],
+        },
+        'gasto inversion presupuesto_ejecutado proyecto_id'
+      )
+        .populate('proyecto_id', 'codigo')
+        .lean(),
+    ]);
 
     const rows = response.data.values || [];
-    const parsed = await applyImportedExecution(parseRows(rows));
+    const parsed = parseRows(rows, buildSystemIndex(macros, proyectos, accionesConCausado));
 
     const totals = parsed.reduce(
       (acc, r) => ({
-        presupuesto:           acc.presupuesto           + (r.presupuesto || 0),
-        comprometido:          acc.comprometido          + r.comprometido,
-        comprometidoGasto:     acc.comprometidoGasto     + r.comprometidoGasto,
-        comprometidoInversion: acc.comprometidoInversion + r.comprometidoInversion,
-        causado:               acc.causado               + r.causado,
-        causadoGasto:          acc.causadoGasto          + r.causadoGasto,
-        causadoInversion:      acc.causadoInversion      + r.causadoInversion,
+        presupuesto:            acc.presupuesto            + (r.presupuesto || 0),
+        presupuestoGasto:       acc.presupuestoGasto       + (r.presupuestoGasto || 0),
+        presupuestoInversion:   acc.presupuestoInversion   + (r.presupuestoInversion || 0),
+        comprometido:           acc.comprometido           + r.comprometido,
+        comprometidoGasto:      acc.comprometidoGasto      + r.comprometidoGasto,
+        comprometidoInversion:  acc.comprometidoInversion  + r.comprometidoInversion,
+        causado:                acc.causado                + r.causado,
+        causadoGasto:           acc.causadoGasto           + r.causadoGasto,
+        causadoInversion:       acc.causadoInversion       + r.causadoInversion,
       }),
-      { presupuesto: 0, comprometido: 0, comprometidoGasto: 0, comprometidoInversion: 0, causado: 0, causadoGasto: 0, causadoInversion: 0 }
+      { presupuesto: 0, presupuestoGasto: 0, presupuestoInversion: 0, comprometido: 0, comprometidoGasto: 0, comprometidoInversion: 0, causado: 0, causadoGasto: 0, causadoInversion: 0 }
     );
 
     const result = { rows: parsed, totals, updatedAt: new Date().toISOString() };

@@ -624,14 +624,26 @@ const getValidatorOptions = (validator, preferredColumnName) => {
     });
 
     const idText = toOptionText(idValue);
-    if (!idText || seen.has(idText)) return;
+    if (!idText) return;
 
     const descValue = descKey ? resolveValueByKey(row, descKey) : undefined;
     const descText = toOptionText(descValue);
-    const displayLabel = descText ? `${idText} - ${descText}` : idText;
+    if (descKey && !descText) return;
 
-    seen.add(idText);
-    options.push({ value: idText, displayLabel });
+    // Para validadores de una sola columna con formato "CC Cédula de ciudadanía",
+    // extraer solo el código inicial como valor almacenado.
+    let storedValue = idText;
+    if (!descKey) {
+      const codeMatch = /^([A-Z0-9]{1,6})\s+.+$/.exec(idText);
+      if (codeMatch) storedValue = codeMatch[1];
+    }
+
+    const seenKey = normalizeToken(storedValue);
+    if (seen.has(seenKey)) return;
+
+    const displayLabel = descText ? `${idText} ${descText}` : idText;
+    seen.add(seenKey);
+    options.push({ value: storedValue, displayLabel });
   });
 
   return options;
@@ -1479,7 +1491,7 @@ const removeConfiguredFieldsFromWorksheet = (worksheet, configuredFields = []) =
   }
 };
 
-const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []) => {
+const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = [], periodId = null) => {
   const fieldsWithValidator = configuredFields.filter(
     (field) => field?.worksheet_name && field?.name && field?.validate_with && !field?.multiple
   );
@@ -1489,7 +1501,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
   }
 
   const validators = (
-    await Promise.all(fieldsWithValidator.map((field) => Validator.giveValidatorToExcel(field.validate_with)))
+    await Promise.all(fieldsWithValidator.map((field) => Validator.giveValidatorToExcel(field.validate_with, periodId)))
   ).filter(Boolean);
 
   if (validators.length === 0) {
@@ -1540,7 +1552,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
       }
 
       options.forEach((option, optionIndex) => {
-        sourcesSheet.getCell(optionIndex + 1, sourceCol).value = option.displayLabel;
+        sourcesSheet.getCell(optionIndex + 1, sourceCol).value = option.value;
       });
 
       const colLetter = columnNumberToName(sourceCol);
@@ -1582,7 +1594,8 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
 const buildWorkbookWithConfiguredFields = async (
   workbookInput,
   configuredFields = [],
-  previousConfiguredFields = []
+  previousConfiguredFields = [],
+  periodId = null
 ) => {
   const sourceBuffer = Buffer.isBuffer(workbookInput)
     ? Buffer.from(workbookInput)
@@ -1600,7 +1613,7 @@ const buildWorkbookWithConfiguredFields = async (
     applyConfiguredFieldsToWorksheet(worksheet, configuredFields);
   });
 
-  await applyValidatorDropdownsToWorkbook(workbook, configuredFields);
+  await applyValidatorDropdownsToWorkbook(workbook, configuredFields, periodId);
 
   const headerCommentsPlan = buildWorksheetHeaderCommentsPlan(
     workbook,
@@ -2809,6 +2822,14 @@ controller.downloadTemplateFile = async (req, res) => {
     }
 
     const fileBuffer = await downloadDriveFileBuffer(template.drive_file_id);
+    const downloadableBuffer = (template.fields || []).some((field) => field?.validate_with)
+      ? await buildWorkbookWithConfiguredFields(
+          fileBuffer,
+          template.fields || [],
+          [],
+          template.period || null
+        )
+      : fileBuffer;
     const downloadFileName = buildDownloadFileName(template);
 
     res.setHeader(
@@ -2820,7 +2841,7 @@ controller.downloadTemplateFile = async (req, res) => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
-    return res.send(fileBuffer);
+    return res.send(downloadableBuffer);
   } catch (error) {
     console.error("Error downloading SNIES template file:", error);
     return res.status(500).json({
@@ -2908,7 +2929,12 @@ controller.createTemplate = async (req, res) => {
     let uploadFile = req.file;
 
     if (fields.length > 0) {
-      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(req.file.path, fields);
+      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(
+        req.file.path,
+        fields,
+        [],
+        periodId || null
+      );
       fs.writeFileSync(req.file.path, updatedWorkbookBuffer);
     }
 
@@ -3033,7 +3059,12 @@ controller.updateTemplate = async (req, res) => {
     }
 
     if (req.file && fields.length > 0) {
-      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(req.file.path, fields);
+      const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(
+        req.file.path,
+        fields,
+        [],
+        template.period || null
+      );
       fs.writeFileSync(req.file.path, updatedWorkbookBuffer);
     }
 
@@ -3052,7 +3083,8 @@ controller.updateTemplate = async (req, res) => {
       const updatedWorkbookBuffer = await buildWorkbookWithConfiguredFields(
         currentWorkbookBuffer,
         fields,
-        previousFields
+        previousFields,
+        template.period || null
       );
 
       tempUploadFile = createTemporaryExcelUpload(template.file_name, updatedWorkbookBuffer);

@@ -5,6 +5,10 @@ const Template = require('./templates.js')
 const Dependency = require('./dependencies.js')
 
 const filled_fields = new Schema({
+    sheet_name: {
+        type: Schema.Types.String,
+        required: false
+    },
     field_name: {
         type: Schema.Types.String,
         ref: 'templates.fields',
@@ -69,19 +73,52 @@ const publishedTemplateSchema = new Schema({
   },
   deadline: {
     type: Date,
-    required: true
+    required: false
+  },
+  fecha_inicio: {
+    type: Date,
+    required: false
+  },
+  fecha_final_productores: {
+    type: Date,
+    required: false
+  },
+  fecha_final_responsables: {
+    type: Date,
+    required: false
+  },
+  fecha_final: {
+    type: Date,
+    required: false
+  },
+  responsible_producers: {
+    type: [Schema.Types.ObjectId],
+    ref: 'dependencies',
+    default: []
   },
   published_date: {
     type: Date,
     required: true
   },
   sequence: {
-    type: Number,  // Secuencia de la plantilla
+    type: Number,
     required: false
   },
   category: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'categories'
+  },
+  final_submitted: {
+    type: Boolean,
+    default: false
+  },
+  final_submitted_by: {
+    type: {},
+    required: false
+  },
+  final_submitted_date: {
+    type: Date,
+    required: false
   },
 }, {
   versionKey: false,

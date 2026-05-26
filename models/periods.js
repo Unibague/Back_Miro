@@ -21,29 +21,29 @@ const periodSchema = new mongoose.Schema(
     },
     producer_start_date: {
       type: Date,
-      required: true,
+      required: false,
     },
     producer_end_date: {
       type: Date,
-      required: true,
+      required: false,
     },
 
     producer_report_start_date: {
       type: Date,
-      required: true,
+      required: false,
     },
     producer_report_end_date: {
       type: Date,
-      required: true,
+      required: false,
     },
-    
+
     responsible_start_date: {
       type: Date,
-      required: true,
+      required: false,
     },
     responsible_end_date: {
       type: Date,
-      required: true,
+      required: false,
     },
     is_active: {
       type: Boolean,

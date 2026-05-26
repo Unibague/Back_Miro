@@ -6,6 +6,11 @@ const Student = require('../models/students');
 const { all } = require('../routes/users');
 const auditLogger = require('../services/auditLogger');
 const mongoose = require('mongoose');
+const {
+    buildAcceptedDropdownOptionSet,
+    getFieldDropdownOptions,
+    normalizeOptionKey: normalizeDropdownOptionKey,
+} = require('../helpers/dropdownOptions');
 
 const validatorController = {}
 
@@ -88,10 +93,11 @@ validatorController.findValidatorByName = async (name, periodId = null) => {
     if (hasPeriodId(periodId)) {
         if (!mongoose.Types.ObjectId.isValid(String(periodId))) return null;
         const period = await Period.findById(periodId).select('screenshot.validators');
-        return toPlainValidator(findValidatorInPeriod(period, validatorName));
+        const periodValidator = toPlainValidator(findValidatorInPeriod(period, validatorName));
+        if (periodValidator) return periodValidator;
     }
 
-    return Validator.findOne({ name: validatorName });
+    return Validator.findOne({ name: new RegExp(`^${validatorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
 };
 
 validatorController.listValidatorsByPeriod = async (periodId = null) => {
@@ -142,21 +148,14 @@ const buildAcceptedValidatorStringSet = (validator, columnToValidate) => {
         return acceptedValues;
     }
 
-    const descriptionColumn = validator?.columns?.find((column) => {
-        return column.name !== columnToValidate.name && isDescriptionColumn(column.name);
-    });
+    columnToValidate.values.forEach((value) => {
+        const rawText = normalizeComparableText(value).replace(/^\d+[).:\-\s]+\s*/, '').trim();
+        if (!rawText) return;
 
-    columnToValidate.values.forEach((value, index) => {
-        const idText = normalizeComparableText(value);
-        if (!idText) return;
-
-        acceptedValues.add(idText);
-
-        const descriptionValue = descriptionColumn?.values?.[index];
-        const descriptionText = normalizeComparableText(descriptionValue);
-        if (descriptionText) {
-            acceptedValues.add(`${idText} - ${descriptionText}`);
-        }
+        // "CC Cédula de ciudadanía" or "1 Posdoctorado" → accept only "CC" / "1"
+        // Plain text like "Término indefinido" → accept as-is
+        const codeMatch = /^([A-Z0-9]{1,6})\s+.+$/.exec(rawText);
+        acceptedValues.add(codeMatch ? codeMatch[1] : rawText);
     });
 
     return acceptedValues;
@@ -454,26 +453,70 @@ validatorController.getValidators = async (req, res) => {
 
 validatorController.getValidatorOptions = async (req, res) => {
     try {
+        const { periodId } = req.query;
         const options = [
-          { name: 'Funcionarios - Identificación', type: 'Entero' }, 
+          { name: 'Funcionarios - Identificación', type: 'Entero' },
           { name: 'Estudiantes - Código', type: 'Texto Corto' },
           { name: 'Estudiantes - Identificación', type: 'Texto Corto' },
           { name: 'Participantes - Identificación', type: 'Texto Corto' }
         ];
 
-        const validators = await Validator.find({}, {name: 1, columns: 1});
-        
-        const result = validators.flatMap(validator => 
-            validator.columns
-                .filter(column => column.is_validator)
-                .map(column => ({ name: `${validator.name} - ${column.name}`, type: column.type }))
-        );
+        const seenNames = new Set(options.map(o => o.name.split(' - ')[0].trim().toLowerCase()));
 
-        options.push(...result)
+        // Validadores del periodo (tienen prioridad)
+        if (hasPeriodId(periodId) && mongoose.Types.ObjectId.isValid(String(periodId))) {
+            const period = await Period.findById(periodId).select('screenshot.validators');
+            const periodValidators = getPeriodValidators(period);
+            periodValidators.forEach(validator => {
+                const validatorColumns = (validator.columns || []).filter(c => c.is_validator);
+                if (validatorColumns.length === 0 && (validator.columns || []).length > 0) {
+                    // Si ninguna columna está marcada como validadora, usar la primera
+                    const firstCol = validator.columns[0];
+                    const optName = `${validator.name} - ${firstCol.name}`;
+                    const key = validator.name.toLowerCase();
+                    if (!seenNames.has(key)) {
+                        seenNames.add(key);
+                        options.push({ name: optName, type: firstCol.type || 'Texto' });
+                    }
+                } else {
+                    validatorColumns.forEach(column => {
+                        const optName = `${validator.name} - ${column.name}`;
+                        const key = validator.name.toLowerCase();
+                        if (!seenNames.has(key)) {
+                            seenNames.add(key);
+                            options.push({ name: optName, type: column.type });
+                        }
+                    });
+                }
+            });
+        }
 
-        res.status(200).json({ options })
+        // Validadores globales (fallback / complemento)
+        const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
+        globalValidators.forEach(validator => {
+            const key = validator.name.toLowerCase();
+            const validatorColumns = (validator.columns || []).filter(c => c.is_validator);
+            if (validatorColumns.length === 0 && (validator.columns || []).length > 0) {
+                const firstCol = validator.columns[0];
+                const optName = `${validator.name} - ${firstCol.name}`;
+                if (!seenNames.has(key)) {
+                    seenNames.add(key);
+                    options.push({ name: optName, type: firstCol.type || 'Texto' });
+                }
+            } else {
+                validatorColumns.forEach(column => {
+                    const optName = `${validator.name} - ${column.name}`;
+                    if (!seenNames.has(key)) {
+                        seenNames.add(key);
+                        options.push({ name: optName, type: column.type });
+                    }
+                });
+            }
+        });
+
+        res.status(200).json({ options });
     } catch (error) {
-        res.status(error.statusCode || 500).json({ error: error.message })
+        res.status(error.statusCode || 500).json({ error: error.message });
     }
 }
 
@@ -500,15 +543,17 @@ validatorController.getValidatorById = async (req, res) => {
         
         let validator;
         const period = await getPeriodOrThrow(periodId);
-        
-        // Intentar buscar por ObjectId primero
+
         if (period) {
             validator = findValidatorInPeriod(period, id);
-        } else if (id.match(/^[0-9a-fA-F]{24}$/)) {
-            validator = await Validator.findById(id);
-        } else {
-            // Si no es un ObjectId válido, buscar por nombre
-            validator = await Validator.findOne({ name: id });
+        }
+
+        if (!validator) {
+            if (id.match(/^[0-9a-fA-F]{24}$/)) {
+                validator = await Validator.findById(id);
+            } else {
+                validator = await Validator.findOne({ name: new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+            }
         }
         
         if (!validator) {
@@ -603,7 +648,7 @@ validatorController.deleteValidator = async (req, res) => {
 
 validatorController.validateColumn = async (column, periodId = null) => {
   let { values } = column;
-  const { name, datatype, validate_with, required, multiple } = column;
+  let { name, datatype, validate_with, required, multiple } = column;
   let result = { status: true, column: name, errors: [] };
 
 
@@ -708,6 +753,7 @@ validatorController.validateColumn = async (column, periodId = null) => {
   let columnToValidate = null;
   let validValuesSet = null;
   let acceptedStringValuesSet = null;
+  let activeValidationLabel = validate_with;
   const shouldValidateOptionalField = required || values.some((value) => hasMeaningfulValue(value));
 
   if (validate_with && shouldValidateOptionalField) {
@@ -771,13 +817,15 @@ validatorController.validateColumn = async (column, periodId = null) => {
       }
 
       // Si encontramos el validador por columnName, buscar la columna correcta
-      if (validatorName !== validator.name) {
+      if (validatorName !== validator.name || !columnName) {
         // El validador se encontró por columnName, buscar la primera columna que sea validadora
         columnToValidate = validator.columns.find(column => column.is_validator);
         console.log('DEBUG - Buscando primera columna validadora:', columnToValidate ? columnToValidate.name : 'NO ENCONTRADA');
       } else {
         // Búsqueda normal por nombre de columna
-        columnToValidate = validator.columns.find(column => column.name === columnName);
+        columnToValidate = validator.columns.find(column => column.name === columnName)
+          || validator.columns.find(column => column.is_validator)
+          || validator.columns[0];
       }
 
       if (!columnToValidate) {
@@ -789,7 +837,18 @@ validatorController.validateColumn = async (column, periodId = null) => {
 
       validValuesSet = new Set(columnToValidate.values);
       acceptedStringValuesSet = buildAcceptedValidatorStringSet(validator, columnToValidate);
+      activeValidationLabel = `${validator.name} - ${columnToValidate.name}`;
       console.log('DEBUG - Valores válidos para', validatorName, ':', Array.from(validValuesSet).slice(0, 10), '...');
+    }
+  }
+
+  if (!validate_with && shouldValidateOptionalField) {
+    const dropdownOptions = getFieldDropdownOptions(column);
+    if (dropdownOptions.length > 0) {
+      columnToValidate = { type: 'Texto', values: dropdownOptions };
+      validValuesSet = new Set(dropdownOptions);
+      acceptedStringValuesSet = buildAcceptedDropdownOptionSet(dropdownOptions);
+      activeValidationLabel = `${name} (opciones permitidas)`;
     }
   }
 
@@ -798,6 +857,8 @@ validatorController.validateColumn = async (column, periodId = null) => {
       Array.from(validValuesSet).map((item) => normalizeComparableText(item)).filter(Boolean)
     );
   }
+
+  validate_with = activeValidationLabel;
 
   values.forEach((value, index) => {
 const realIndex = index;
@@ -882,10 +943,20 @@ if (columnToValidate && validValuesSet) {
         normalizedVal = normalizeComparableText(valueToNormalize);
       }
 
-      // 🚫 Si no está en el set, es inválido
-      const isValidValue = validatorHasNumbers
+      // Acepta: texto limpio, "N. Texto" (prefijo numérico) o solo "N" (índice 1-basado)
+      let isValidValue = validatorHasNumbers
         ? validValuesSet.has(normalizedVal)
         : acceptedStringValuesSet?.has(normalizedVal);
+
+      if (!isValidValue && !validatorHasNumbers) {
+        const stripped = normalizeComparableText(String(valueToNormalize).replace(/^\s*\d+[).:\-\s]+\s*/, '').trim());
+        if (stripped && stripped !== normalizedVal) isValidValue = !!acceptedStringValuesSet?.has(stripped);
+        if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
+          const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
+          isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
+        }
+      }
+
       if (!isValidValue) {
         result.status = false;
         result.errors.push({
@@ -917,12 +988,23 @@ if (columnToValidate && validValuesSet) {
       } else {
         normalizedVal = normalizeComparableText(valueToNormalize);
       }
-      
+
       console.log('DEBUG - Valor original:', value, 'Valor normalizado:', normalizedVal, 'Tipo validador:', validatorHasNumbers ? 'números' : 'strings');
 
-      const isValidValue = validatorHasNumbers
+      // Acepta: texto limpio, "N. Texto" (prefijo numérico) o solo "N" (índice 1-basado)
+      let isValidValue = validatorHasNumbers
         ? validValuesSet.has(normalizedVal)
         : acceptedStringValuesSet?.has(normalizedVal);
+
+      if (!isValidValue && !validatorHasNumbers) {
+        const stripped = normalizeComparableText(String(valueToNormalize).replace(/^\s*\d+[).:\-\s]+\s*/, '').trim());
+        if (stripped && stripped !== normalizedVal) isValidValue = !!acceptedStringValuesSet?.has(stripped);
+        if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
+          const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
+          isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
+        }
+      }
+
       if (!isValidValue) {
         result.status = false;
         result.errors.push({
@@ -940,6 +1022,333 @@ if (columnToValidate && validValuesSet) {
   return result;
 };
 
+const normalizeValidatorToken = (value = '') =>
+    String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '');
+
+const normalizeReadableLine = (value = '') =>
+    String(value || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const removeLeadingIdToken = (value = '') => normalizeValidatorToken(value).replace(/^ID_+/, '');
+
+const removeSubjectStopWords = (value = '') => {
+    const stopWords = new Set(['DE', 'DEL', 'LA', 'LAS', 'LOS', 'EL']);
+    const tokens = normalizeValidatorToken(value)
+        .split('_')
+        .filter((token) => token && !stopWords.has(token));
+
+    while (['DOCENTE', 'DOCENTES', 'ESTUDIANTE', 'ESTUDIANTES'].includes(tokens[tokens.length - 1])) {
+        tokens.pop();
+    }
+
+    return tokens.join('_');
+};
+
+const looksLikeOptionsMarker = (line = '') => {
+    const marker = normalizeComparableText(line);
+    const hasValueWord =
+        marker.includes('VALORES') ||
+        marker.includes('VALOSR') ||
+        marker.includes('VALOSRES');
+
+    return (
+        marker.endsWith(':') &&
+        hasValueWord &&
+        (
+            marker.includes('VALIDOS') ||
+            marker.includes('POSIBLES') ||
+            marker.includes('PERMITIDOS')
+        )
+    );
+};
+
+const stripCommentMetadata = (line = '') => {
+    const text = normalizeReadableLine(line);
+    if (!text || text === '======' || /^ID#/i.test(text) || /^\(\d{4}-\d{2}-\d{2}/.test(text)) {
+        return '';
+    }
+    return text;
+};
+
+const stripValidationPrefix = (line = '') => {
+    const text = normalizeReadableLine(line).replace(/[.:]\s*$/, '');
+    if (!text) return '';
+
+    const parts = text.split(/\.\s+/).map(normalizeReadableLine).filter(Boolean);
+    const candidate = parts[parts.length - 1] || text;
+    const normalizedCandidate = normalizeComparableText(candidate);
+
+    if (
+        normalizedCandidate.startsWith('OBLIG') ||
+        normalizedCandidate.includes('NUMERICO') ||
+        normalizedCandidate.includes('ALFABETICO') ||
+        normalizedCandidate.includes('ALFANUMERICO') ||
+        normalizedCandidate.includes('TIPO FECHA')
+    ) {
+        return '';
+    }
+
+    return candidate;
+};
+
+const parseStructuredOptionLine = (line = '') => {
+    const text = normalizeReadableLine(line)
+        .replace(/^[-*]\s*/, '')
+        .replace(/^["']+|["']+$/g, '');
+    if (!text) return null;
+
+    const numericMatch = text.match(/^(-?\d+(?:[.,]\d+)?)\s*(?:[.)\-:]\s*)?(.+)$/);
+    if (numericMatch) {
+        const code = numericMatch[1].replace(',', '.').trim();
+        const description = normalizeReadableLine(numericMatch[2]).replace(/^[-:]\s*/, '');
+        if (code && description) return { code, description };
+    }
+
+    const alphaMatch = text.match(/^([A-Za-z0-9]{1,12})\s{2,}(.+)$/)
+        || text.match(/^([A-Z0-9]{1,12})\s+(.+)$/);
+    if (alphaMatch) {
+        const code = alphaMatch[1].trim();
+        const description = normalizeReadableLine(alphaMatch[2]).replace(/^[-:]\s*/, '');
+        if (code && description) return { code, description };
+    }
+
+    return null;
+};
+
+const getCommentOptionSubject = (lines, markerIndex) => {
+    for (let index = markerIndex - 1; index >= 0; index -= 1) {
+        const candidate = stripValidationPrefix(stripCommentMetadata(lines[index]));
+        if (candidate) return candidate;
+    }
+    return '';
+};
+
+const extractStructuredRowsFromComment = (comment = '') => {
+    const rawLines = String(comment || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const markerIndex = rawLines.findIndex((line) => looksLikeOptionsMarker(stripCommentMetadata(line)));
+    if (markerIndex < 0) return { rows: [], subject: '' };
+
+    const subject = getCommentOptionSubject(rawLines, markerIndex);
+    const rows = [];
+    const seen = new Set();
+    let hasReadOption = false;
+
+    for (let index = markerIndex + 1; index < rawLines.length; index += 1) {
+        const line = stripCommentMetadata(rawLines[index]);
+        if (!line) {
+            if (hasReadOption) break;
+            continue;
+        }
+
+        const parsed = parseStructuredOptionLine(line);
+        if (!parsed) {
+            if (hasReadOption && line.includes(':')) break;
+            continue;
+        }
+
+        const key = normalizeComparableText(parsed.code);
+        if (!key || seen.has(key)) continue;
+
+        seen.add(key);
+        rows.push(parsed);
+        hasReadOption = true;
+    }
+
+    return { rows, subject };
+};
+
+const extractStructuredRowsFromListValues = (values = []) => {
+    const rows = [];
+    const seen = new Set();
+
+    values.forEach((item) => {
+        let parsed = null;
+
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+            const code = item.code ?? item.id ?? item.value ?? item.key;
+            const description = item.description ?? item.label ?? item.name ?? item.text;
+            if (code !== undefined && description !== undefined && String(code).trim() !== String(description).trim()) {
+                parsed = {
+                    code: String(code).trim(),
+                    description: normalizeReadableLine(description),
+                };
+            }
+        } else {
+            parsed = parseStructuredOptionLine(item);
+        }
+
+        if (!parsed?.code || !parsed?.description) return;
+
+        const key = normalizeComparableText(parsed.code);
+        if (!key || seen.has(key)) return;
+
+        seen.add(key);
+        rows.push(parsed);
+    });
+
+    return rows;
+};
+
+const getValidatorDropdownOptionValues = (field = {}) => [
+    ...(Array.isArray(field.excel_validation_options) ? field.excel_validation_options : []),
+    ...(Array.isArray(field.validator_options) ? field.validator_options : []),
+    ...(Array.isArray(field.dropdown_options) ? field.dropdown_options : []),
+    ...getFieldDropdownOptions({ comment: field.comment }),
+];
+
+const getValidatorDropdownOptions = (field = {}) => getFieldDropdownOptions({
+    excel_validation_options: [
+        ...(Array.isArray(field.excel_validation_options) ? field.excel_validation_options : []),
+        ...(Array.isArray(field.validator_options) ? field.validator_options : []),
+    ],
+    dropdown_options: Array.isArray(field.dropdown_options) ? field.dropdown_options : [],
+    comment: field.comment,
+});
+
+const extractStructuredValidatorOptions = (field = {}) => {
+    const fromComment = extractStructuredRowsFromComment(field.comment);
+    if (fromComment.rows.length > 0) return fromComment;
+
+    return {
+        rows: extractStructuredRowsFromListValues(getValidatorDropdownOptionValues(field)),
+        subject: '',
+    };
+};
+
+const deriveStructuredValidatorName = (field = {}, subject = '') => {
+    const fieldName = normalizeValidatorToken(field.name);
+    const fieldNameWithoutId = removeLeadingIdToken(fieldName);
+    const subjectName = removeSubjectStopWords(subject);
+
+    if (subjectName && fieldNameWithoutId) {
+        const fieldTokens = fieldNameWithoutId.split('_').filter(Boolean);
+        const subjectTokens = new Set(subjectName.split('_').filter(Boolean));
+        const subjectContainsField = fieldTokens.length > 0 && fieldTokens.every((token) => subjectTokens.has(token));
+        if (subjectContainsField) return fieldNameWithoutId;
+    }
+
+    return subjectName || fieldNameWithoutId || fieldName;
+};
+
+const shouldStoreCodesAsNumbers = (rows = []) =>
+    rows.length > 0 && rows.every((row) => /^-?\d+$/.test(String(row.code || '').trim()));
+
+const castStructuredCode = (code, useNumber) => {
+    const text = String(code || '').trim();
+    if (!useNumber) return text;
+    const numberValue = Number(text);
+    return Number.isSafeInteger(numberValue) ? numberValue : text;
+};
+
+const deriveStructuredCodeColumnName = (field = {}, validatorName = '', rows = []) => {
+    const fieldName = normalizeValidatorToken(field.name);
+    const fieldNameWithoutId = removeLeadingIdToken(fieldName);
+
+    if (shouldStoreCodesAsNumbers(rows)) {
+        return fieldName || `ID_${validatorName}`;
+    }
+
+    if (validatorName.startsWith('TIPO_') || fieldNameWithoutId.startsWith('TIPO_')) {
+        return 'TIPO';
+    }
+
+    return fieldNameWithoutId || fieldName || 'CODIGO';
+};
+
+const buildStructuredValidatorColumns = (field, validatorName, rows) => {
+    const useNumber = shouldStoreCodesAsNumbers(rows);
+
+    return [
+        {
+            name: deriveStructuredCodeColumnName(field, validatorName, rows),
+            is_validator: true,
+            type: useNumber ? 'Entero' : 'Texto Corto',
+            values: rows.map((row) => castStructuredCode(row.code, useNumber)),
+        },
+        {
+            name: 'DESCRIPCION',
+            is_validator: false,
+            type: 'Texto Corto',
+            values: rows.map((row) => row.description),
+        },
+    ];
+};
+
+const getColumnSignature = (columns = []) => JSON.stringify(
+    (columns || []).map((column) => ({
+        name: column.name,
+        is_validator: Boolean(column.is_validator),
+        type: column.type,
+        values: column.values || [],
+    }))
+);
+
+const applyStructuredColumnsToValidator = (validator, nextColumns) => {
+    if (!validator) return false;
+    if (!Array.isArray(validator.columns)) validator.columns = [];
+
+    const currentCodeColumn = validator.columns.find((column) => column.is_validator) || validator.columns[0];
+    const currentDescriptionColumn = validator.columns.find((column) => (
+        currentCodeColumn && column !== currentCodeColumn && isDescriptionColumn(column.name)
+    ));
+
+    if (!currentDescriptionColumn) {
+        const changed = getColumnSignature(validator.columns) !== getColumnSignature(nextColumns);
+        if (changed) validator.columns = nextColumns;
+        return changed;
+    }
+
+    const useNumber = nextColumns[0].type === 'Entero';
+    const merged = new Map();
+
+    (currentCodeColumn.values || []).forEach((value, index) => {
+        const key = normalizeComparableText(value);
+        const description = currentDescriptionColumn.values?.[index];
+        const descriptionText = description === undefined || description === null ? '' : String(description).trim();
+        if (key && descriptionText) {
+            merged.set(key, {
+                code: castStructuredCode(value, useNumber),
+                description: descriptionText,
+            });
+        }
+    });
+
+    (nextColumns[0].values || []).forEach((value, index) => {
+        const key = normalizeComparableText(value);
+        const description = nextColumns[1].values?.[index] || '';
+        if (!key) return;
+
+        merged.set(key, {
+            code: castStructuredCode(value, useNumber),
+            description,
+        });
+    });
+
+    const mergedRows = Array.from(merged.values());
+    const mergedColumns = [
+        {
+            ...nextColumns[0],
+            values: mergedRows.map((row) => row.code),
+        },
+        {
+            ...nextColumns[1],
+            values: mergedRows.map((row) => row.description),
+        },
+    ];
+
+    const changed = getColumnSignature(validator.columns) !== getColumnSignature(mergedColumns);
+    if (changed) validator.columns = mergedColumns;
+    return changed;
+};
+
 validatorController.createValidatorsFromDropdownOptions = async (fields, periodId) => {
     if (!hasPeriodId(periodId)) return;
     if (!mongoose.Types.ObjectId.isValid(String(periodId))) return;
@@ -950,46 +1359,86 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
     if (!period.screenshot) period.screenshot = {};
     if (!Array.isArray(period.screenshot.validators)) period.screenshot.validators = [];
 
-    // Elimina el sufijo " (N)" que agrega makeUnique en el frontend y quita guiones
+    // Elimina solo el sufijo " (N)" que agrega makeUnique en el frontend.
     const sanitizeName = (name) =>
         String(name || '')
             .replace(/\s*\(\d+\)$/, '')
-            .replace(/-/g, ' ')
-            .replace(/\s+/g, ' ')
             .trim();
 
-    const normalizeOptionKey = (value) => String(value || '')
-        .trim()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/\s+/g, ' ')
-        .toLowerCase();
-
     const existingValidatorsByName = new Map(
-        period.screenshot.validators.map((v) => [sanitizeName(v.name).toLowerCase(), v])
+        period.screenshot.validators.flatMap((v) => {
+            const keys = [
+                sanitizeName(v.name).toLowerCase(),
+                normalizeValidatorToken(v.name).toLowerCase(),
+            ].filter(Boolean);
+            return [...new Set(keys)].map((key) => [key, v]);
+        })
     );
 
     let periodModified = false;
 
     for (const field of (fields || [])) {
-        // Solo crear validadores para campos con validación de lista real en Excel
-        const options = Array.isArray(field.excel_validation_options) && field.excel_validation_options.length > 0
-            ? field.excel_validation_options
-            : Array.isArray(field.dropdown_options) && field.dropdown_options.length > 0
-                ? field.dropdown_options
-                : null;
-        if (!options) continue;
+        // Solo crear validadores para campos con lista desplegable real.
+        const structuredOptions = extractStructuredValidatorOptions(field);
+        const options = getValidatorDropdownOptions(field);
+        if (options.length === 0 && structuredOptions.rows.length === 0) continue;
         if (field.validate_with && String(field.validate_with).trim() !== '') continue;
 
+        const hasStructuredOptions = structuredOptions.rows.length > 0;
         const validatorName = sanitizeName(field.name);
+        const legacyValidatorName = hasStructuredOptions
+            ? deriveStructuredValidatorName(field, structuredOptions.subject)
+            : validatorName;
         if (!validatorName) continue;
 
-        const nameLower = validatorName.toLowerCase();
+        const nameLower = sanitizeName(validatorName).toLowerCase();
+        const normalizedNameLower = normalizeValidatorToken(validatorName).toLowerCase();
+
+        if (hasStructuredOptions) {
+            const lookupKeys = [
+                nameLower,
+                normalizedNameLower,
+                sanitizeName(legacyValidatorName).toLowerCase(),
+                normalizeValidatorToken(legacyValidatorName).toLowerCase(),
+                sanitizeName(field.name).toLowerCase(),
+                normalizeValidatorToken(field.name).toLowerCase(),
+            ].filter(Boolean);
+            let existingValidator = lookupKeys.map((key) => existingValidatorsByName.get(key)).find(Boolean);
+            const structuredColumns = buildStructuredValidatorColumns(field, validatorName, structuredOptions.rows);
+
+            if (existingValidator) {
+                if (existingValidator.name !== validatorName) {
+                    existingValidator.name = validatorName;
+                    periodModified = true;
+                }
+
+                if (applyStructuredColumnsToValidator(existingValidator, structuredColumns)) {
+                    periodModified = true;
+                }
+
+                existingValidatorsByName.set(nameLower, existingValidator);
+                existingValidatorsByName.set(normalizedNameLower, existingValidator);
+                continue;
+            }
+
+            const newValidator = new Validator({
+                name: validatorName,
+                columns: structuredColumns,
+            });
+
+            period.screenshot.validators.push(newValidator.toObject());
+            existingValidator = period.screenshot.validators[period.screenshot.validators.length - 1];
+            existingValidatorsByName.set(nameLower, existingValidator);
+            existingValidatorsByName.set(normalizedNameLower, existingValidator);
+            periodModified = true;
+            continue;
+        }
+
         const seenOptions = new Set();
         const cleanOptions = options
             .map((o) => String(o).trim())
             .filter((option) => {
-                const key = normalizeOptionKey(option);
+                const key = normalizeDropdownOptionKey(option);
                 if (!key || seenOptions.has(key)) return false;
                 seenOptions.add(key);
                 return true;
@@ -1002,6 +1451,10 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
             let validatorColumn = existingValidator.columns.find((column) => column.is_validator)
                 || existingValidator.columns.find((column) => sanitizeName(column.name).toLowerCase() === nameLower)
                 || existingValidator.columns[0];
+            const descriptionColumn = existingValidator.columns.find((column) => (
+                validatorColumn && column !== validatorColumn && isDescriptionColumn(column.name)
+            ));
+            if (descriptionColumn) continue;
 
             if (!validatorColumn) {
                 validatorColumn = {
@@ -1014,8 +1467,14 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
             }
 
             if (!Array.isArray(validatorColumn.values)) validatorColumn.values = [];
-            const currentOptionKeys = new Set(validatorColumn.values.map(normalizeOptionKey));
-            const missingOptions = cleanOptions.filter((option) => !currentOptionKeys.has(normalizeOptionKey(option)));
+            // Comparar también por clave sin prefijo numérico para evitar "Presencial" y "1 Presencial" coexistiendo
+            const stripNumericPrefix = (k) => k.replace(/^\d+\s+/, '');
+            const currentOptionKeys = new Set(validatorColumn.values.map(normalizeDropdownOptionKey));
+            const currentOptionKeysClean = new Set([...currentOptionKeys].map(stripNumericPrefix));
+            const missingOptions = cleanOptions.filter((option) => {
+                const key = normalizeDropdownOptionKey(option);
+                return !currentOptionKeys.has(key) && !currentOptionKeysClean.has(stripNumericPrefix(key));
+            });
 
             if (missingOptions.length > 0) {
                 validatorColumn.values.push(...missingOptions);
@@ -1038,6 +1497,7 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 
         period.screenshot.validators.push(newValidator.toObject());
         existingValidatorsByName.set(nameLower, period.screenshot.validators[period.screenshot.validators.length - 1]);
+        existingValidatorsByName.set(normalizedNameLower, period.screenshot.validators[period.screenshot.validators.length - 1]);
         periodModified = true;
     }
 
@@ -1144,31 +1604,56 @@ validatorController.getValidatorOptions = async (req, res) => {
             }
         ];
 
-        const validators = hasPeriodId(periodId)
-            ? await validatorController.listValidatorsByPeriod(periodId)
-            : await Validator.find({}, { name: 1, columns: 1 });
-        const dynamicOptions = validators.flatMap((validator) =>
-            validator.columns
-                .filter((column) => column.is_validator)
-                .map((column) => ({
-                    name: `${validator.name} - ${column.name}`,
-                    type: column.type,
-                    validator_name: validator.name,
-                    column_name: column.name,
-                    columns: validator.columns.map((validatorColumn) => validatorColumn.name),
-                    preview_values: (column.values || [])
-                        .map((value) => {
-                            if (value === null || value === undefined) return '';
-                            if (typeof value === 'object') {
-                                if (value.value !== undefined) return String(value.value);
-                                return JSON.stringify(value);
-                            }
-                            return String(value);
-                        })
-                        .filter(Boolean)
-                        .slice(0, 8),
-                }))
-        );
+        // Combinar validadores del periodo Y globales (periodo tiene prioridad, sin duplicados)
+        const seenValidatorNames = new Set();
+        const allValidators = [];
+
+        if (hasPeriodId(periodId) && mongoose.Types.ObjectId.isValid(String(periodId))) {
+            const periodValidators = await validatorController.listValidatorsByPeriod(periodId);
+            (periodValidators || []).filter(Boolean).forEach(v => {
+                const key = String(v.name || '').trim().toLowerCase();
+                if (key && !seenValidatorNames.has(key)) {
+                    seenValidatorNames.add(key);
+                    allValidators.push(v);
+                }
+            });
+        }
+
+        const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
+        (globalValidators || []).filter(Boolean).forEach(v => {
+            const key = String(v.name || '').trim().toLowerCase();
+            if (key && !seenValidatorNames.has(key)) {
+                seenValidatorNames.add(key);
+                allValidators.push(v);
+            }
+        });
+
+        const dynamicOptions = allValidators.filter(Boolean).flatMap((validator) => {
+            if (!validator.name || !Array.isArray(validator.columns)) return [];
+            const validatorCols = validator.columns.filter((column) => column && column.is_validator);
+            // Si ninguna columna está marcada como validadora, usar la primera columna disponible
+            const colsToUse = validatorCols.length > 0 ? validatorCols : (validator.columns || []).slice(0, 1);
+            return colsToUse.map((column) => ({
+                name: column.name.trim().toLowerCase() === validator.name.trim().toLowerCase()
+                    ? validator.name
+                    : `${validator.name} - ${column.name}`,
+                type: column.type,
+                validator_name: validator.name,
+                column_name: column.name,
+                columns: (validator.columns || []).map((validatorColumn) => validatorColumn.name),
+                preview_values: (column.values || [])
+                    .map((value) => {
+                        if (value === null || value === undefined) return '';
+                        if (typeof value === 'object') {
+                            if (value.value !== undefined) return String(value.value);
+                            return JSON.stringify(value);
+                        }
+                        return String(value);
+                    })
+                    .filter(Boolean)
+                    .slice(0, 8),
+            }));
+        });
 
         res.status(200).json({ options: [...options, ...dynamicOptions] });
     } catch (error) {

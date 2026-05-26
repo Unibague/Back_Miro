@@ -10,6 +10,8 @@ const getRootFolderId = () => {
     return rootFolderId;
 };
 
+const getSharedDriveId = () => process.env.DRIVE_ID || null;
+
 const getKeyFile = () => {
     const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
     if (!keyFile) {
@@ -33,22 +35,31 @@ function getDriveClient() {
 async function getOrCreateFolder(drive, nombre, parentId) {
     const folderName = String(nombre ?? '').trim();
     if (!folderName) return parentId;
+    const driveId = getSharedDriveId();
 
-    const res = await drive.files.list({
+    const listParams = {
         q: `name='${escapeDriveQueryValue(folderName)}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`,
         fields: 'files(id, name)',
-        spaces: 'drive',
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
-    });
+    };
+    if (driveId) {
+        listParams.driveId = driveId;
+        listParams.corpora = 'drive';
+    }
+
+    const res = await drive.files.list(listParams);
     if (res.data.files.length > 0) return res.data.files[0].id;
 
+    const folderBody = {
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId],
+    };
+    if (driveId) folderBody.driveId = driveId;
+
     const created = await drive.files.create({
-        requestBody: {
-            name: folderName,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: [parentId],
-        },
+        requestBody: folderBody,
         fields: 'id',
         supportsAllDrives: true,
     });
@@ -79,11 +90,15 @@ async function uploadFile(buffer, nombreOriginal, mimetype, jerarquia = {}) {
     const drive = getDriveClient();
     const folderId = await resolverJerarquia(drive, jerarquia);
 
+    const driveId = getSharedDriveId();
+    const fileBody = {
+        name: nombreOriginal,
+        parents: [folderId],
+    };
+    if (driveId) fileBody.driveId = driveId;
+
     const res = await drive.files.create({
-        requestBody: {
-            name: nombreOriginal,
-            parents: [folderId],
-        },
+        requestBody: fileBody,
         media: {
             mimeType: mimetype,
             body: Readable.from(buffer),

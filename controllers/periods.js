@@ -116,7 +116,7 @@ periodController.updateScreenshotsJob = async () => {
   const currentDate = new Date();
 
   try {
-    const periods = await Period.find({ producer_end_date: { $gt: currentDate } });
+    const periods = await Period.find({ end_date: { $gt: currentDate } });
 
     for (const period of periods) {
       const users = await User.find({ isActive: true });
@@ -146,30 +146,6 @@ periodController.updatePeriod = async (req, res) => {
         const updatedPeriod = await Period.findByIdAndUpdate(id, req.body, { new: true });
         if (!updatedPeriod) {
             return res.status(404).json({ error: "Period not found" });
-        }
-
-        // Si se actualizó producer_end_date, actualizar deadline de plantillas y reportes de productores
-        if (req.body.producer_end_date) {
-            await Promise.all([
-                PublishedTemplate.updateMany(
-                    { period: id },
-                    { deadline: req.body.producer_end_date }
-                ),
-                PublishedProducerReport.updateMany(
-                    { period: id },
-                    { deadline: req.body.producer_end_date }
-                )
-            ]);
-            console.log(`✅ Actualizado deadline de plantillas y reportes productores para periodo ${id}`);
-        }
-
-        // Si se actualizó responsible_end_date, actualizar deadline de reportes de responsables
-        if (req.body.responsible_end_date) {
-            await PublishedReport.updateMany(
-                { period: id },
-                { deadline: req.body.responsible_end_date }
-            );
-            console.log(`✅ Actualizado deadline de reportes responsables para periodo ${id}`);
         }
 
         res.status(200).json(updatedPeriod);

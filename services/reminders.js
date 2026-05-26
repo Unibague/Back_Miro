@@ -304,6 +304,52 @@ ${tipo === "informe" ? `
   });
 },
 
+sendUploadNotificationEmail: async function (to, nombreResponsable, nombrePlantilla, nombreDependencia, nombreProductor, fechaCarga) {
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.pepipost.com',
+    port: 587,
+    secure: false,
+    auth: {
+      user: process.env.REMINDER_EMAIL,
+      pass: process.env.REMINDER_PASS
+    },
+    tls: { rejectUnauthorized: false }
+  });
+
+  const fechaFormateada = dayjs(fechaCarga).format('DD/MM/YYYY HH:mm');
+
+  await transporter.sendMail({
+    from: `"${process.env.MAIL_FROM_NAME}" <${process.env.MAIL_FROM_ADDRESS}>`,
+    to,
+    subject: `📥 Nueva información cargada en: ${nombrePlantilla}`,
+    html: `
+<div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; max-width: 600px; margin: auto; background-color: #f9f9f9; border-radius: 8px; border: 1px solid #ddd;">
+  <div style="text-align: left;">
+    <img src="https://miro.unibague.edu.co/MIRO.png" alt="Logo Miró" width="64" height="64" />
+  </div>
+  <h2 style="color: #1d3557;">Nueva información cargada</h2>
+  <p style="font-size: 16px;">Hola <strong>${nombreResponsable}</strong>,</p>
+  <p style="font-size: 16px;">
+    La dependencia <strong>${nombreDependencia}</strong> (${nombreProductor}) ha cargado información en la plantilla:
+  </p>
+  <div style="background: #e8f4fd; border-left: 4px solid #457b9d; padding: 12px 16px; border-radius: 4px; margin: 16px 0;">
+    <strong style="font-size: 17px;">${nombrePlantilla}</strong><br/>
+    <span style="color: #6c757d; font-size: 14px;">Fecha de carga: ${fechaFormateada}</span>
+  </div>
+  <div style="margin: 24px 0; text-align: center;">
+    <a href="https://miro.unibague.edu.co"
+       style="background-color: #457b9d; color: white; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-weight: bold;">
+      Ver en la plataforma
+    </a>
+  </div>
+  <p style="font-size: 14px; color: #6c757d;">Este mensaje fue generado automáticamente. Si tiene alguna inquietud, escriba a direcciondeplaneacion@unibague.edu.co</p>
+  <hr style="border: none; border-top: 1px solid #ccc; margin: 30px 0;">
+  <p style="font-size: 14px; text-align: center; color: #999;">— Equipo Miró</p>
+</div>
+    `
+  });
+},
+
 };
 
 

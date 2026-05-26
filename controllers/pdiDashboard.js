@@ -215,7 +215,12 @@ ctrl.corte = async (req, res) => {
 
         for (const ind of indicadores) {
             const p = ind.periodos.find(x => x.periodo === periodo);
-            if (p) {
+            // Solo considerar indicadores que tienen meta definida para este periodo
+            if (!p || p.meta == null || p.meta === '') continue;
+            const estadoReporte = p.estado_reporte || 'Borrador';
+            const tieneReporteEnviado = p.fecha_envio != null || estadoReporte !== 'Borrador';
+
+            if (tieneReporteEnviado) {
                 conPeriodo.push({
                     _id:     ind._id,
                     codigo:  ind.codigo,
@@ -225,7 +230,7 @@ ctrl.corte = async (req, res) => {
                     avance:             p.avance,
                     meta:               p.meta,
                     semaforo:           getSemaforo(p.avance ?? 0),
-                    estado_reporte:     p.estado_reporte,
+                    estado_reporte:     estadoReporte,
                     fecha_envio:        p.fecha_envio,
                     tiene_alertas:      !!(p.alertas && p.alertas.trim()),
                     tiene_retrasos:     !!(p.justificacion_retrasos && p.justificacion_retrasos.trim()),
@@ -245,6 +250,8 @@ ctrl.corte = async (req, res) => {
             }
         }
 
+        const totalConMeta = conPeriodo.length + sinPeriodo.length;
+
         // Conteo por estado de reporte
         const estadosReporte = conPeriodo.reduce((acc, i) => {
             acc[i.estado_reporte] = (acc[i.estado_reporte] || 0) + 1;
@@ -253,11 +260,11 @@ ctrl.corte = async (req, res) => {
 
         res.json({
             periodo,
-            total_indicadores:     indicadores.length,
+            total_indicadores:     totalConMeta,
             con_reporte:           conPeriodo.length,
             sin_reporte:           sinPeriodo.length,
-            porcentaje_cobertura:  indicadores.length > 0
-                ? Math.round((conPeriodo.length / indicadores.length) * 100)
+            porcentaje_cobertura:  totalConMeta > 0
+                ? Math.round((conPeriodo.length / totalConMeta) * 100)
                 : 0,
             estados_reporte: estadosReporte,
             semaforos:       contarSemaforos(conPeriodo.map(i => ({ avance: i.avance ?? 0 }))),

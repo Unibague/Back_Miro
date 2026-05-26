@@ -177,6 +177,27 @@ const templateSchema = new Schema({
     allows_qr: {
       type: Boolean,
       default: false
+    },
+    fecha_inicio: {
+      type: Date,
+      required: false
+    },
+    fecha_final_productores: {
+      type: Date,
+      required: false
+    },
+    fecha_final_responsables: {
+      type: Date,
+      required: false
+    },
+    responsible_producers: {
+      type: [Schema.Types.ObjectId],
+      ref: 'dependencies',
+      default: []
+    },
+    fecha_final: {
+      type: Date,
+      required: false
     }
 },
 {
