@@ -384,7 +384,7 @@ ctrl.deleteDocumentoFinal = async (req, res) => {
 ctrl.uploadDocumentoFinal = async (req, res) => {
     const files = req.files?.length ? req.files : (req.file ? [req.file] : []);
     try {
-        if (!files.length) return res.status(400).json({ error: 'No se recibio ningun archivo PDF' });
+        if (!files.length) return res.status(400).json({ error: 'No se recibio ningun archivo' });
 
         const doc = await Respuesta.findById(req.params.respuestaId);
         if (!doc) {

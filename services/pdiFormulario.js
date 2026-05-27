@@ -467,7 +467,7 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden avalar respuestas enviadas');
     doc.estado_aval     = estado_aval;
     doc.aval_por        = aval_por ?? '';
-    doc.aval_comentario = aval_comentario ?? '';
+    doc.aval_comentario = estado_aval === 'Rechazado' ? (aval_comentario ?? '') : '';
     doc.aval_fecha      = new Date();
     // Al rechazar, el responsable debe corregir y re-enviar
     if (estado_aval === 'Rechazado') {

@@ -85,6 +85,17 @@ const normalizeSystemCode = (value) => String(value || '')
   .replace(/[^A-Z0-9-]/g, '')
   .trim();
 
+const extractProjectCodeFromActionCode = (value) => {
+  const match = normalizeSystemCode(value).match(/^(M\d+)-P(\d+)/);
+  return match ? `${match[1]}-P${Number(match[2])}` : '';
+};
+
+const cleanCellText = (value) => String(value || '')
+  .replace(/[ \t]+/g, ' ')
+  .replace(/\r\n/g, '\n')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
 const cleanHierarchyName = (value) => normalizeText(
   String(value || '')
     .replace(/^macroproyecto\s*\d+\s*[:.-]?\s*/i, '')
@@ -127,12 +138,33 @@ const buildImportedCausedByProject = (acciones = []) => {
   return byProject;
 };
 
+const buildImportedCausedByAction = (acciones = []) => {
+  const byAction = new Map();
+
+  for (const accion of acciones) {
+    const actionCode = normalizeSystemCode(accion.codigo);
+    if (!actionCode) continue;
+
+    let gasto = Number(accion.gasto) || 0;
+    let inversion = Number(accion.inversion) || 0;
+    const total = gasto + inversion || Number(accion.presupuesto_ejecutado) || 0;
+    if (!total) continue;
+
+    if (!gasto && !inversion) gasto = total;
+    byAction.set(actionCode, { gasto, inversion, causado: gasto + inversion });
+  }
+
+  return byAction;
+};
+
 const buildSystemIndex = (macros = [], proyectos = [], acciones = []) => {
   const macroByName = new Map();
   const macroByNumber = new Map();
   const projectByName = new Map();
   const projectByNumber = new Map();
+  const projectByCode = new Map();
   const importedCausedByProject = buildImportedCausedByProject(acciones);
+  const importedCausedByAction = buildImportedCausedByAction(acciones);
 
   for (const macro of macros) {
     const code = normalizeSystemCode(macro.codigo);
@@ -146,11 +178,12 @@ const buildSystemIndex = (macros = [], proyectos = [], acciones = []) => {
     const code = normalizeSystemCode(proyecto.codigo);
     const number = extractProjectNumber(code.replace(/^M/, '').replace('-P', '.'));
     const name = cleanHierarchyName(proyecto.nombre);
+    if (code && !projectByCode.has(code)) projectByCode.set(code, proyecto);
     if (name && !projectByName.has(name)) projectByName.set(name, proyecto);
     if (number && !projectByNumber.has(number)) projectByNumber.set(number, proyecto);
   }
 
-  return { macroByName, macroByNumber, projectByName, projectByNumber, importedCausedByProject };
+  return { macroByName, macroByNumber, projectByName, projectByNumber, projectByCode, importedCausedByProject, importedCausedByAction };
 };
 
 const resolveByName = (map, label) => {
@@ -176,6 +209,8 @@ const resolveMacro = (systemIndex, ...labels) => {
 
 const resolveProject = (systemIndex, ...labels) => {
   for (const label of labels) {
+    const projectCode = extractProjectCodeFromActionCode(label) || normalizeSystemCode(label);
+    if (projectCode && systemIndex.projectByCode?.has(projectCode)) return systemIndex.projectByCode.get(projectCode);
     const number = extractProjectNumber(label);
     if (number && systemIndex.projectByNumber.has(number)) return systemIndex.projectByNumber.get(number);
     const byName = resolveByName(systemIndex.projectByName, label);
@@ -187,6 +222,74 @@ const resolveProject = (systemIndex, ...labels) => {
 const macroSystemLabel = (macro, fallback) => (
   macro?.codigo ? `${macro.codigo} - ${macro.nombre || ''}`.trim() : fallback
 );
+
+const detailProjectNameKey = (value) => {
+  const cleaned = cleanHierarchyName(value);
+  return cleaned ? `project:${cleaned}` : '';
+};
+
+const pushDetail = (map, key, detail) => {
+  if (!key) return;
+  const current = map.get(key) || [];
+  current.push(detail);
+  map.set(key, current);
+};
+
+const getDetailsForProject = (detailsByProject, projectCode, rawProject) => {
+  if (!detailsByProject) return [];
+
+  const keys = [
+    normalizeSystemCode(projectCode),
+    detailProjectNameKey(rawProject),
+  ].filter(Boolean);
+
+  const seen = new Set();
+  const details = [];
+
+  for (const key of keys) {
+    for (const detail of detailsByProject.get(key) || []) {
+      const detailKey = detail.rowIndex || `${detail.autorizacion}|${detail.codificacion}|${detail.valor}`;
+      if (seen.has(detailKey)) continue;
+      seen.add(detailKey);
+      details.push(detail);
+    }
+  }
+
+  return details;
+};
+
+const distributeImportedCaused = (details, amount, field) => {
+  if (!details.length || !amount) return;
+
+  const totalValue = details.reduce((acc, detail) => acc + (Number(detail.valor) || 0), 0);
+  const equalAmount = amount / details.length;
+
+  for (const detail of details) {
+    const weight = totalValue > 0 ? (Number(detail.valor) || 0) / totalValue : 0;
+    detail[field] += totalValue > 0 ? amount * weight : equalAmount;
+    detail.causado = detail.causadoGasto + detail.causadoInversion;
+  }
+};
+
+const applyImportedCausedByAction = (detailsByAction, importedCausedByAction) => {
+  if (!importedCausedByAction) return;
+
+  for (const [actionCode, details] of detailsByAction.entries()) {
+    const imported = importedCausedByAction.get(actionCode);
+    if (!imported?.causado) continue;
+    if (details.some((detail) => detail.causado > 0 || detail.causadoGasto > 0 || detail.causadoInversion > 0)) {
+      continue;
+    }
+
+    const gastoDetails = details.filter((detail) => !normalizeText(detail.tipo).includes('inversion'));
+    const inversionDetails = details.filter((detail) => normalizeText(detail.tipo).includes('inversion'));
+    const gasto = imported.gasto || (!imported.inversion ? imported.causado : 0);
+    const inversion = imported.inversion || 0;
+
+    distributeImportedCaused(gastoDetails.length ? gastoDetails : details, gasto, 'causadoGasto');
+    distributeImportedCaused(inversionDetails.length ? inversionDetails : details, inversion, 'causadoInversion');
+  }
+};
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 // Estructura real de la hoja:
@@ -266,7 +369,73 @@ const parseAuthorizationRows = (rows) => {
   return Object.values(groups);
 };
 
-const parseProjectSummaryRows = (rows, headers, systemIndex) => {
+const parseBudgetDetailsRows = (rows, systemIndex) => {
+  if (rows.length < 2) return new Map();
+
+  const headers = rows[0] || [];
+  const colAutorizacion = findCol(headers, ['n autorizacion', 'numero autorizacion'], 0);
+  const colMacro        = findCol(headers, ['centro de costo', 'macroproyecto', 'macro'], 1);
+  const colProyecto     = findCol(headers, ['proyecto'], 2, { exact: true });
+  const colCodificacion = findCol(headers, ['codificacion', 'codigo'], 3);
+  const colAccion       = findCol(headers, ['accion estrategica'], 4);
+  const colTipo         = findCol(headers, ['tipo'], 5, { exact: true });
+  const colTercero      = findCol(headers, ['tercero proveedor', 'contratista'], 7);
+  const colDescripcion  = findCol(headers, ['descripcion'], 8);
+  const colResponsable  = findCol(headers, ['responsable del activo'], 9);
+  const colDocumentos   = findCol(headers, ['documentos'], 10);
+  const colValor        = findCol(headers, ['valor'], 11, { exact: true });
+  const colCausGasto    = findCol(headers, ['causado gasto'], 21);
+  const colCausInv      = findCol(headers, ['causado inversion'], 22);
+
+  const detailsByProject = new Map();
+  const detailsByAction = new Map();
+
+  for (let index = 1; index < rows.length; index += 1) {
+    const row = rows[index] || [];
+    const rawProject = cleanCellText(row[colProyecto]);
+    const codificacion = cleanCellText(row[colCodificacion]);
+    const descripcion = cleanCellText(row[colDescripcion]);
+    const accionEstrategica = cleanCellText(row[colAccion]);
+    const valor = normalizeNum(row[colValor]);
+    const causadoGasto = normalizeNum(row[colCausGasto]);
+    const causadoInversion = normalizeNum(row[colCausInv]);
+
+    if (!rawProject && !codificacion && !descripcion && !valor && !causadoGasto && !causadoInversion) {
+      continue;
+    }
+
+    const proyecto = resolveProject(systemIndex, rawProject, codificacion);
+    const projectCode = normalizeSystemCode(proyecto?.codigo || extractProjectCodeFromActionCode(codificacion));
+    const detail = {
+      rowIndex: index + 1,
+      autorizacion: cleanCellText(row[colAutorizacion]),
+      macroproyecto: cleanCellText(row[colMacro]),
+      proyecto: proyecto?.nombre || rawProject,
+      proyectoCodigo: projectCode,
+      codificacion,
+      accionEstrategica,
+      tipo: cleanCellText(row[colTipo]),
+      tercero: cleanCellText(row[colTercero]),
+      descripcion,
+      responsableActivo: cleanCellText(row[colResponsable]),
+      documentos: cleanCellText(row[colDocumentos]),
+      valor,
+      causadoGasto,
+      causadoInversion,
+      causado: causadoGasto + causadoInversion,
+    };
+
+    pushDetail(detailsByProject, projectCode, detail);
+    pushDetail(detailsByProject, detailProjectNameKey(rawProject), detail);
+    pushDetail(detailsByAction, normalizeSystemCode(codificacion), detail);
+  }
+
+  applyImportedCausedByAction(detailsByAction, systemIndex.importedCausedByAction);
+
+  return detailsByProject;
+};
+
+const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject) => {
   const colCentro        = findCol(headers, ['centro de costo'], 0);
   const colMacro         = findCol(headers, ['macroproyecto'], 1, { exact: true });
   const colProyecto      = findCol(headers, ['proyecto'], 2, { exact: true });
@@ -316,10 +485,12 @@ const parseProjectSummaryRows = (rows, headers, systemIndex) => {
       }
     }
 
+    const codificacion = proyecto?.codigo || '';
+
     return {
       macroproyecto: macroSystemLabel(macro, rawMacro),
       proyecto: proyecto?.nombre || rawProject,
-      codificacion: proyecto?.codigo || '',
+      codificacion,
       presupuesto: valueOrSplit(row[colPresTotal], presupuestoGasto, presupuestoInversion),
       presupuestoGasto,
       presupuestoInversion,
@@ -331,18 +502,19 @@ const parseProjectSummaryRows = (rows, headers, systemIndex) => {
       causado,
       autorizaciones: normalizeNum(row[colAutorizacion]),
       rowIndex: index + 2,
+      detalles: getDetailsForProject(detailsByProject, codificacion, rawProject),
     };
   }).filter(Boolean);
 };
 
-const parseRows = (rows, systemIndex = buildSystemIndex()) => {
+const parseRows = (rows, systemIndex = buildSystemIndex(), detailsByProject = new Map()) => {
   if (rows.length < 2) return [];
   const headers = rows[0] || [];
   const hasProjectSummary = findCol(headers, ['total presupuesto'], -1) !== -1
     && findCol(headers, ['total comprometido'], -1) !== -1;
 
   return hasProjectSummary
-    ? parseProjectSummaryRows(rows, headers, systemIndex)
+    ? parseProjectSummaryRows(rows, headers, systemIndex, detailsByProject)
     : parseAuthorizationRows(rows);
 };
 
@@ -363,10 +535,17 @@ controller.getData = async (req, res) => {
       return res.status(200).json(cache.data);
     }
 
-    const [response, macros, proyectos, accionesConCausado] = await Promise.all([
+    const [summaryResponse, detailResponse, macros, proyectos, accionesConCausado] = await Promise.all([
       sheetsService.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
         range: 'Proyecto 2026!A:Z',
+      }),
+      sheetsService.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: 'PDI!A:W',
+      }).catch((error) => {
+        console.warn('No se pudo leer el detalle PDI:', error.message);
+        return { data: { values: [] } };
       }),
       Macroproyecto.find({}, 'codigo nombre').lean(),
       Proyecto.find({}, 'codigo nombre').lean(),
@@ -378,14 +557,17 @@ controller.getData = async (req, res) => {
             { inversion: { $gt: 0 } },
           ],
         },
-        'gasto inversion presupuesto_ejecutado proyecto_id'
+        'codigo gasto inversion presupuesto_ejecutado proyecto_id'
       )
         .populate('proyecto_id', 'codigo')
         .lean(),
     ]);
 
-    const rows = response.data.values || [];
-    const parsed = parseRows(rows, buildSystemIndex(macros, proyectos, accionesConCausado));
+    const rows = summaryResponse.data.values || [];
+    const detailRows = detailResponse.data.values || [];
+    const systemIndex = buildSystemIndex(macros, proyectos, accionesConCausado);
+    const detailsByProject = parseBudgetDetailsRows(detailRows, systemIndex);
+    const parsed = parseRows(rows, systemIndex, detailsByProject);
 
     const totals = parsed.reduce(
       (acc, r) => ({
@@ -412,6 +594,44 @@ controller.getData = async (req, res) => {
       message: 'Error al leer la hoja de presupuesto.',
       error: error.message,
     });
+  }
+};
+
+// Retorna los códigos de macroproyecto ligados al usuario y si es líder de alguno
+controller.getUserMacros = async (req, res) => {
+  const email = String(req.query.email || '').toLowerCase().trim();
+  if (!email) return res.json({ codes: [], isLider: false });
+
+  try {
+    const codes = new Set();
+    let isLider = false;
+
+    // Líder de macroproyecto
+    const macrosLider = await Macroproyecto.find(
+      { lider_email: email }, 'codigo'
+    ).lean();
+    if (macrosLider.length > 0) {
+      isLider = true;
+      macrosLider.forEach((m) => { if (m.codigo) codes.add(m.codigo.trim()); });
+    }
+
+    // Responsable de proyecto → obtener el macroproyecto del proyecto
+    const proyectos = await Proyecto.find(
+      { responsable_email: email }, 'macroproyecto_id'
+    ).lean();
+    if (proyectos.length > 0) {
+      const macroIds = proyectos.map((p) => p.macroproyecto_id).filter(Boolean);
+      if (macroIds.length > 0) {
+        const macros = await Macroproyecto.find(
+          { _id: { $in: macroIds } }, 'codigo'
+        ).lean();
+        macros.forEach((m) => { if (m.codigo) codes.add(m.codigo.trim()); });
+      }
+    }
+
+    return res.json({ codes: [...codes], isLider });
+  } catch (err) {
+    return res.status(500).json({ codes: [], isLider: false, error: err.message });
   }
 };
 

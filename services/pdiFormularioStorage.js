@@ -20,20 +20,30 @@ const storage = multer.diskStorage({
 });
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
-const ALLOWED_PDF_MIMETYPES = new Set([
+const ALLOWED_MIMETYPES = new Set([
     'application/pdf',
     'application/x-pdf',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-excel',
+    'image/jpeg',
+    'image/png',
+]);
+
+const ALLOWED_BINARY_MIMETYPES = new Set([
     'application/octet-stream',
     'binary/octet-stream',
 ]);
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png']);
 
 const fileFilter = (_req, file, cb) => {
-    const isPdf = ALLOWED_PDF_MIMETYPES.has(file.mimetype) ||
-                  file.originalname.toLowerCase().endsWith('.pdf');
-    if (isPdf) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = ALLOWED_MIMETYPES.has(file.mimetype) ||
+        (ALLOWED_BINARY_MIMETYPES.has(file.mimetype) && ALLOWED_EXTENSIONS.has(ext)) ||
+        ALLOWED_EXTENSIONS.has(ext);
+    if (allowed) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten archivos PDF'), false);
+        cb(new Error('Solo se permiten archivos PDF, Excel (.xlsx, .xls) e imagenes (.jpg, .jpeg, .png)'), false);
     }
 };
 
