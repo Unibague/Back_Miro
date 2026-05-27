@@ -8,6 +8,7 @@ const campoPdiSchema = new mongoose.Schema({
     orden:                { type: Number, default: 0 },
     min_caracteres:                { type: Number, default: null, min: 0 },
     max_caracteres:                { type: Number, default: null, min: 1 },
+    justificacion_descripcion:     { type: String, default: '' },
     justificacion_min_caracteres:  { type: Number, default: null, min: 0 },
     justificacion_max_caracteres:  { type: Number, default: null, min: 1 },
     opciones:                      { type: [String], default: [] },
