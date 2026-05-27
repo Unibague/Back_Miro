@@ -4,6 +4,7 @@ const Indicador       = require('../models/pdiIndicador');
 const Accion          = require('../models/pdiAccionEstrategica');
 const Proyecto        = require('../models/pdiProyecto');
 const Macroproyecto   = require('../models/pdiMacroproyecto');
+const RazonRechazo    = require('../models/pdiRazonRechazo');
 const fs              = require('fs/promises');
 const path            = require('path');
 const { deleteFile, UPLOAD_DIR, buildUrl } = require('./pdiFormularioStorage');
@@ -25,6 +26,20 @@ const ensureUniqueIndicator = async (indicador_id, excludeId = null) => {
     if (existing) {
         throw new Error('Ya existe un formulario para este indicador');
     }
+};
+
+const normalizeAvalRazones = async (razones = []) => {
+    const values = Array.isArray(razones)
+        ? razones.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : [];
+
+    const ids = values.filter((value) => /^[a-f0-9]{24}$/i.test(value));
+    if (ids.length === 0) return values;
+
+    const docs = await RazonRechazo.find({ _id: { $in: ids } }).select('texto').lean();
+    const labelsById = new Map(docs.map((doc) => [String(doc._id), doc.texto]));
+
+    return values.map((value) => labelsById.get(value) ?? value);
 };
 
 const getAll = async ({ indicador_id, activo } = {}) => {
@@ -461,13 +476,18 @@ const deleteRespuesta = async (id) => {
 };
 
 // Aprueba o rechaza una respuesta (solo el lider del macroproyecto)
-const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentario }) => {
+const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual }) => {
     const doc = await Respuesta.findById(respuestaId);
     if (!doc) throw new Error('Respuesta no encontrada');
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden avalar respuestas enviadas');
+    const razonesNormalizadas = estado_aval === 'Rechazado'
+        ? await normalizeAvalRazones(aval_razones)
+        : [];
     doc.estado_aval     = estado_aval;
     doc.aval_por        = aval_por ?? '';
     doc.aval_comentario = estado_aval === 'Rechazado' ? (aval_comentario ?? '') : '';
+    doc.aval_razones    = razonesNormalizadas;
+    doc.aval_otro_cual  = estado_aval === 'Rechazado' ? (aval_otro_cual ?? '') : '';
     doc.aval_fecha      = new Date();
     // Al rechazar, el responsable debe corregir y re-enviar
     if (estado_aval === 'Rechazado') {
@@ -485,6 +505,36 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     return doc;
 };
 
+// Evalúa una respuesta como Planeación (segundo nivel, después de aprobación del líder)
+const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
+    const doc = await Respuesta.findById(respuestaId);
+    if (!doc) throw new Error('Respuesta no encontrada');
+    if (doc.estado_aval !== 'Aprobado') throw new Error('Solo se pueden evaluar respuestas aprobadas por el líder');
+    if (!['Validado', 'Devuelto'].includes(estado)) throw new Error('estado debe ser Validado o Devuelto');
+    doc.aval_planeacion            = estado;
+    doc.aval_planeacion_por        = por ?? '';
+    doc.aval_planeacion_comentario = comentario ?? '';
+    doc.aval_planeacion_fecha      = new Date();
+    if (estado === 'Devuelto') {
+        doc.estado         = 'Borrador';
+        doc.fecha_envio    = null;
+        doc.estado_aval    = null;
+        doc.aval_razones   = [];
+        doc.aval_otro_cual = '';
+        await doc.save();
+        await syncPeriodoReporte({
+            indicador_id:   doc.indicador_id,
+            corte:          doc.corte,
+            estado_reporte: 'Borrador',
+            reportado_por:  '',
+            fecha_envio:    null,
+        });
+    } else {
+        await doc.save();
+    }
+    return doc;
+};
+
 // Retorna todas las respuestas pendientes de aval para un lider
 const getRespuestasPendientesAval = async (lider_email) => {
     return Respuesta.find({ lider_email_aval: lider_email.toLowerCase().trim(), estado_aval: 'Pendiente' })
@@ -496,5 +546,5 @@ const getRespuestasPendientesAval = async (lider_email) => {
 module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
-    avalRespuesta, getRespuestasPendientesAval, getLiderEmailForIndicador,
+    avalRespuesta, avalPlaneacion, getRespuestasPendientesAval, getLiderEmailForIndicador,
 };

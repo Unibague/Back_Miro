@@ -17,7 +17,8 @@ router.get('/respuestas/lider-email-indicador',    ctrl.getLiderEmailIndicador);
 router.get('/:id/respuestas',                    ctrl.getRespuestas);
 router.get('/:id/respuestas/:respuestaId',        ctrl.getRespuestaById);
 router.post('/:id/respuestas',                   ctrl.upsertRespuesta);
-router.put('/:id/respuestas/:respuestaId/aval',  ctrl.avalRespuesta);
+router.put('/:id/respuestas/:respuestaId/aval',        ctrl.avalRespuesta);
+router.put('/:id/respuestas/:respuestaId/planeacion',  ctrl.avalPlaneacion);
 router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 
 // ── Documento de evidencia (PDF o Word) ligado a la respuesta ─────────────

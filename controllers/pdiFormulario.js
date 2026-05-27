@@ -194,11 +194,25 @@ ctrl.upsertRespuesta = async (req, res) => {
 // PUT /pdi/formularios/:id/respuestas/:respuestaId/aval
 ctrl.avalRespuesta = async (req, res) => {
     try {
-        const { estado_aval, aval_por, aval_comentario } = req.body;
+        const { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual } = req.body;
         if (!['Aprobado', 'Rechazado'].includes(estado_aval)) {
             return res.status(400).json({ error: 'estado_aval debe ser Aprobado o Rechazado' });
         }
-        const doc = await svc.avalRespuesta(req.params.respuestaId, { estado_aval, aval_por, aval_comentario });
+        const doc = await svc.avalRespuesta(req.params.respuestaId, { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+// PUT /pdi/formularios/:id/respuestas/:respuestaId/planeacion
+ctrl.avalPlaneacion = async (req, res) => {
+    try {
+        const { estado, por, comentario } = req.body;
+        if (!['Validado', 'Devuelto'].includes(estado)) {
+            return res.status(400).json({ error: 'estado debe ser Validado o Devuelto' });
+        }
+        const doc = await svc.avalPlaneacion(req.params.respuestaId, { estado, por, comentario });
         res.json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });

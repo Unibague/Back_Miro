@@ -52,11 +52,18 @@ const pdiFormularioRespuestaSchema = new mongoose.Schema({
     documento_drive_web_content_link: { type: String, default: '' },
     documentos:                { type: [documentoEvidenciaSchema], default: [] },
     // Flujo de aval del lider de macroproyecto
-    estado_aval:       { type: String, enum: ['Pendiente', 'Aprobado', 'Rechazado'], default: null },
-    lider_email_aval:  { type: String, default: '' },
-    aval_por:          { type: String, default: '' },
-    aval_comentario:   { type: String, default: '' },
-    aval_fecha:        { type: Date, default: null },
+    estado_aval:        { type: String, enum: ['Pendiente', 'Aprobado', 'Rechazado'], default: null },
+    lider_email_aval:   { type: String, default: '' },
+    aval_por:           { type: String, default: '' },
+    aval_comentario:    { type: String, default: '' },
+    aval_razones:       { type: [String], default: [] },
+    aval_otro_cual:     { type: String, default: '' },
+    aval_fecha:         { type: Date, default: null },
+    // Flujo de aval de Planeación (segundo nivel, solo cuando el líder aprueba)
+    aval_planeacion:             { type: String, enum: ['Pendiente', 'Validado', 'Devuelto'], default: null },
+    aval_planeacion_por:         { type: String, default: '' },
+    aval_planeacion_comentario:  { type: String, default: '' },
+    aval_planeacion_fecha:       { type: Date, default: null },
 }, {
     versionKey: false,
     timestamps: true,

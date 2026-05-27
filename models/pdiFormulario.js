@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const campoPdiSchema = new mongoose.Schema({
     etiqueta:             { type: String, required: true },
-    tipo:                 { type: String, enum: ['texto_largo', 'texto_corto', 'archivo_pdf', 'select', 'select_con_otro', 'checkbox'], required: true },
+    tipo:                 { type: String, enum: ['texto_largo', 'texto_corto', 'archivo_pdf', 'select', 'select_con_otro', 'select_multiple', 'select_multiple_con_otro', 'checkbox'], required: true },
     requerido:            { type: Boolean, default: false },
     descripcion:          { type: String, default: '' },
     orden:                { type: Number, default: 0 },
