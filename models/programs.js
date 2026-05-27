@@ -37,9 +37,9 @@ const programSchema = new mongoose.Schema({
     type: Number,
     default: null,
   },
-  /** Periodos de duración del plan de estudios (distinto de N° semestres si aplica en la fuente). */
+  /** Periodos de duración del plan de estudios (número o texto según la fuente). */
   periodos_duracion: {
-    type: Number,
+    type: String,
     default: null,
   },
   num_semestres: {
