@@ -249,21 +249,9 @@ const PERIODICIDADES = /^(anual|semestral|trimestral|bimensual|mensual)$/i;
 
 function leerPeriodosDuracion(row, colMap) {
   const idx = colMap.periodos_duracion;
-  if (!idx) {
-    const semIdx = colMap.num_semestres;
-    if (!semIdx) return null;
-    const rawSem = str(row.getCell(semIdx));
-    if (PERIODICIDADES.test(rawSem) || /semestr|anual|trimestr/i.test(rawSem)) return null;
-    return num(row.getCell(semIdx));
-  }
+  if (!idx) return null;
   const raw = str(row.getCell(idx));
-  if (!raw) return null;
-  if (PERIODICIDADES.test(raw) || /semestr|anual|trimestr|bimens|mensual/i.test(raw)) {
-    const semIdx = colMap.num_semestres;
-    if (semIdx) return num(row.getCell(semIdx));
-    return null;
-  }
-  return extraerPrimerNumero(raw);
+  return raw === '' ? null : raw;
 }
 
 /** Col. «Periodos de duración» a veces trae periodicidad (Semestral); la admisión va en su columna. */

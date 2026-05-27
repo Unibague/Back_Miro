@@ -87,7 +87,7 @@ function programaCambiosDesdeFilaProcesos(row, programa) {
     { key: 'nivel_academico', col: 31, tipo: 'str' },
     { key: 'nivel_formacion', col: 32, tipo: 'str' },
     { key: 'num_creditos', col: 33, tipo: 'num' },
-    { key: 'periodos_duracion', col: 34, tipo: 'num' },
+    { key: 'periodos_duracion', col: 34, tipo: 'str' },
     { key: 'num_semestres', col: 35, tipo: 'num' },
     { key: 'admision_estudiantes', col: 36, tipo: 'str' },
     { key: 'num_estudiantes_saces', col: 37, tipo: 'num' },
