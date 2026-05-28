@@ -13,6 +13,16 @@ const positionViewPermissionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: {}
     },
+    allowed_dimensions: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'dimensions',
+      default: []
+    },
+    allowed_dependencies: {
+      type: [mongoose.Schema.Types.ObjectId],
+      ref: 'dependencies',
+      default: []
+    },
     updatedBy: {
       type: String,
       default: null

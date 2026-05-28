@@ -4,6 +4,7 @@ const User = require('../models/users');
 const PositionViewPermission = require('../models/positionViewPermissions');
 const AccessProfile = require('../models/accessProfiles');
 const Dependency = require('../models/dependencies');
+const Dimension = require('../models/dimensions');
 const dependencyController = require('./dependencies.js');
 const { default: mongoose } = require('mongoose');
 const periodController = require('./periods.js');
@@ -865,9 +866,22 @@ userController.getPositionViewPermissions = async (req, res) => {
             savedPermissions.map((permission) => [permission.position, permission])
         );
 
+        // Cargar listas de ámbitos y dependencias disponibles
+        const [allDimensions, allDependencies] = await Promise.all([
+            Dimension.find({}, '_id name').sort({ name: 1 }).lean(),
+            Dependency.find({}, '_id dep_code name').sort({ name: 1 }).lean()
+        ]);
+
+        // Obtener restricciones guardadas (tomar del primer cargo del perfil)
+        const firstSaved = filteredPositions.length > 0
+            ? permissionsByPosition.get(normalizePosition(filteredPositions[0].position))
+            : null;
+
         res.status(200).json({
             levels: profiles,
             views: viewPermissionOptions,
+            allDimensions,
+            allDependencies,
             profile: requestedProfile
                 ? {
                     _id: requestedProfile._id,
@@ -888,6 +902,8 @@ userController.getPositionViewPermissions = async (req, res) => {
                     usersCount: position.usersCount,
                     users: position.users,
                     permissions: normalizeViewPermissions(saved?.permissions || {}),
+                    allowed_dimensions: (saved?.allowed_dimensions || []).map(id => String(id)),
+                    allowed_dependencies: (saved?.allowed_dependencies || []).map(id => String(id)),
                     updatedBy: saved?.updatedBy || null,
                     updatedAt: saved?.updatedAt || null
                 };
@@ -1084,7 +1100,7 @@ userController.removeUserFromPosition = async (req, res) => {
 };
 
 userController.updatePositionViewPermissions = async (req, res) => {
-    const { position, positions = [], profileId, permissions = {}, adminEmail } = req.body;
+    const { position, positions = [], profileId, permissions = {}, adminEmail, allowed_dimensions = [], allowed_dependencies = [] } = req.body;
 
     try {
         let accessProfile = null;
@@ -1132,6 +1148,8 @@ userController.updatePositionViewPermissions = async (req, res) => {
                     {
                         position: normalizedPosition,
                         permissions: normalizedPermissions,
+                        allowed_dimensions: allowed_dimensions.filter(id => mongoose.Types.ObjectId.isValid(id)),
+                        allowed_dependencies: allowed_dependencies.filter(id => mongoose.Types.ObjectId.isValid(id)),
                         updatedBy: adminEmail
                     },
                     { new: true, upsert: true, setDefaultsOnInsert: true }
@@ -1159,6 +1177,8 @@ userController.updatePositionViewPermissions = async (req, res) => {
         const formattedPositions = permissionConfigs.map((permissionConfig) => ({
             position: permissionConfig.position,
             permissions: normalizeViewPermissions(permissionConfig.permissions || {}),
+            allowed_dimensions: (permissionConfig.allowed_dimensions || []).map(id => String(id)),
+            allowed_dependencies: (permissionConfig.allowed_dependencies || []).map(id => String(id)),
             updatedBy: permissionConfig.updatedBy,
             updatedAt: permissionConfig.updatedAt
         }));
