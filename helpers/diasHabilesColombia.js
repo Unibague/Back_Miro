@@ -37,7 +37,6 @@ function esFinDeSemana(fechaStr) {
   return dow === 0 || dow === 6;
 }
 
-/** true si la fecha es festivo oficial en Colombia (puede ser lunes tras emiliani). */
 function esFestivoColombia(fechaStr) {
   if (!fechaStr) return false;
   const result = getHolidaysCo().isHoliday(parseYmd(fechaStr));
