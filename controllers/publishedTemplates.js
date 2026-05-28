@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const PublishedTemplate = require('../models/publishedTemplates.js');
 const Template = require('../models/templates.js')
 const SniesTemplate = require('../models/sniesTemplates');
@@ -2658,6 +2659,33 @@ publTempController.hasData = async (req, res) => {
     const hasData = pubTem.loaded_data.some(d => allUserDependencies.includes(d.dependency));
 
     return res.json({ hasData });
+  } catch (error) {
+    return res.status(500).json({ status: 'Internal server error', message: error.message });
+  }
+};
+
+publTempController.getPublishedByTemplateId = async (req, res) => {
+  const { templateId } = req.params;
+  const { periodId } = req.query;
+  try {
+    // template._id puede estar guardado como ObjectId o como string, buscar ambos
+    const idAsObjectId = mongoose.Types.ObjectId.isValid(templateId)
+      ? new mongoose.Types.ObjectId(templateId)
+      : null;
+
+    const idConditions = idAsObjectId
+      ? [{ 'template._id': idAsObjectId }, { 'template._id': templateId }]
+      : [{ 'template._id': templateId }];
+
+    const baseQuery = periodId
+      ? { $or: idConditions, period: periodId }
+      : { $or: idConditions };
+
+    const published = await PublishedTemplate.findOne(baseQuery).lean();
+    if (!published) {
+      return res.status(200).json({ loaded_data: [] });
+    }
+    return res.status(200).json({ loaded_data: published.loaded_data || [] });
   } catch (error) {
     return res.status(500).json({ status: 'Internal server error', message: error.message });
   }
