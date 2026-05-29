@@ -371,6 +371,17 @@ userController.getUserRoles = async (req, res) => {
             return merged;
         }, {});
 
+        // Fusionar allowed_dependencies: [] = acceso a todos, lista = solo esos
+        // Si algún cargo tiene [] (sin restricción) o no hay docs, el resultado es [] (sin restricción)
+        // Si todos tienen listas específicas, el resultado es la unión
+        const mergedAllowedDependencies = (allPermissionDocs.length === 0 || allPermissionDocs.some(doc => (doc.allowed_dependencies || []).length === 0))
+            ? []
+            : Array.from(new Set(allPermissionDocs.flatMap(doc => (doc.allowed_dependencies || []).map(id => String(id)))));
+
+        const mergedAllowedDimensions = (allPermissionDocs.length === 0 || allPermissionDocs.some(doc => (doc.allowed_dimensions || []).length === 0))
+            ? []
+            : Array.from(new Set(allPermissionDocs.flatMap(doc => (doc.allowed_dimensions || []).map(id => String(id)))));
+
         console.log(`[getUserRoles] user=${email} position=${normalizedPosition} profiles=${profilesWithPosition.length} permDocs=${allPermissionDocs.length} keys=${Object.keys(mergedPermissions).join(',')}`);
 
         res.status(200).json({
@@ -379,7 +390,9 @@ userController.getUserRoles = async (req, res) => {
             profiles: user.profiles || [],
             position: user.position,
             accessProfiles: profilesWithPosition.map(p => p._id.toString()),
-            viewPermissions: normalizeViewPermissions(mergedPermissions)
+            viewPermissions: normalizeViewPermissions(mergedPermissions),
+            allowedDependencies: mergedAllowedDependencies,
+            allowedDimensions: mergedAllowedDimensions
         });
     } catch (error) {
         res.status(500).json({ error: error.message });

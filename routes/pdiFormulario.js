@@ -21,10 +21,21 @@ router.put('/:id/respuestas/:respuestaId/aval',        ctrl.avalRespuesta);
 router.put('/:id/respuestas/:respuestaId/planeacion',  ctrl.avalPlaneacion);
 router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 
+// ── Error handler de multer (tipo de archivo o tamaño rechazado) ──────────
+function multerErrorHandler(err, req, res, next) {
+    if (err && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'El archivo supera el tamaño máximo permitido de 10 MB.' });
+    }
+    if (err) {
+        return res.status(400).json({ error: err.message || 'Formato de archivo no permitido.' });
+    }
+    next();
+}
+
 // ── Documento de evidencia (PDF o Word) ligado a la respuesta ─────────────
 router.post(
     '/:id/respuestas/:respuestaId/documento-final',
-    upload.array('archivo', 20),
+    (req, res, next) => upload.array('archivo', 20)(req, res, (err) => multerErrorHandler(err, req, res, next)),
     ctrl.uploadDocumentoFinal
 );
 router.delete(
@@ -35,7 +46,7 @@ router.delete(
 // ── Archivos PDF por campo ─────────────────────────────────────────────────
 router.post(
     '/:id/respuestas/:respuestaId/archivos/:campoId',
-    upload.single('archivo'),
+    (req, res, next) => upload.single('archivo')(req, res, (err) => multerErrorHandler(err, req, res, next)),
     ctrl.uploadArchivo
 );
 router.delete(
