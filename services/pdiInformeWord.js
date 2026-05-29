@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const {
     Document, Packer, Paragraph, TextRun, HeadingLevel,
     AlignmentType, BorderStyle, Table, TableRow, TableCell, WidthType,
-    ImageRun, Header,
+    ImageRun, Header, ExternalHyperlink, TableLayoutType, VerticalAlign,
     HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
 } = require('docx');
 
@@ -143,28 +143,114 @@ function ordenarPeriodos(periodos = []) {
     return [...periodos].sort((a, b) => String(a.periodo ?? '').localeCompare(String(b.periodo ?? '')));
 }
 
+const normalizeCorte = (value) => String(value ?? '').trim();
+
 function filtrarPeriodos(periodos = [], corte = null) {
     const ordenados = ordenarPeriodos(periodos);
     if (!corte) return ordenados;
-    return ordenados.filter((p) => p.periodo === corte);
+    const corteNormalizado = normalizeCorte(corte);
+    return ordenados.filter((p) => normalizeCorte(p.periodo) === corteNormalizado);
 }
 
 // ── Tabla genérica ──────────────────────────────────────────────────────────────────
-function crearTabla(headers, filas) {
-    const pct = Math.floor(100 / headers.length);
+const TABLE_WIDTH_DXA = 9020;
+const TABLE_CELL_MARGINS = { top: 90, bottom: 90, left: 120, right: 120 };
+const TABLE_BORDER = { style: BorderStyle.SINGLE, size: 1, color: 'D1D5DB' };
+
+const linkCell = (text, url) => ({ __tableLink: true, text, url });
+
+function normalizeCellValue(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    return String(value);
+}
+
+function distributeColumnWidths(count) {
+    if (!count) return [];
+    const base = Math.floor(TABLE_WIDTH_DXA / count);
+    const widths = Array.from({ length: count }, () => base);
+    widths[count - 1] += TABLE_WIDTH_DXA - (base * count);
+    return widths;
+}
+
+function cellParagraphs(value, { bold = false, size = 17, color = '111827' } = {}) {
+    if (value?.__tableLink) {
+        if (!value.url) {
+            return [new Paragraph({ children: [new TextRun({ text: '—', size, color: '6B7280' })] })];
+        }
+        return [
+            new Paragraph({
+                children: [
+                    new ExternalHyperlink({
+                        link: value.url,
+                        children: [new TextRun({ text: value.text || 'Abrir enlace', size, color: '2563EB', underline: {} })],
+                    }),
+                ],
+            }),
+        ];
+    }
+
+    const lines = normalizeCellValue(value).split(/\r?\n/);
+    return lines.map((line) => new Paragraph({
+        spacing: { before: 0, after: 0 },
+        children: [new TextRun({ text: line || ' ', bold, size, color })],
+    }));
+}
+
+function linkParagraph(label, url, { indent = 0 } = {}) {
+    const children = [new TextRun({ text: `${label}: `, bold: true })];
+    if (url) {
+        children.push(new ExternalHyperlink({
+            link: url,
+            children: [new TextRun({ text: 'Abrir archivo', color: '2563EB', underline: {} })],
+        }));
+    } else {
+        children.push(new TextRun({ text: '—' }));
+    }
+    return new Paragraph({
+        spacing: { before: 60, after: 30 },
+        indent: indent ? { left: indent } : undefined,
+        children,
+    });
+}
+
+function crearTabla(headers, filas, options = {}) {
+    const columnWidths = options.columnWidths?.length === headers.length
+        ? options.columnWidths
+        : distributeColumnWidths(headers.length);
+
     const headerRow = new TableRow({
-        children: headers.map((t) => new TableCell({
-            width: { size: pct, type: WidthType.PERCENTAGE },
-            children: [new Paragraph({ children: [new TextRun({ text: t, bold: true, size: 18 })] })],
+        children: headers.map((t, index) => new TableCell({
+            width: { size: columnWidths[index], type: WidthType.DXA },
+            margins: TABLE_CELL_MARGINS,
+            verticalAlign: VerticalAlign.CENTER,
+            shading: { fill: 'F3F4F6' },
+            children: cellParagraphs(t, { bold: true, size: 16, color: '374151' }),
         })),
     });
+
     const rows = filas.map((fila) => new TableRow({
-        children: fila.map((v) => new TableCell({
-            width: { size: pct, type: WidthType.PERCENTAGE },
-            children: [new Paragraph({ children: [new TextRun({ text: String(v ?? '—'), size: 18 })] })],
+        children: headers.map((_, index) => new TableCell({
+            width: { size: columnWidths[index], type: WidthType.DXA },
+            margins: TABLE_CELL_MARGINS,
+            verticalAlign: VerticalAlign.TOP,
+            children: cellParagraphs(fila[index]),
         })),
     }));
-    return new Table({ rows: [headerRow, ...rows], width: { size: 100, type: WidthType.PERCENTAGE } });
+
+    return new Table({
+        rows: [headerRow, ...rows],
+        width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA },
+        columnWidths,
+        layout: TableLayoutType.FIXED,
+        borders: {
+            top: TABLE_BORDER,
+            bottom: TABLE_BORDER,
+            left: TABLE_BORDER,
+            right: TABLE_BORDER,
+            insideHorizontal: TABLE_BORDER,
+            insideVertical: TABLE_BORDER,
+        },
+    });
 }
 
 // ── Tabla de periodos ──────────────────────────────────────────────────────────────
@@ -181,35 +267,106 @@ function tablaPeriodos(periodos = []) {
                 p.estado_reporte ?? 'Borrador',
                 p.reportado_por,
                 p.fecha_envio ? new Date(p.fecha_envio).toLocaleDateString('es-CO') : '—',
-            ])
+            ]),
+            { columnWidths: [1000, 950, 950, 1350, 3200, 1570] }
         ),
     ];
 }
 
 // ── Tabla de evidencias ──────────────────────────────────────────────────────────────
 function tablaEvidencias(evidencias = [], corte = null) {
-    const filtradas = corte ? evidencias.filter((ev) => ev.periodo === corte) : evidencias;
+    const corteNormalizado = normalizeCorte(corte);
+    const filtradas = corte
+        ? evidencias.filter((ev) => normalizeCorte(ev.periodo) === corteNormalizado)
+        : evidencias;
     if (!filtradas.length) return [];
     return [
         new Paragraph({ spacing: { before: 100, after: 60 }, children: [new TextRun({ text: 'Evidencias adjuntas', bold: true })] }),
         crearTabla(
-            ['Nombre archivo', 'Periodo', 'Estado', 'Subido por', 'Fecha', 'URL'],
+            ['Archivo', 'Periodo', 'Estado', 'Subido por', 'Fecha', 'Enlace'],
             filtradas.map((ev) => [
                 ev.nombre_original,
                 ev.periodo,
                 ev.estado,
                 ev.subido_por,
                 ev.fecha_subida ? new Date(ev.fecha_subida).toLocaleDateString('es-CO') : '—',
-                ev.url,
-            ])
+                linkCell('Abrir archivo', ev.drive_web_view_link || ev.drive_web_content_link || ev.url),
+            ]),
+            { columnWidths: [2500, 900, 1000, 2100, 1200, 1320] }
         ),
     ];
 }
 
 // ── Sección de formularios/respuestas del indicador (igual que en el informe de indicador) ──────
+const SEP_MULTIPLE = ' | ';
+
+function renderRespuestaCampo(resp, formularioCampos) {
+    // Obtener tipo: primero del campo guardado, si está vacío buscar en la definición del formulario
+    const tipo = resp.tipo
+        || (formularioCampos.find((c) => String(c._id) === String(resp.campo_id))?.tipo)
+        || '';
+
+    const sinRespuesta = () => new Paragraph({
+        spacing: { before: 0, after: 20 },
+        indent: { left: 720 },
+        children: [new TextRun({ text: 'Sin respuesta', color: '9CA3AF' })],
+    });
+
+    // Archivo PDF adjunto al campo
+    if (resp.url) {
+        return [new Paragraph({
+            spacing: { before: 0, after: 20 },
+            indent: { left: 720 },
+            children: [new TextRun({ text: resp.nombre_original || 'Archivo adjunto' })],
+        })];
+    }
+
+    // Casilla de verificación
+    if (tipo === 'checkbox') {
+        return [new Paragraph({
+            spacing: { before: 0, after: 20 },
+            indent: { left: 720 },
+            children: [new TextRun({ text: resp.valor_texto === 'true' ? 'Sí' : 'No' })],
+        })];
+    }
+
+    // Selección múltiple (con o sin Otro)
+    if (tipo === 'select_multiple' || tipo === 'select_multiple_con_otro') {
+        const values = (resp.valor_texto || '').split(SEP_MULTIPLE).map((v) => v.trim()).filter(Boolean);
+        if (!values.length) return [sinRespuesta()];
+        return values.map((v) => new Paragraph({
+            spacing: { before: 0, after: 8 },
+            indent: { left: 720 },
+            children: [new TextRun({ text: `• ${v}` })],
+        }));
+    }
+
+    // Selección única (con o sin Otro)
+    if (tipo === 'select' || tipo === 'select_con_otro') {
+        if (!resp.valor_texto) return [sinRespuesta()];
+        return [new Paragraph({
+            spacing: { before: 0, after: 20 },
+            indent: { left: 720 },
+            children: [new TextRun({ text: resp.valor_texto })],
+        })];
+    }
+
+    // Texto largo / texto corto / tipo desconocido con valor
+    if (resp.valor_texto) {
+        return String(resp.valor_texto).split(/\r?\n/).map((linea) => new Paragraph({
+            spacing: { before: 0, after: 20 },
+            indent: { left: 720 },
+            children: [new TextRun({ text: linea || ' ' })],
+        }));
+    }
+
+    return [sinRespuesta()];
+}
+
 function seccionFormularios(respuestas = [], corte = null) {
+    const corteNormalizado = normalizeCorte(corte);
     const filtradas = corte
-        ? respuestas.filter((r) => r.corte === corte)
+        ? respuestas.filter((r) => normalizeCorte(r.corte) === corteNormalizado)
         : respuestas;
 
     const enviadas = filtradas.filter((r) => r.estado === 'Enviado');
@@ -223,6 +380,7 @@ function seccionFormularios(respuestas = [], corte = null) {
         const formularioNombre = typeof r.formulario_id === 'object'
             ? (r.formulario_id?.nombre ?? 'Formulario')
             : 'Formulario';
+        const formularioCampos = (typeof r.formulario_id === 'object' ? r.formulario_id?.campos ?? [] : []);
         const fechaEnvio = r.fecha_envio ? new Date(r.fecha_envio).toLocaleDateString('es-CO') : '—';
         const avalEstado = r.estado_aval ?? 'Pendiente';
         const avalPor    = r.aval_por ? ` · ${r.aval_por}` : '';
@@ -246,40 +404,15 @@ function seccionFormularios(respuestas = [], corte = null) {
                 children: [new TextRun({ text: 'Respuestas del formulario:', bold: true })],
             }));
             for (const resp of r.respuestas) {
+                // Etiqueta del campo
                 bloques.push(new Paragraph({
-                    spacing: { before: 60, after: 20 },
+                    spacing: { before: 60, after: 8 },
                     indent: { left: 360 },
-                    children: [new TextRun({ text: `${resp.etiqueta}: `, bold: true })],
+                    children: [new TextRun({ text: `${resp.etiqueta || 'Campo'}:`, bold: true })],
                 }));
-                if (resp.valor_texto) {
-                    for (const linea of String(resp.valor_texto).split(/\r?\n/)) {
-                        bloques.push(new Paragraph({
-                            spacing: { before: 0, after: 20 },
-                            indent: { left: 720 },
-                            children: [new TextRun({ text: linea || ' ' })],
-                        }));
-                    }
-                } else if (resp.url) {
-                    bloques.push(new Paragraph({
-                        spacing: { before: 0, after: 20 },
-                        indent: { left: 720 },
-                        children: [
-                            new TextRun({ text: resp.nombre_original || 'Archivo adjunto' }),
-                            new TextRun({ text: `  ${resp.url}`, color: '6B7280' }),
-                        ],
-                    }));
-                } else {
-                    bloques.push(new Paragraph({
-                        spacing: { before: 0, after: 20 },
-                        indent: { left: 720 },
-                        children: [new TextRun({ text: 'Sin respuesta', color: '9CA3AF' })],
-                    }));
-                }
+                // Valor(es) del campo
+                bloques.push(...renderRespuestaCampo(resp, formularioCampos));
             }
-        }
-
-        if (r.word_url) {
-            bloques.push(campo('Formato Word del formulario', `${r.word_nombre_original || r.word_filename || 'Formulario generado'}  ${r.word_url}`));
         }
 
         const documentosEvidencia = Array.isArray(r.documentos) && r.documentos.length
@@ -288,11 +421,14 @@ function seccionFormularios(respuestas = [], corte = null) {
                 nombre_original: r.documento_nombre_original,
                 filename: r.documento_filename,
                 url: r.documento_url,
+                drive_web_view_link: r.documento_drive_web_view_link,
+                drive_web_content_link: r.documento_drive_web_content_link,
             }] : []);
         documentosEvidencia.forEach((documento, index) => {
-            bloques.push(campo(
-                `Documento de evidencia adjunto ${index + 1}`,
-                `${documento.nombre_original || documento.filename || 'Archivo adjunto'}  ${documento.url || ''}`
+            const nombreDocumento = documento.nombre_original || documento.filename || 'Archivo adjunto';
+            bloques.push(linkParagraph(
+                `Documento de evidencia adjunto ${index + 1} (${nombreDocumento})`,
+                documento.drive_web_view_link || documento.drive_web_content_link || documento.url
             ));
         });
 
@@ -305,6 +441,9 @@ function seccionFormularios(respuestas = [], corte = null) {
 // ── Sección de un indicador ───────────────────────────────────────────────────
 function seccionIndicador(ind, respuestasInd = [], corte = null) {
     const periodosAMostrar = filtrarPeriodos(ind.periodos ?? [], corte);
+    const respuestasFormulario = respuestasInd.length
+        ? respuestasInd
+        : (ind.respuestas_formulario ?? []);
 
     const bloques = [
         h3(`${ind.codigo} · ${ind.nombre}`),
@@ -332,8 +471,8 @@ function seccionIndicador(ind, respuestasInd = [], corte = null) {
     // Evidencias del indicador
     bloques.push(...tablaEvidencias(ind.evidencias ?? [], corte));
 
-    // Formularios enviados por el responsable (igual que en el informe de indicador)
-    bloques.push(...seccionFormularios(respuestasInd, corte));
+    // Formularios enviados por el responsable del indicador.
+    bloques.push(...seccionFormularios(respuestasFormulario, corte));
 
     return bloques;
 }

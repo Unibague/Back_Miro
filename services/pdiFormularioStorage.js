@@ -27,13 +27,18 @@ const ALLOWED_MIMETYPES = new Set([
     'application/vnd.ms-excel',
     'image/jpeg',
     'image/png',
+    'image/tiff',
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/vnd.rar',
+    'application/x-rar-compressed',
 ]);
 
 const ALLOWED_BINARY_MIMETYPES = new Set([
     'application/octet-stream',
     'binary/octet-stream',
 ]);
-const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png']);
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.zip', '.rar']);
 
 const fileFilter = (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
@@ -43,7 +48,7 @@ const fileFilter = (_req, file, cb) => {
     if (allowed) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten archivos PDF, Excel (.xlsx, .xls) e imagenes (.jpg, .jpeg, .png)'), false);
+        cb(new Error('Solo se permiten archivos PDF, Excel (.xlsx, .xls), imagenes (.jpg, .jpeg, .png, .tif) y comprimidos (.zip, .rar)'), false);
     }
 };
 

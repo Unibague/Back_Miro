@@ -21,10 +21,16 @@ const ctrl = {};
 
 // Agrupa respuestas de formularios por indicador_id
 async function getRespuestasPorIndicador(indicadorIds) {
+    const ids = (indicadorIds ?? []).filter(Boolean);
+    if (!ids.length) return {};
+
     const respuestas = await Respuesta.find({
-        indicador_id: { $in: indicadorIds },
+        indicador_id: { $in: ids },
         estado: 'Enviado',
-    }).populate('formulario_id', 'nombre').lean();
+    })
+        .populate('formulario_id', 'nombre campos')
+        .sort({ corte: 1, fecha_envio: 1, createdAt: 1 })
+        .lean();
 
     const mapa = {};
     for (const r of respuestas) {
@@ -33,6 +39,13 @@ async function getRespuestasPorIndicador(indicadorIds) {
         mapa[key].push(r);
     }
     return mapa;
+}
+
+function adjuntarRespuestasAIndicadores(indicadores, respuestasPorIndicador) {
+    return indicadores.map((ind) => ({
+        ...ind,
+        respuestas_formulario: respuestasPorIndicador[String(ind._id)] ?? [],
+    }));
 }
 
 async function uploadInformeToDrive(generated, jerarquia) {
@@ -106,14 +119,15 @@ ctrl.informeProyecto = async (req, res) => {
         const indicadores = await Indicador.find({ accion_id: { $in: accionIds } }).lean();
         const indicadorIds = indicadores.map((i) => i._id);
 
+        const respuestasPorIndicador = await getRespuestasPorIndicador(indicadorIds);
+        const indicadoresConRespuestas = adjuntarRespuestasAIndicadores(indicadores, respuestasPorIndicador);
+
         const indicadoresPorAccion = {};
-        for (const ind of indicadores) {
+        for (const ind of indicadoresConRespuestas) {
             const key = String(ind.accion_id);
             if (!indicadoresPorAccion[key]) indicadoresPorAccion[key] = [];
             indicadoresPorAccion[key].push(ind);
         }
-
-        const respuestasPorIndicador = await getRespuestasPorIndicador(indicadorIds);
 
         if (proyecto.informe_drive_file_id) {
             await deleteDriveFile(proyecto.informe_drive_file_id).catch(() => {});

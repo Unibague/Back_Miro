@@ -800,4 +800,31 @@ dependencyController.deleteDependency = async (req, res) => {
   }
 };
 
+dependencyController.getTemplatesSummary = async (req, res) => {
+  try {
+    const PublishedTemplate = require('../models/publishedTemplates');
+    const { periodId } = req.query;
+
+    const filter = periodId ? { period: periodId } : {};
+    const templates = await PublishedTemplate.find(filter, 'name template.producers').lean();
+
+    const depTemplatesMap = {};
+    for (const t of templates) {
+      const producers = t.template?.producers || [];
+      for (const depId of producers) {
+        const key = depId.toString();
+        if (!depTemplatesMap[key]) depTemplatesMap[key] = [];
+        if (!depTemplatesMap[key].includes(t.name)) {
+          depTemplatesMap[key].push(t.name);
+        }
+      }
+    }
+
+    res.status(200).json(depTemplatesMap);
+  } catch (error) {
+    console.error('Error fetching templates summary:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = dependencyController;

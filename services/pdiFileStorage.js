@@ -28,11 +28,16 @@ const ALLOWED_MIMETYPES = new Set([
     'application/vnd.ms-excel',
     'image/jpeg',
     'image/png',
+    'image/tiff',
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/vnd.rar',
+    'application/x-rar-compressed',
     'application/octet-stream',
     'binary/octet-stream',
 ]);
 
-const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png']);
+const ALLOWED_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.zip', '.rar']);
 
 const fileFilter = (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
