@@ -14,6 +14,8 @@ const respuestaCampoSchema = new mongoose.Schema({
     drive_file_id:   { type: String, default: '' },
     drive_web_view_link: { type: String, default: '' },
     drive_web_content_link: { type: String, default: '' },
+    comentario_lider: { type: String, default: '' },
+    comentario_lider_resuelto: { type: Boolean, default: false },
 }, { _id: true });
 
 const documentoEvidenciaSchema = new mongoose.Schema({

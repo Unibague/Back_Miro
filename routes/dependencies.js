@@ -11,6 +11,8 @@ router.delete("/delete/:id", requireAdmin, controller.deleteDependency)
 
 router.get("/all", controller.getDependencies)
 
+router.get("/templates-summary", controller.getTemplatesSummary)
+
 router.get("/childrenDependencies/templates", controller.getChildrenDependenciesPublishedTemplates)
 
 router.get("/responsible", controller.getDependencyByResponsible);

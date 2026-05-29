@@ -1,5 +1,5 @@
 const svc     = require('../services/pdiFormulario');
-const { buildUrl, deleteFile } = require('../services/pdiFormularioStorage');
+const { buildUrl, deleteFile, MAX_FILE_SIZE_BYTES } = require('../services/pdiFormularioStorage');
 const Respuesta = require('../models/pdiFormularioRespuesta');
 const fs = require('fs/promises');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
@@ -89,6 +89,10 @@ function documentosResponse(doc) {
         documento_drive_web_content_link: first.drive_web_content_link || '',
         documentos,
     };
+}
+
+function getDocumentosTotalSize(documentos = []) {
+    return documentos.reduce((total, documento) => total + (Number(documento?.size) || 0), 0);
 }
 
 async function deleteDocumentoData(documento) {
@@ -194,11 +198,33 @@ ctrl.upsertRespuesta = async (req, res) => {
 // PUT /pdi/formularios/:id/respuestas/:respuestaId/aval
 ctrl.avalRespuesta = async (req, res) => {
     try {
-        const { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual } = req.body;
+        const { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual, comentarios_campos } = req.body;
         if (!['Aprobado', 'Rechazado'].includes(estado_aval)) {
             return res.status(400).json({ error: 'estado_aval debe ser Aprobado o Rechazado' });
         }
-        const doc = await svc.avalRespuesta(req.params.respuestaId, { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual });
+        const doc = await svc.avalRespuesta(req.params.respuestaId, {
+            estado_aval,
+            aval_por,
+            aval_comentario,
+            aval_razones,
+            aval_otro_cual,
+            comentarios_campos,
+        });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+// PUT /pdi/formularios/:id/respuestas/:respuestaId/comentarios/:campoId/resuelto
+ctrl.marcarComentarioCampoResuelto = async (req, res) => {
+    try {
+        const { resuelto } = req.body;
+        const doc = await svc.marcarComentarioCampoResuelto(
+            req.params.respuestaId,
+            req.params.campoId,
+            resuelto
+        );
         res.json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -332,6 +358,16 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
         if (doc.estado_aval === 'Aprobado') {
             files.forEach((file) => deleteFile(file.filename));
             return res.status(400).json({ error: 'No se puede reemplazar una evidencia aprobada' });
+        }
+
+        const documentosConservados = doc.estado_aval === 'Rechazado'
+            ? []
+            : (doc.documentos?.length ? doc.documentos : (hasLegacyDocumento(doc) ? [buildLegacyDocumento(doc)] : []));
+        const totalActual = getDocumentosTotalSize(documentosConservados);
+        const totalNuevo = files.reduce((total, file) => total + (Number(file.size) || 0), 0);
+        if (totalActual + totalNuevo > MAX_FILE_SIZE_BYTES) {
+            files.forEach((file) => deleteFile(file.filename));
+            return res.status(400).json({ error: 'El tamano total de las evidencias cargadas no debe superar los 10 MB.' });
         }
 
         // Si el reporte fue rechazado, reemplazar TODOS los documentos anteriores

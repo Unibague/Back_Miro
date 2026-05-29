@@ -54,7 +54,7 @@ const fileFilter = (_req, file, cb) => {
     if (allowed) {
         cb(null, true);
     } else {
-        cb(new Error('Solo se permiten PDF, Excel (.xlsx, .xls), imágenes (.jpg, .jpeg, .png, .tif) y comprimidos (.zip, .rar, .7z, .tar, .gz)'), false);
+        cb(new Error('Solo se permiten archivos PDF, Excel (.xlsx, .xls) e imagenes (.jpg, .jpeg, .png)'), false);
     }
 };
 

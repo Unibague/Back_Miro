@@ -7,7 +7,7 @@ const Macroproyecto   = require('../models/pdiMacroproyecto');
 const RazonRechazo    = require('../models/pdiRazonRechazo');
 const fs              = require('fs/promises');
 const path            = require('path');
-const { deleteFile, UPLOAD_DIR, buildUrl } = require('./pdiFormularioStorage');
+const { deleteFile, UPLOAD_DIR, buildUrl, MAX_FILE_SIZE_BYTES } = require('./pdiFormularioStorage');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
 const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
 const { replaceWordDocument } = require('./pdiFormularioWordDocument');
@@ -40,6 +40,36 @@ const normalizeAvalRazones = async (razones = []) => {
     const labelsById = new Map(docs.map((doc) => [String(doc._id), doc.texto]));
 
     return values.map((value) => labelsById.get(value) ?? value);
+};
+
+const normalizeComentariosCampos = (comentarios = []) => {
+    const entries = Array.isArray(comentarios)
+        ? comentarios.map((item) => [item?.campo_id, item?.comentario_lider])
+        : Object.entries(comentarios ?? {});
+
+    return new Map(
+        entries
+            .map(([campoId, comentario]) => [
+                String(campoId ?? '').trim(),
+                String(comentario ?? '').trim(),
+            ])
+            .filter(([campoId, comentario]) => campoId && comentario)
+    );
+};
+
+const mergeComentariosLider = (respuestas = [], existingRespuestas = []) => {
+    const existingByCampo = new Map(
+        existingRespuestas.map((respuesta) => [String(respuesta.campo_id ?? ''), respuesta])
+    );
+
+    return respuestas.map((respuesta) => {
+        const campoPrevio = existingByCampo.get(String(respuesta.campo_id ?? ''));
+        return {
+            ...respuesta,
+            comentario_lider: respuesta.comentario_lider ?? campoPrevio?.comentario_lider ?? '',
+            comentario_lider_resuelto: respuesta.comentario_lider_resuelto ?? campoPrevio?.comentario_lider_resuelto ?? false,
+        };
+    });
 };
 
 const getAll = async ({ indicador_id, activo } = {}) => {
@@ -121,6 +151,9 @@ const buildLegacyDocumento = (doc) => ({
     drive_web_view_link: doc.documento_drive_web_view_link || '',
     drive_web_content_link: doc.documento_drive_web_content_link || '',
 });
+
+const getDocumentosTotalSize = (documentos = []) =>
+    documentos.reduce((total, documento) => total + (Number(documento?.size) || 0), 0);
 
 const syncLegacyDocumentoFields = (doc) => {
     const first = doc.documentos?.[0];
@@ -316,6 +349,15 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     const wasRejected = existing?.estado_aval === 'Rechazado';
     let avalData = {};
 
+    if (becomingEnviado && existing) {
+        const documentos = existing.documentos?.length
+            ? existing.documentos
+            : (hasLegacyDocumento(existing) ? [buildLegacyDocumento(existing)] : []);
+        if (getDocumentosTotalSize(documentos) > MAX_FILE_SIZE_BYTES) {
+            throw new Error('El tamano total de las evidencias cargadas no debe superar los 10 MB.');
+        }
+    }
+
     if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
         const liderEmail = (
             await getLiderEmailForIndicador(indicador_id)
@@ -362,7 +404,7 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
             aval_fecha:       existing.aval_fecha,
         };
 
-        existing.respuestas    = respuestas ?? existing.respuestas;
+        existing.respuestas    = respuestas ? mergeComentariosLider(respuestas, existing.respuestas) : existing.respuestas;
         existing.indicador_id  = indicador_id || null;
         if (estado) {
             existing.estado = estado;
@@ -476,19 +518,28 @@ const deleteRespuesta = async (id) => {
 };
 
 // Aprueba o rechaza una respuesta (solo el lider del macroproyecto)
-const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual }) => {
+const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual, comentarios_campos }) => {
     const doc = await Respuesta.findById(respuestaId);
     if (!doc) throw new Error('Respuesta no encontrada');
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden avalar respuestas enviadas');
     const razonesNormalizadas = estado_aval === 'Rechazado'
         ? await normalizeAvalRazones(aval_razones)
         : [];
+    const comentariosPorCampo = estado_aval === 'Rechazado'
+        ? normalizeComentariosCampos(comentarios_campos)
+        : new Map();
     doc.estado_aval     = estado_aval;
     doc.aval_por        = aval_por ?? '';
     doc.aval_comentario = estado_aval === 'Rechazado' ? (aval_comentario ?? '') : '';
     doc.aval_razones    = razonesNormalizadas;
     doc.aval_otro_cual  = estado_aval === 'Rechazado' ? (aval_otro_cual ?? '') : '';
     doc.aval_fecha      = new Date();
+    for (const respuesta of doc.respuestas) {
+        const campoId = String(respuesta.campo_id ?? '');
+        respuesta.comentario_lider = comentariosPorCampo.get(campoId) ?? '';
+        respuesta.comentario_lider_resuelto = false;
+    }
+    doc.markModified('respuestas');
     // Al rechazar, el responsable debe corregir y re-enviar
     if (estado_aval === 'Rechazado') {
         doc.estado      = 'Borrador';
@@ -506,6 +557,22 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
 };
 
 // Evalúa una respuesta como Planeación (segundo nivel, después de aprobación del líder)
+const marcarComentarioCampoResuelto = async (respuestaId, campoId, resuelto = false) => {
+    const doc = await Respuesta.findById(respuestaId);
+    if (!doc) throw new Error('Respuesta no encontrada');
+
+    const idx = doc.respuestas.findIndex((respuesta) => String(respuesta.campo_id) === String(campoId));
+    if (idx < 0) throw new Error('Campo no encontrado');
+    if (!String(doc.respuestas[idx].comentario_lider ?? '').trim()) {
+        throw new Error('El campo no tiene comentario del lider');
+    }
+
+    doc.respuestas[idx].comentario_lider_resuelto = Boolean(resuelto);
+    doc.markModified('respuestas');
+    await doc.save();
+    return getRespuestaById(respuestaId);
+};
+
 const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
     const doc = await Respuesta.findById(respuestaId);
     if (!doc) throw new Error('Respuesta no encontrada');
@@ -546,5 +613,5 @@ const getRespuestasPendientesAval = async (lider_email) => {
 module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
-    avalRespuesta, avalPlaneacion, getRespuestasPendientesAval, getLiderEmailForIndicador,
+    avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion, getRespuestasPendientesAval, getLiderEmailForIndicador,
 };

@@ -2241,6 +2241,7 @@ publTempController.getTemplateById = async (req, res) => {
 
   try {
     const publishedTemplate = await PublishedTemplate.findById(templateId)
+      .populate('period')
       .populate({
         path: 'template',
         populate: [
