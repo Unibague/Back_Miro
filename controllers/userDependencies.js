@@ -141,13 +141,20 @@ const getAllDependencies = async (req, res) => {
 const sendDependencyNotificationEmail = async (to, userName, newDependencies, allDependencies) => {
     const nodemailer = require('nodemailer');
     
+    const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
+    const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
+    const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
+    const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+
+    console.log(`[DEP-NOTIFY] Enviando notificación de dependencias a ${to} via ${smtpHost}`);
+
     const transporter = nodemailer.createTransport({
-        host: 'smtp.pepipost.com',
-        port: 587,
+        host: smtpHost,
+        port: smtpPort,
         secure: false,
         auth: {
-            user: process.env.REMINDER_EMAIL,
-            pass: process.env.REMINDER_PASS
+            user: smtpUser,
+            pass: smtpPass
         },
         tls: {
             rejectUnauthorized: false

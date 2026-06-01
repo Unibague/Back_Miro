@@ -7,6 +7,7 @@ const DEFAULT_FROM_NAME = 'Gestion PDI';
 const DEFAULT_PLATFORM_URL = 'https://miro.unibague.edu.co';
 
 const cleanEnv = (value) => String(value || '').trim();
+const cleanPassword = (value) => String(value || '').replace(/\s/g, '');
 const cleanEmail = (value) => String(value || '').trim().toLowerCase();
 
 const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail(value));
@@ -46,17 +47,33 @@ const getPlatformUrl = () => (
 ).replace(/\/+$/, '');
 
 const getSmtpConfig = () => {
-    const user = cleanEnv(process.env.SMTP_USER || process.env.REMINDER_EMAIL);
-    const pass = cleanEnv(process.env.SMTP_PASS || process.env.REMINDER_PASS);
-    const host = cleanEnv(process.env.SMTP_HOST) || 'smtp.pepipost.com';
-    const port = Number(cleanEnv(process.env.SMTP_PORT) || 587);
-    const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true';
+    const user = cleanEnv(
+        process.env.PDI_EMAIL_USERNAME
+        || process.env.SMTP_USER
+        || process.env.REMINDER_EMAIL
+    );
+    const pass = cleanPassword(
+        process.env.PDI_EMAIL_PASSWORD
+        || process.env.SMTP_PASS
+        || process.env.REMINDER_PASS
+    );
+    const host = cleanEnv(
+        process.env.PDI_EMAIL_HOST
+        || process.env.SMTP_HOST
+    ) || 'smtp.gmail.com';
+    const port = Number(cleanEnv(
+        process.env.PDI_EMAIL_PORT
+        || process.env.SMTP_PORT
+    ) || 587);
+    const secure = String(process.env.PDI_SMTP_SECURE || process.env.SMTP_SECURE || '').toLowerCase() === 'true';
+
+    console.log('[PDI-SMTP] Config leída:', { host, port, secure, user: user || '(vacío)' });
 
     if (!user || !pass) {
-        throw new Error('Credenciales SMTP no configuradas: define SMTP_USER/SMTP_PASS o REMINDER_EMAIL/REMINDER_PASS.');
+        throw new Error('Credenciales SMTP no configuradas: define PDI_EMAIL_USERNAME/PDI_EMAIL_PASSWORD en el .env.');
     }
     if (!Number.isInteger(port) || port <= 0) {
-        throw new Error('SMTP_PORT no es valido. Usa 587 para STARTTLS o 465 con SMTP_SECURE=true.');
+        throw new Error('PDI_EMAIL_PORT no es valido. Usa 587 para STARTTLS o 465 con PDI_SMTP_SECURE=true.');
     }
 
     return { user, pass, host, port, secure };
@@ -89,6 +106,14 @@ const createTransporter = () => {
         tls: {
             rejectUnauthorized: false,
         },
+    });
+
+    transporter.verify((error) => {
+        if (error) {
+            console.error('[PDI-SMTP] Error al verificar conexión SMTP:', error.message);
+        } else {
+            console.log('[PDI-SMTP] Conexión SMTP verificada correctamente con', config.host);
+        }
     });
 
     return { transporter, config };
@@ -312,16 +337,27 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
 };
 
 const notifyPdiPeriodUsers = async (corte) => {
+    console.log('[PDI-NOTIFY] Iniciando notificación para corte:', corte?.nombre || corte?._id);
+
     const recipients = await collectRecipients();
+    console.log(`[PDI-NOTIFY] Destinatarios encontrados: ${recipients.length}`);
+
+    if (recipients.length === 0) {
+        console.warn('[PDI-NOTIFY] No hay destinatarios. Verifica que haya líderes y responsables en la BD.');
+    }
+
     const { transporter, config } = createTransporter();
     const platformUrl = getPlatformUrl();
     const appUrl = `${platformUrl}/pdi/mis-indicadores`;
     const fromName = cleanEnv(process.env.PDI_MAIL_FROM_NAME) || DEFAULT_FROM_NAME;
     const fromAddress = cleanEnv(process.env.PDI_MAIL_FROM_ADDRESS) || DEFAULT_FROM_ADDRESS;
 
+    console.log(`[PDI-NOTIFY] Enviando desde: "${fromName}" <${fromAddress}>`);
+
     const results = [];
 
     for (const recipient of recipients) {
+        console.log(`[PDI-NOTIFY] Enviando a: ${recipient.email}`);
         try {
             await transporter.sendMail({
                 from: `"${fromName}" <${fromAddress}>`,
@@ -329,14 +365,19 @@ const notifyPdiPeriodUsers = async (corte) => {
                 subject: `Periodo PDI abierto: ${corte.nombre}`,
                 html: buildEmailHtml({ recipient, corte, appUrl }),
             });
+            console.log(`[PDI-NOTIFY] ✓ Enviado a ${recipient.email}`);
             results.push({ email: recipient.email, ok: true });
         } catch (error) {
-            results.push({ email: recipient.email, ok: false, error: formatSmtpError(error, config) });
+            const msg = formatSmtpError(error, config);
+            console.error(`[PDI-NOTIFY] ✗ Error enviando a ${recipient.email}:`, msg);
+            results.push({ email: recipient.email, ok: false, error: msg });
         }
     }
 
     const sent = results.filter((item) => item.ok).length;
     const failed = results.filter((item) => !item.ok);
+
+    console.log(`[PDI-NOTIFY] Resultado: ${sent} enviados, ${failed.length} fallidos`);
 
     return {
         corte: {

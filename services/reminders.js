@@ -172,13 +172,18 @@ runPendingProducerReportEmails: async function(periodId = null) {
 
 
 sendSummaryEmail: async function (logs) {
+  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
+  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
+  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
+  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.pepipost.com',
-    port: 587,
+    host: smtpHost,
+    port: smtpPort,
     secure: false,
     auth: {
-      user: process.env.REMINDER_EMAIL,
-      pass: process.env.REMINDER_PASS
+      user: smtpUser,
+      pass: smtpPass
     },
     tls: {
       rejectUnauthorized: false
@@ -226,13 +231,20 @@ sendSummaryEmail: async function (logs) {
 },
 
 sendReminderEmail: async function (to, nombre, fechaLimite, items = [], tipo = "plantilla") {
+  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
+  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
+  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
+  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+
+  console.log(`[REMINDER-SMTP] Enviando a ${to} usando ${smtpHost}:${smtpPort} con usuario ${smtpUser || '(vacío)'}`);
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.pepipost.com',
-    port: 587,
+    host: smtpHost,
+    port: smtpPort,
     secure: false,
     auth: {
-      user: process.env.REMINDER_EMAIL,
-      pass: process.env.REMINDER_PASS
+      user: smtpUser,
+      pass: smtpPass
     },
     tls: {
       rejectUnauthorized: false
@@ -247,6 +259,14 @@ sendReminderEmail: async function (to, nombre, fechaLimite, items = [], tipo = "
   const listaHtml = cantidad
     ? `<ul style="padding-left: 20px;">${items.map(i => `<li>${i}</li>`).join('')}</ul>`
     : `<p>No se encontraron nombres de ${plural}.</p>`;
+
+  try {
+    await transporter.verify();
+    console.log('[REMINDER-SMTP] Conexión SMTP verificada OK');
+  } catch (verifyErr) {
+    console.error('[REMINDER-SMTP] Error verificando SMTP:', verifyErr.message);
+    throw verifyErr;
+  }
 
   await transporter.sendMail({
     from: `"${process.env.MAIL_FROM_NAME}" <${process.env.MAIL_FROM_ADDRESS}>`,
@@ -305,13 +325,20 @@ ${tipo === "informe" ? `
 },
 
 sendUploadNotificationEmail: async function (to, nombreResponsable, nombrePlantilla, nombreDependencia, nombreProductor, fechaCarga) {
+  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
+  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
+  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
+  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+
+  console.log(`[UPLOAD-NOTIFY] Enviando notificación de carga a ${to}`);
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.pepipost.com',
-    port: 587,
+    host: smtpHost,
+    port: smtpPort,
     secure: false,
     auth: {
-      user: process.env.REMINDER_EMAIL,
-      pass: process.env.REMINDER_PASS
+      user: smtpUser,
+      pass: smtpPass
     },
     tls: { rejectUnauthorized: false }
   });
