@@ -1,9 +1,8 @@
 const SolicitudCambio = require('../models/pdiSolicitudCambio');
+const { sendSolicitudCambioNotification } = require('../services/pdiSolicitudCambioNotification');
 
 const ctrl = {};
 
-// GET /pdi/cambios  — Lista solicitudes con filtros opcionales
-// Query params: entidad_id, entidad_tipo, estado, solicitado_por
 ctrl.getAll = async (req, res) => {
     try {
         const query = {};
@@ -26,7 +25,6 @@ ctrl.getAll = async (req, res) => {
     }
 };
 
-// GET /pdi/cambios/:id
 ctrl.getById = async (req, res) => {
     try {
         const doc = await SolicitudCambio.findById(req.params.id);
@@ -37,18 +35,24 @@ ctrl.getById = async (req, res) => {
     }
 };
 
-// POST /pdi/cambios — Crear solicitud de cambio
 ctrl.create = async (req, res) => {
     try {
         const doc = await SolicitudCambio.create(req.body);
+        
+        // Enviar notificación a administradores
+        try {
+            await sendSolicitudCambioNotification(doc);
+        } catch (notifyErr) {
+            console.error('[CREATE-CAMBIO] Error enviando notificación:', notifyErr.message);
+            // No fallar la respuesta si falla el email
+        }
+        
         res.status(201).json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
     }
 };
 
-// PATCH /pdi/cambios/:id/revision — Aprobar o rechazar una solicitud
-// Body: { estado, revisado_por, revisado_email, comentario_revision }
 ctrl.revisar = async (req, res) => {
     try {
         const { estado, revisado_por, revisado_email, comentario_revision } = req.body;
@@ -77,7 +81,6 @@ ctrl.revisar = async (req, res) => {
     }
 };
 
-// DELETE /pdi/cambios/:id — Solo eliminar solicitudes Pendientes
 ctrl.remove = async (req, res) => {
     try {
         const doc = await SolicitudCambio.findById(req.params.id);
