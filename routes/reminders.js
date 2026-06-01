@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/reminders');
+const { getEmailConfig } = require('../config/emailConfig');
+const nodemailer = require('nodemailer');
 
 router.get('/', controller.getAllReminders);
 router.post('/', controller.createReminder);
@@ -10,51 +12,54 @@ router.post('/test-send', controller.sendTestReminder);
 router.get('/test-check', controller.checkAndSendReminderEmails);
 router.post('/send-now', controller.sendGenericReminders);
 
-// router.post('/send-publishedProducerReports-reminders', async(req,res) => {
-//   try {
-//     const sent = await controller.runPendingProducerReportEmails(null)
-//     res.status(200).json({sent})
-//   } catch (error) {
-//     console.error("Error ejecutando recordatorio de reportes para productores", error);
-//     res.status(500).json({error: error.message})
-//   }
-// });
+// Endpoint para verificar la configuración de email
+router.get('/test-email-config', async (req, res) => {
+  try {
+    const emailConfig = getEmailConfig('general');
+    
+    const transporter = nodemailer.createTransport({
+      host: emailConfig.host,
+      port: emailConfig.port,
+      secure: false,
+      auth: {
+        user: emailConfig.username,
+        pass: emailConfig.password
+      },
+      tls: { rejectUnauthorized: false }
+    });
 
-// router.post('/send-reminders', async (req, res) => {
-//   try {
-//     const sent = await controller.runReminderEmails(null, true); // sin argumentos
-//     res.status(200).json({ sent });
-//   } catch (error) {
-//     console.error("Error ejecutando runReminderEmails:", error);
-//     res.status(500).json({ error: error.message });
-//   }
-// });
-
-
+    await transporter.verify();
+    
+    res.json({
+      status: 'OK',
+      message: 'Configuración de email válida',
+      config: {
+        host: emailConfig.host,
+        port: emailConfig.port,
+        username: emailConfig.username,
+        fromName: emailConfig.fromName,
+        fromAddress: emailConfig.fromAddress
+      }
+    });
+  } catch (error) {
+    console.error('[EMAIL-CONFIG] Error:', error.message);
+    res.status(500).json({
+      status: 'ERROR',
+      message: 'Error en la configuración de email',
+      error: error.message
+    });
+  }
+});
 
 router.get("/reminders/preview", async (req, res) => {
   try {
     const periodId = req.query.periodId || null;
-    const resultados = await controller.previewReminderEmails(periodId, true); // `true` para forzar el match
+    const resultados = await controller.previewReminderEmails(periodId, true);
     res.json(resultados);
   } catch (error) {
     console.error("Error al previsualizar correos:", error);
     res.status(500).json({ error: "Error al previsualizar recordatorios." });
   }
 });
-
-// router.post('/send-reminders', async (req, res) => {
-//   try {
-//     const { periodId } = req.query;
-//     const enviados = await controller.runReminderEmails(periodId, true);
-//     res.json({ status: 'Envío ejecutado', total: enviados });
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: 'Fallo al ejecutar recordatorios' });
-//   }
-// });
-
-
-
 
 module.exports = router;

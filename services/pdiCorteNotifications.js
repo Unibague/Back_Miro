@@ -277,7 +277,7 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                             <tr>
                                 <td style="background:linear-gradient(135deg,#312e81,#2563eb);padding:28px 30px;color:#ffffff;">
                                     <div style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.85;">Gestion PDI</div>
-                                    <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Periodo abierto para evidencias y evaluacion</h1>
+                                    <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Periodo abierto para evidencias y evaluación</h1>
                                     <p style="margin:12px 0 0;font-size:16px;line-height:1.5;color:#dbeafe;">
                                         El corte <strong style="color:#ffffff;">${escapeHtml(corte.nombre)}</strong> ya se encuentra habilitado en MIRO.
                                     </p>

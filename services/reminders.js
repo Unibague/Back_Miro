@@ -9,6 +9,7 @@ const ReminderLog = require('../models/reminderLog');
 const mongoose = require("mongoose");
 const { ObjectId } = mongoose.Types;
 const nodemailer = require('nodemailer');
+const { getEmailConfig } = require('../config/emailConfig');
 
 const RemindersService = {
 
@@ -172,10 +173,11 @@ runPendingProducerReportEmails: async function(periodId = null) {
 
 
 sendSummaryEmail: async function (logs) {
-  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
-  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
-  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
-  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+  const emailConfig = getEmailConfig('general');
+  const smtpHost = emailConfig.host;
+  const smtpPort = emailConfig.port;
+  const smtpUser = emailConfig.username;
+  const smtpPass = emailConfig.password;
 
   const transporter = nodemailer.createTransport({
     host: smtpHost,
@@ -231,10 +233,11 @@ sendSummaryEmail: async function (logs) {
 },
 
 sendReminderEmail: async function (to, nombre, fechaLimite, items = [], tipo = "plantilla") {
-  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
-  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
-  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
-  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+  const emailConfig = getEmailConfig('general');
+  const smtpHost = emailConfig.host;
+  const smtpPort = emailConfig.port;
+  const smtpUser = emailConfig.username;
+  const smtpPass = emailConfig.password;
 
   console.log(`[REMINDER-SMTP] Enviando a ${to} usando ${smtpHost}:${smtpPort} con usuario ${smtpUser || '(vacío)'}`);
 
@@ -325,10 +328,11 @@ ${tipo === "informe" ? `
 },
 
 sendUploadNotificationEmail: async function (to, nombreResponsable, nombrePlantilla, nombreDependencia, nombreProductor, fechaCarga) {
-  const smtpHost = process.env.EMAIL_HOST || process.env.SMTP_HOST || 'smtp.gmail.com';
-  const smtpPort = Number(process.env.EMAIL_PORT || process.env.SMTP_PORT || 587);
-  const smtpUser = process.env.EMAIL_USERNAME || process.env.SMTP_USER || process.env.REMINDER_EMAIL;
-  const smtpPass = process.env.EMAIL_PASSWORD || process.env.SMTP_PASS || process.env.REMINDER_PASS;
+  const emailConfig = getEmailConfig('general');
+  const smtpHost = emailConfig.host;
+  const smtpPort = emailConfig.port;
+  const smtpUser = emailConfig.username;
+  const smtpPass = emailConfig.password;
 
   console.log(`[UPLOAD-NOTIFY] Enviando notificación de carga a ${to}`);
 
