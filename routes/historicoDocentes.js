@@ -9,4 +9,13 @@ router.post("/upload", upload.single("excel_file"), controller.upload);
 router.patch("/:id/rename", controller.renameFile);
 router.delete("/:id", controller.deleteFile);
 
+// PDF principal
+router.get("/:id/pdf", controller.viewPdf);
+
+// Anexos
+router.get("/:id/anexos", controller.listAnexos);
+router.post("/:id/anexos", upload.single("anexo_file"), controller.addAnexo);
+router.get("/:id/anexos/:anexoId", controller.viewAnexo);
+router.delete("/:id/anexos/:anexoId", controller.deleteAnexo);
+
 module.exports = router;

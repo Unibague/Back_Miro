@@ -8,6 +8,7 @@ const Student = require("../models/students");
 const User = require("../models/users");
 const Dependency = require("../models/dependencies");
 const ValidatorModel = require("../models/validators");
+const Period = require("../models/periods");
 
 const controller = {};
 
@@ -70,6 +71,20 @@ const VALIDATOR_FIELD_MAPPINGS = {
   ID_TIPO_DERECHO_PECUNIARIO: "TIPO_DERECHOS_PECUNIARIOS",
   ID_TIPO_ESTIMULO: "TIPO_ESTIMULO",
   ID_DEDICACION: "DEDICACION",
+
+  // SNIES / Histórico Docentes
+  DEDICACION: "DEDICACION",
+  TIPO_CONTRATO: "TIPO_CONTRATO",
+  TIPO_CONTRATO_DOCENTE: "TIPO_CONTRATO",
+  METODOLOGIA_CONTRATO: "METODOLOGIA_CONTRATO",
+  NIVEL_CONTRATO: "NIVEL_DOCENTE",
+  NIVEL_DOCENTE: "NIVEL_DOCENTE",
+  INGRESO_CONTRATO: "TIPO_VINCULACION",
+  TIPO_VINCULACION: "TIPO_VINCULACION",
+
+  // Capacitación GH (con y sin prefijo)
+  CATEGORIA_GESTION: "CATEGORIA_GESTION_CURRICULAR",
+  CATEGORIA_GESTION_CURRICULAR: "CATEGORIA_GESTION_CURRICULAR",
 };
 
 const ID_ALIASES = new Set([
@@ -149,10 +164,17 @@ const selectDescriptionColumn = (validator, idColumn) => {
   );
 };
 
-const buildValidatorLookup = async () => {
-  const validators = await ValidatorModel.find({}).lean();
+const buildValidatorLookup = async (periodId = null) => {
+  let rawValidators;
+  if (periodId) {
+    const period = await Period.findById(periodId).select("screenshot.validators").lean();
+    const periodValidators = period?.screenshot?.validators || [];
+    rawValidators = periodValidators.length > 0 ? periodValidators : await ValidatorModel.find({}).lean();
+  } else {
+    rawValidators = await ValidatorModel.find({}).lean();
+  }
 
-  return validators
+  return rawValidators
     .map((validator) => {
       const columns = Array.isArray(validator.columns) ? validator.columns : [];
       const idColumn = columns.find((column) => column.is_validator) || columns[0];
@@ -201,7 +223,14 @@ const isValidatorCandidateHeader = (header, sampleValues) => {
     normalized.includes("MODALIDAD") ||
     normalized.includes("SEXO") ||
     normalized.includes("ESTADO") ||
-    normalized.includes("PAIS")
+    normalized.includes("PAIS") ||
+    normalized.includes("DEDICACION") ||
+    normalized.includes("CONTRATO") ||
+    normalized.includes("METODOLOGIA") ||
+    normalized.includes("NIVEL") ||
+    normalized.includes("INGRESO") ||
+    normalized.includes("VINCULACION") ||
+    normalized in VALIDATOR_FIELD_MAPPINGS
   );
 };
 
@@ -573,8 +602,8 @@ const readUploadedWorkbook = async (file) => {
   return { workbook, worksheet, headers, fieldMap, rows };
 };
 
-const buildValidatorColumns = async (headers, rows) => {
-  const validators = await buildValidatorLookup();
+const buildValidatorColumns = async (headers, rows, periodId = null) => {
+  const validators = await buildValidatorLookup(periodId);
   if (validators.length === 0) return [];
 
   const usedOutputNames = new Set(GENERATED_COLUMNS.map(normalizeHeader));
@@ -734,52 +763,90 @@ const removeBlankRows = (worksheet) => {
   }
 };
 
-const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = []) => {
+const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = [], fieldMap = null) => {
   removeDeprecatedGeneratedColumns(worksheet);
 
-  const headerRow = worksheet.getRow(1);
   const existingHeaders = new Map();
-  headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
+  worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell, column) => {
     existingHeaders.set(normalizeHeader(cellToText(cell.value)), column);
   });
 
-  let nextColumn = worksheet.columnCount + 1;
+  // Only insert new columns for nombre/dependencia; validators overwrite their own source column
+  const toInsert = [];
   const columnByName = {};
 
-  const outputColumns = [
-    ...GENERATED_COLUMN_DEFINITIONS,
-    ...validatorColumns.map((item) => ({
-      key: item.outputColumn,
-      label: item.outputLabel || item.outputColumn,
-    })),
-  ];
-
-  outputColumns.forEach((column) => {
-    const normalizedKey = normalizeHeader(column.key);
-    const normalizedLabel = normalizeHeader(column.label);
-    const existingColumn = existingHeaders.get(normalizedLabel) || existingHeaders.get(normalizedKey);
-
-    if (existingColumn) {
-      columnByName[column.key] = existingColumn;
-      headerRow.getCell(existingColumn).value = column.label;
-      headerRow.getCell(existingColumn).font = OUTPUT_HEADER_FONT;
-      headerRow.getCell(existingColumn).fill = OUTPUT_HEADER_FILL;
+  GENERATED_COLUMN_DEFINITIONS.forEach((col) => {
+    const existing = existingHeaders.get(normalizeHeader(col.label)) || existingHeaders.get(normalizeHeader(col.key));
+    if (existing) {
+      columnByName[col.key] = existing;
+      worksheet.getRow(1).getCell(existing).value = col.label;
+      worksheet.getRow(1).getCell(existing).font = OUTPUT_HEADER_FONT;
+      worksheet.getRow(1).getCell(existing).fill = OUTPUT_HEADER_FILL;
     } else {
-      columnByName[column.key] = nextColumn;
-      headerRow.getCell(nextColumn).value = column.label;
-      headerRow.getCell(nextColumn).font = OUTPUT_HEADER_FONT;
-      headerRow.getCell(nextColumn).fill = OUTPUT_HEADER_FILL;
-      nextColumn += 1;
+      toInsert.push(col);
     }
+  });
+
+  // Determine if we splice after cedula or append at end
+  const cedulaColIdx = fieldMap?.identification?.column || null;
+  let spliceOffset = 0;
+  let insertAt = null;
+
+  if (toInsert.length > 0) {
+    if (cedulaColIdx) {
+      insertAt = cedulaColIdx + 1;
+      spliceOffset = toInsert.length;
+      worksheet.spliceColumns(insertAt, 0, ...toInsert.map(() => []));
+      // Adjust already-mapped columns that shifted right
+      for (const key of Object.keys(columnByName)) {
+        if (columnByName[key] >= insertAt) columnByName[key] += spliceOffset;
+      }
+      toInsert.forEach((col, i) => {
+        const colIdx = insertAt + i;
+        columnByName[col.key] = colIdx;
+        const cell = worksheet.getRow(1).getCell(colIdx);
+        cell.value = col.label;
+        cell.font = OUTPUT_HEADER_FONT;
+        cell.fill = OUTPUT_HEADER_FILL;
+      });
+    } else {
+      let nextColumn = worksheet.columnCount + 1;
+      toInsert.forEach((col) => {
+        columnByName[col.key] = nextColumn;
+        worksheet.getRow(1).getCell(nextColumn).value = col.label;
+        worksheet.getRow(1).getCell(nextColumn).font = OUTPUT_HEADER_FONT;
+        worksheet.getRow(1).getCell(nextColumn).fill = OUTPUT_HEADER_FILL;
+        nextColumn += 1;
+      });
+    }
+  }
+
+  // Adjust validator source column indices if they shifted due to splice
+  const adjustedValidatorCols = validatorColumns.map((vc) => ({
+    ...vc,
+    adjustedSourceColumn: (insertAt != null && vc.sourceColumn >= insertAt)
+      ? vc.sourceColumn + spliceOffset
+      : vc.sourceColumn,
+  }));
+
+  // Style validator headers (overwrite in place)
+  adjustedValidatorCols.forEach((vc) => {
+    const cell = worksheet.getRow(1).getCell(vc.adjustedSourceColumn);
+    cell.font = OUTPUT_HEADER_FONT;
+    cell.fill = OUTPUT_HEADER_FILL;
   });
 
   enrichedRows.forEach((enriched) => {
     const row = worksheet.getRow(enriched.row_number);
-    row.getCell(columnByName.NOMBRE_IDENTIFICADO).value = outputText(enriched.nombre_identificado, "NO IDENTIFICADO");
-    row.getCell(columnByName.PROGRAMA_DEPENDENCIA).value = outputText(enriched.programa_dependencia, "NO IDENTIFICADO");
-    validatorColumns.forEach((validatorColumn) => {
-      row.getCell(columnByName[validatorColumn.outputColumn]).value =
-        outputText(enriched.validadores_resueltos?.[validatorColumn.outputColumn]);
+    if (columnByName.NOMBRE_IDENTIFICADO != null)
+      row.getCell(columnByName.NOMBRE_IDENTIFICADO).value = outputText(enriched.nombre_identificado, "NO IDENTIFICADO");
+    if (columnByName.PROGRAMA_DEPENDENCIA != null)
+      row.getCell(columnByName.PROGRAMA_DEPENDENCIA).value = outputText(enriched.programa_dependencia, "NO IDENTIFICADO");
+    // Overwrite validator source column with the resolved description
+    adjustedValidatorCols.forEach((vc) => {
+      const description = enriched.validadores_resueltos?.[vc.outputColumn];
+      if (description != null)
+        row.getCell(vc.adjustedSourceColumn).value = outputText(description);
     });
     row.commit();
   });
@@ -787,16 +854,20 @@ const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = []) =
   removeBlankRows(worksheet);
 
   Object.values(columnByName).forEach((columnIndex) => {
-    worksheet.getColumn(columnIndex).width = Math.max(22, worksheet.getColumn(columnIndex).width || 0);
+    if (typeof columnIndex === 'number')
+      worksheet.getColumn(columnIndex).width = Math.max(22, worksheet.getColumn(columnIndex).width || 0);
+  });
+  adjustedValidatorCols.forEach((vc) => {
+    worksheet.getColumn(vc.adjustedSourceColumn).width = Math.max(30, worksheet.getColumn(vc.adjustedSourceColumn).width || 0);
   });
 
-  headerRow.commit();
+  worksheet.getRow(1).commit();
 };
 
 const processFile = async (req) => {
   const periodId = req.body.period_id || req.body.periodId || null;
   const parsed = await readUploadedWorkbook(req.file);
-  const validatorColumns = await buildValidatorColumns(parsed.headers, parsed.rows);
+  const validatorColumns = await buildValidatorColumns(parsed.headers, parsed.rows, periodId);
   const result = await buildEnrichedRows({
     rows: parsed.rows,
     fieldMap: parsed.fieldMap,
@@ -855,7 +926,7 @@ controller.preview = async (req, res) => {
 controller.download = async (req, res) => {
   try {
     const result = await processFile(req);
-    applyGeneratedColumns(result.worksheet, result.enrichedRows, result.validatorColumns);
+    applyGeneratedColumns(result.worksheet, result.enrichedRows, result.validatorColumns, result.fieldMap);
 
     const buffer = await result.workbook.xlsx.writeBuffer();
     const originalName = path.basename(req.file.originalname || "plantilla.xlsx", path.extname(req.file.originalname || ""));
