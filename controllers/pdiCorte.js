@@ -3,6 +3,7 @@ const Indicador  = require('../models/pdiIndicador');
 const Accion     = require('../models/pdiAccionEstrategica');
 const Proyecto   = require('../models/pdiProyecto');
 const Macro      = require('../models/pdiMacroproyecto');
+const { notifyPdiPeriodUsers } = require('../services/pdiCorteNotifications');
 
 const ctrl = {};
 
@@ -97,6 +98,37 @@ ctrl.remove = async (req, res) => {
 // Resumen completo del PDI para un corte específico
 // Devuelve jerarquía: macroproyectos → proyectos → acciones → indicadores
 // con el avance y meta del periodo de ese corte
+ctrl.notificarUsuarios = async (req, res) => {
+    try {
+        const corte = await Corte.findById(req.params.id);
+        if (!corte) return res.status(404).json({ error: 'Corte no encontrado' });
+
+        if (!isCorteVigente(corte)) {
+            return res.status(400).json({
+                error: 'El corte no se encuentra abierto. Activa el corte o ajusta sus fechas antes de notificar.',
+            });
+        }
+
+        const result = await notifyPdiPeriodUsers(corte);
+        if (result.total > 0 && result.enviados === 0 && result.fallidos > 0) {
+            const firstError = result.errores?.[0]?.error;
+            return res.status(502).json({
+                error: `No se envio ningun correo.${firstError ? ` ${firstError}` : ''}`,
+                message: `No se pudo notificar el corte ${corte.nombre}.`,
+                ...result,
+            });
+        }
+
+        res.json({
+            message: `Notificacion enviada para el corte ${corte.nombre}.`,
+            ...result,
+        });
+    } catch (e) {
+        console.error('Error notificando usuarios PDI:', e);
+        res.status(500).json({ error: e.message || 'Error interno' });
+    }
+};
+
 ctrl.getResumenCorte = async (req, res) => {
     try {
         const corte = await Corte.findById(req.params.id);

@@ -382,7 +382,11 @@ const parseBudgetDetailsRows = (rows, systemIndex) => {
   const colTercero      = findCol(headers, ['tercero proveedor', 'contratista'], 7);
   const colDescripcion  = findCol(headers, ['descripcion'], 8);
   const colResponsable  = findCol(headers, ['responsable del activo'], 9);
-  const colDocumentos   = findCol(headers, ['documentos'], 10);
+  const colAutorizacionFirmas = findCol(
+    headers,
+    ['autorizacion 4 firmas', 'autorizaciones 4 firmas', 'autorizacion cuatro firmas', 'autorizaciones cuatro firmas', '4 firmas'],
+    20
+  );
   const colValor        = findCol(headers, ['valor'], 11, { exact: true });
   const colCausGasto    = findCol(headers, ['causado gasto'], 21);
   const colCausInv      = findCol(headers, ['causado inversion'], 22);
@@ -418,7 +422,8 @@ const parseBudgetDetailsRows = (rows, systemIndex) => {
       tercero: cleanCellText(row[colTercero]),
       descripcion,
       responsableActivo: cleanCellText(row[colResponsable]),
-      documentos: cleanCellText(row[colDocumentos]),
+      autorizacionFirmas: cleanCellText(row[colAutorizacionFirmas]),
+      documentos: cleanCellText(row[colAutorizacionFirmas]),
       valor,
       causadoGasto,
       causadoInversion,
