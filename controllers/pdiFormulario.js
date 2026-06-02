@@ -4,6 +4,7 @@ const Respuesta = require('../models/pdiFormularioRespuesta');
 const fs = require('fs/promises');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
 const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
+const { sendIndicadorUploadNotification } = require('../services/pdiIndicadorUploadNotification');
 
 const ctrl = {};
 
@@ -176,12 +177,10 @@ ctrl.getRespuestaById = async (req, res) => {
     }
 };
 
-// POST /pdi/formularios/:id/respuestas
-// Crea o actualiza la respuesta (upsert por formulario+respondido_por+corte)
 ctrl.upsertRespuesta = async (req, res) => {
     try {
         const { respondido_por, corte, respuestas, estado, indicador_id } = req.body;
-        const { doc } = await svc.upsertRespuesta({
+        const { doc, justSent } = await svc.upsertRespuesta({
             formulario_id: req.params.id,
             indicador_id,
             respondido_por,
@@ -189,13 +188,25 @@ ctrl.upsertRespuesta = async (req, res) => {
             respuestas,
             estado,
         });
+        
+        if (justSent && doc) {
+            try {
+                const formulario = await svc.getById(req.params.id);
+                const indicador = doc.indicador_id && typeof doc.indicador_id === 'object' 
+                    ? doc.indicador_id 
+                    : null;
+                await sendIndicadorUploadNotification(doc, formulario, indicador);
+            } catch (notifyErr) {
+                console.error('[UPSERT-RESPUESTA] Error enviando notificación:', notifyErr.message);
+            }
+        }
+        
         res.status(200).json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
     }
 };
 
-// PUT /pdi/formularios/:id/respuestas/:respuestaId/aval
 ctrl.avalRespuesta = async (req, res) => {
     try {
         const { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual, comentarios_campos } = req.body;
@@ -216,7 +227,6 @@ ctrl.avalRespuesta = async (req, res) => {
     }
 };
 
-// PUT /pdi/formularios/:id/respuestas/:respuestaId/comentarios/:campoId/resuelto
 ctrl.marcarComentarioCampoResuelto = async (req, res) => {
     try {
         const { resuelto } = req.body;
@@ -231,7 +241,6 @@ ctrl.marcarComentarioCampoResuelto = async (req, res) => {
     }
 };
 
-// PUT /pdi/formularios/:id/respuestas/:respuestaId/planeacion
 ctrl.avalPlaneacion = async (req, res) => {
     try {
         const { estado, por, comentario } = req.body;
@@ -245,7 +254,6 @@ ctrl.avalPlaneacion = async (req, res) => {
     }
 };
 
-// GET /pdi/formularios/respuestas/lider-email-indicador?indicador_id=xxx
 ctrl.getLiderEmailIndicador = async (req, res) => {
     try {
         const { indicador_id } = req.query;
@@ -257,7 +265,6 @@ ctrl.getLiderEmailIndicador = async (req, res) => {
     }
 };
 
-// GET /pdi/formularios/respuestas/por-indicador?indicador_id=xxx
 ctrl.getRespuestasPorIndicador = async (req, res) => {
     try {
         const { indicador_id } = req.query;
@@ -269,7 +276,6 @@ ctrl.getRespuestasPorIndicador = async (req, res) => {
     }
 };
 
-// GET /pdi/formularios/respuestas/pendientes-aval?lider_email=xxx
 ctrl.getRespuestasPendientesAval = async (req, res) => {
     try {
         const { lider_email } = req.query;
@@ -291,8 +297,6 @@ ctrl.deleteRespuesta = async (req, res) => {
     }
 };
 
-// POST /pdi/formularios/:id/respuestas/:respuestaId/archivos/:campoId
-// Sube un PDF para un campo específico de una respuesta
 ctrl.uploadArchivo = async (req, res) => {
     let uploaded = null;
     try {
@@ -316,7 +320,6 @@ ctrl.uploadArchivo = async (req, res) => {
         }, uploaded);
 
         if (idx >= 0) {
-            // Eliminar archivo anterior si existe
             if (doc.respuestas[idx].filename) deleteFile(doc.respuestas[idx].filename);
             await deleteDriveFile(doc.respuestas[idx].drive_file_id);
             doc.respuestas[idx].nombre_original = archivoData.nombre_original;
@@ -343,7 +346,6 @@ ctrl.uploadArchivo = async (req, res) => {
     }
 };
 
-// POST /pdi/formularios/:id/respuestas/:respuestaId/documento-final
 ctrl.uploadDocumentoFinal = async (req, res) => {
     const files = req.files?.length ? req.files : (req.file ? [req.file] : []);
     try {
@@ -370,7 +372,6 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             return res.status(400).json({ error: 'El tamano total de las evidencias cargadas no debe superar los 10 MB.' });
         }
 
-        // Si el reporte fue rechazado, reemplazar TODOS los documentos anteriores
         if (doc.estado_aval === 'Rechazado') {
             if (doc.documentos?.length) {
                 for (const documento of doc.documentos) {
@@ -387,7 +388,6 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
                 }
                 if (legacy.filename) deleteFile(legacy.filename);
             }
-            // Limpiar el Word anterior del Drive
             if (doc.word_drive_file_id) {
                 try { await deleteDriveFile(doc.word_drive_file_id); } catch (_) {}
             }
@@ -402,13 +402,12 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             doc.documentos.push(buildLegacyDocumento(doc));
         }
 
-        // Subir cada evidencia a Drive de forma independiente
         for (const file of files) {
             let driveData = null;
             try {
                 driveData = await uploadFormularioFileToDrive(file, doc.indicador_id);
                 if (driveData) deleteFile(file.filename);
-            } catch (_) { /* si Drive falla, guarda local igual */ }
+            } catch (_) { }
             doc.documentos.push(buildDocumentoFromFile(file, driveData));
         }
 
@@ -458,7 +457,6 @@ ctrl.deleteDocumentoFinal = async (req, res) => {
     }
 };
 
-// DELETE /pdi/formularios/:id/respuestas/:respuestaId/archivos/:campoId
 ctrl.deleteArchivo = async (req, res) => {
     try {
         const doc = await Respuesta.findById(req.params.respuestaId);
