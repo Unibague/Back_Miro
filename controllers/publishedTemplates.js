@@ -24,9 +24,12 @@ const publTempController = {};
 const validateWithToText = (validateWith) => {
   if (!validateWith) return '';
   if (typeof validateWith === 'string') return validateWith;
-  if (typeof validateWith === 'object') return validateWith.name || '';
+  if (typeof validateWith === 'object') return validateWith.name || validateWith.id || '';
   return String(validateWith);
 };
+
+const getFieldValidatorReference = (field = {}) =>
+  validateWithToText(field.validate_with).trim() || String(field.name || '').trim();
 
 // Recolecta todos los validators de una plantilla: campos top-level + todas las hojas de workbook
 const collectValidatorsForTemplate = async (templateData, periodId) => {
@@ -35,15 +38,15 @@ const collectValidatorsForTemplate = async (templateData, periodId) => {
   const allFields = [...topFields, ...sheetFields];
   const seen = new Set();
   const unique = allFields.filter(f => {
-    const validateWith = validateWithToText(f.validate_with);
-    if (!validateWith) return false;
-    const key = validateWith.split(' - ')[0].trim().toLowerCase();
+    const reference = getFieldValidatorReference(f);
+    const key = reference.split(' - ')[0].trim().toLowerCase();
+    if (!key) return false;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
   const results = await Promise.all(
-    unique.map(f => Validator.giveValidatorToExcel(validateWithToText(f.validate_with), periodId))
+    unique.map(f => Validator.giveValidatorToExcel(getFieldValidatorReference(f), periodId))
   );
   return results.filter(Boolean);
 };
@@ -90,6 +93,11 @@ const addValidatorToResponseMap = (validatorsMap, validator) => {
   if (!validator?.name || validatorsMap.has(validator.name)) return;
   validatorsMap.set(validator.name, {
     name: validator.name,
+    columns: (validator.columns || []).map((column) => ({
+      name: column.name,
+      is_validator: Boolean(column.is_validator),
+      type: column.type,
+    })),
     values: validatorRowsFromColumns(validator.columns || []),
   });
 };
@@ -2040,12 +2048,21 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       return templateObject;
     });
 
+    // Obtener IDs de dependencias del usuario para calcular isEncargado
+    const userDeps = await Dependency.find({ dep_code: { $in: dependenciesToQuery } }).select('_id').lean();
+    const userDepIds = userDeps.map(d => d._id.toString());
+
     const templatesWithValidators = await Promise.all(
       normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
         template.validators = await collectValidatorsForTemplate(
           template.template,
           template.period?._id || template.period
         );
+        const rawResponsible = template.responsible_producers?.length > 0
+          ? template.responsible_producers
+          : template.template?.responsible_producers;
+        const responsibleIds = (rawResponsible || []).map(id => id.toString());
+        template.isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
         return template;
       })
     );
@@ -2313,48 +2330,45 @@ publTempController.getTemplateById = async (req, res) => {
       return depCodeByProducerId.get(getProducerRefId(producerRef));
     };
 
-    // Recopilar datos ya enviados por otros productores cuando template.shared=true.
-    // Incluye borradores QR sin carga confirmada.
+    // Recopilar datos ya enviados por otros productores (siempre, independiente del flag shared).
     const templateShared = liveTemplate?.shared || publishedTemplate.template?.shared || false;
     const sharedSheetsData = {};
-    if (templateShared) {
-      const allProducerEntries = getLoadedDataIncludingQrDrafts(publishedTemplate);
-      const allEntriesDepCodes = [...new Set(allProducerEntries.map(e => getEntryDependencyCode(e)).filter(Boolean))];
-      const entriesDeps = allEntriesDepCodes.length
-        ? await Dependency.find({ dep_code: { $in: allEntriesDepCodes } }, 'dep_code name').lean()
-        : [];
-      const depNameByCode = new Map(entriesDeps.map(d => [d.dep_code, d.name]));
-      for (const sheet of enrichedSheets) {
-        if (!sheet.fields?.length) continue;
-        const sheetFieldNames = new Set((sheet.fields || []).map(f => f.name));
-        const sheetProducerCodes = new Set(
-          (sheet.producers || []).map(resolveProducerDepCode).filter(Boolean)
-        );
-        const rows = [];
-        for (const entry of allProducerEntries) {
-          const entryDependency = getEntryDependencyCode(entry);
-          if (sheetProducerCodes.size > 0 && !sheetProducerCodes.has(entryDependency)) continue;
+    const allProducerEntries = getLoadedDataIncludingQrDrafts(publishedTemplate);
+    const allEntriesDepCodes = [...new Set(allProducerEntries.map(e => getEntryDependencyCode(e)).filter(Boolean))];
+    const entriesDeps = allEntriesDepCodes.length
+      ? await Dependency.find({ dep_code: { $in: allEntriesDepCodes } }, 'dep_code name').lean()
+      : [];
+    const depNameByCode = new Map(entriesDeps.map(d => [d.dep_code, d.name]));
+    for (const sheet of enrichedSheets) {
+      if (!sheet.fields?.length) continue;
+      const sheetFieldNames = new Set((sheet.fields || []).map(f => f.name));
+      const sheetProducerCodes = new Set(
+        (sheet.producers || []).map(resolveProducerDepCode).filter(Boolean)
+      );
+      const rows = [];
+      for (const entry of allProducerEntries) {
+        const entryDependency = getEntryDependencyCode(entry);
+        if (sheetProducerCodes.size > 0 && !sheetProducerCodes.has(entryDependency)) continue;
 
-          const relevantFields = (entry.filled_data || []).filter(f => (
-            getFieldDataSheetName(f)
-              ? getFieldDataSheetName(f) === sheet.name
-              : sheetFieldNames.has(f.field_name)
-          ));
-          if (relevantFields.length === 0) continue;
-          const sendBy = entry.send_by || {};
-          const origin = {
-            code: entryDependency,
-            depName: depNameByCode.get(entryDependency) || entryDependency,
-            senderName: sendBy.full_name || sendBy.name || sendBy.email || entryDependency,
-            senderEmail: sendBy.email || null,
-          };
-          const builtRows = buildRowsFromFilledFields(relevantFields)
-            .filter(row => Object.values(row).some(value => isMeaningfulMergedValue(value)));
-          builtRows.forEach(row => { row.__origin__ = origin; });
-          rows.push(...builtRows);
-        }
-        if (rows.length > 0) sharedSheetsData[sheet.name] = rows;
+        const relevantFields = (entry.filled_data || []).filter(f => (
+          getFieldDataSheetName(f)
+            ? getFieldDataSheetName(f) === sheet.name
+            : sheetFieldNames.has(f.field_name)
+        ));
+        if (relevantFields.length === 0) continue;
+        const sendBy = entry.send_by || {};
+        const origin = {
+          code: entryDependency,
+          depName: depNameByCode.get(entryDependency) || entryDependency,
+          senderName: sendBy.full_name || sendBy.name || sendBy.email || entryDependency,
+          senderEmail: sendBy.email || null,
+        };
+        const builtRows = buildRowsFromFilledFields(relevantFields)
+          .filter(row => Object.values(row).some(value => isMeaningfulMergedValue(value)));
+        builtRows.forEach(row => { row.__origin__ = origin; });
+        rows.push(...builtRows);
       }
+      if (rows.length > 0) sharedSheetsData[sheet.name] = rows;
     }
 
     const qrDraftData = await enrichQrDraftsWithDependencyInfo(publishedTemplate.qr_draft_data || []);

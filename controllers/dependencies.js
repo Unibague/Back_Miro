@@ -588,7 +588,7 @@ dependencyController.getChildrenDependenciesPublishedTemplates = async (req,res)
       filteredTemplates.map(async (template) => {
         const validators = await Promise.all(
           template.template.fields.map(async (field) => {
-            return Validator.giveValidatorToExcel(field.validate_with, periodId);
+            return Validator.giveValidatorToExcel(field.validate_with || field.name, periodId);
           })
         );
         validatorsFiltered = validators.filter((v) => v !== undefined);

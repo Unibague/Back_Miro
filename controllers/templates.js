@@ -14,19 +14,30 @@ const { ObjectId } = mongoose.Types;
 
 const escapeRegExp = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const validateWithToText = (validateWith) => {
+  if (!validateWith) return '';
+  if (typeof validateWith === 'string') return validateWith;
+  if (typeof validateWith === 'object') return validateWith.name || validateWith.id || '';
+  return String(validateWith);
+};
+
+const getFieldValidatorReference = (field = {}) =>
+  validateWithToText(field.validate_with).trim() || String(field.name || '').trim();
+
 const collectValidatorsForTemplate = async (template, periodId) => {
   const topFields = template.fields || [];
   const sheetFields = (template.workbook_sheets || []).flatMap(s => s.fields || []);
   const allFields = [...topFields, ...sheetFields];
   const seen = new Set();
   const unique = allFields.filter(f => {
-    const key = String(f.validate_with || '').split(' - ')[0].trim().toLowerCase();
+    const reference = getFieldValidatorReference(f);
+    const key = reference.split(' - ')[0].trim().toLowerCase();
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
   const results = await Promise.all(
-    unique.map(f => Validator.giveValidatorToExcel(f.validate_with, periodId))
+    unique.map(f => Validator.giveValidatorToExcel(getFieldValidatorReference(f), periodId))
   );
   return results.filter(Boolean);
 };

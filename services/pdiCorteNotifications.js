@@ -3,7 +3,7 @@ const Proyecto = require('../models/pdiProyecto');
 const User = require('../models/users');
 
 const DEFAULT_FROM_ADDRESS = 'gestionpdi@unibague.edu.co';
-const DEFAULT_FROM_NAME = 'Gestion PDI';
+const DEFAULT_FROM_NAME = 'Gestión PDI';
 const DEFAULT_PLATFORM_URL = 'https://miro.unibague.edu.co';
 
 const cleanEnv = (value) => String(value || '').trim();
@@ -176,7 +176,7 @@ const collectRecipients = async () => {
     const recipients = new Map();
 
     const proyectos = await Proyecto.find({}, 'codigo nombre responsable responsable_email macroproyecto_id')
-        .populate('macroproyecto_id', 'codigo nombre lider lider_email')
+        .populate('macroproyecto_id', 'codigo nombre lÍder lider_email')
         .lean();
     const proyectosVigentes = proyectos.filter((proyecto) => proyecto.macroproyecto_id);
     const macrosById = new Map();
@@ -268,7 +268,14 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
     const fechaFin = formatDate(corte.fecha_fin);
     const roles = recipient.roles.join(' y ');
 
-    return `
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Periodo PDI abierto</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;">
         <div style="margin:0;padding:0;background:#f1f5f9;">
             <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:28px 12px;">
                 <tr>
@@ -276,10 +283,10 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e2e8f0;font-family:Arial,Helvetica,sans-serif;">
                             <tr>
                                 <td style="background:linear-gradient(135deg,#312e81,#2563eb);padding:28px 30px;color:#ffffff;">
-                                    <div style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.85;">Gestion PDI</div>
-                                    <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Periodo abierto para evidencias y evaluación</h1>
+                                    <div style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.85;">Gesti&#243;n PDI</div>
+                                    <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Periodo abierto para evidencias y evaluaci&#243;n</h1>
                                     <p style="margin:12px 0 0;font-size:16px;line-height:1.5;color:#dbeafe;">
-                                        El corte <strong style="color:#ffffff;">${escapeHtml(corte.nombre)}</strong> ya se encuentra habilitado en MIRO.
+                                        El corte <strong style="color:#ffffff;">${escapeHtml(corte.nombre)}</strong> ya se encuentra habilitado en MIRÓ.
                                     </p>
                                 </td>
                             </tr>
@@ -289,7 +296,7 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                                     <p style="margin:0 0 18px;font-size:15px;line-height:1.65;color:#334155;">
                                         Te notificamos que el periodo <strong>${escapeHtml(corte.nombre)}</strong>, desde
                                         <strong>${escapeHtml(fechaInicio)}</strong> hasta <strong>${escapeHtml(fechaFin)}</strong>,
-                                        esta abierto para cargar evidencias, reportar avances y realizar las evaluaciones correspondientes.
+                                        est&#225; abierto para cargar evidencias, reportar avances y realizar las evaluaciones correspondientes.
                                     </p>
 
                                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:18px 0;border-collapse:separate;border-spacing:0 10px;">
@@ -309,7 +316,7 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                                     <div style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:14px;padding:16px 18px;margin:20px 0;">
                                         <div style="font-size:13px;color:#0e7490;font-weight:800;text-transform:uppercase;">Tu rol en este periodo</div>
                                         <p style="margin:6px 0 0;font-size:15px;color:#164e63;line-height:1.55;">
-                                            ${escapeHtml(roles)}. Ingresa a MIRO para subir o revisar evidencias segun corresponda.
+                                            ${escapeHtml(roles)}. Ingresa a MIRO para subir o revisar evidencias seg&#250;n corresponda.
                                         </p>
                                     </div>
 
@@ -323,7 +330,7 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                                     </div>
 
                                     <p style="margin:20px 0 0;font-size:13px;line-height:1.55;color:#64748b;">
-                                        Este correo fue generado automaticamente por MIRO. Por favor no respondas a este mensaje.
+                                        Este correo fue generado autom&#225;ticamente por MIRÓ. Por favor no respondas a este mensaje.
                                         Para inquietudes del proceso PDI, escribe a gestionpdi@unibague.edu.co.
                                     </p>
                                 </td>
@@ -333,7 +340,8 @@ const buildEmailHtml = ({ recipient, corte, appUrl }) => {
                 </tr>
             </table>
         </div>
-    `;
+</body>
+</html>`;
 };
 
 const notifyPdiPeriodUsers = async (corte) => {

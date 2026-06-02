@@ -56,6 +56,45 @@ const getPeriodValidators = (period) => (period?.screenshot?.validators || []).m
 
 const sameValidatorName = (a = '', b = '') => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 
+const normalizeValidatorLookup = (value = '') => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+const validateWithToText = (validateWith) => {
+    if (!validateWith) return '';
+    if (typeof validateWith === 'string') return validateWith.trim();
+    if (typeof validateWith === 'object') {
+        return String(validateWith.name || validateWith.id || '').trim();
+    }
+    return String(validateWith).trim();
+};
+
+const splitValidateWithReference = (validateWith) => {
+    const text = validateWithToText(validateWith);
+    const parts = text.split(' - ');
+    return {
+        text,
+        validatorName: (parts[0] || '').trim(),
+        columnName: parts.slice(1).join(' - ').trim(),
+    };
+};
+
+const findValidatorColumn = (validator, columnName = '') => {
+    const columns = validator?.columns || [];
+    if (!columns.length) return null;
+
+    if (columnName) {
+        const normalizedColumnName = normalizeValidatorLookup(columnName);
+        const exact = columns.find((column) => normalizeValidatorLookup(column?.name) === normalizedColumnName);
+        if (exact) return exact;
+    }
+
+    return columns.find((column) => column?.is_validator) || columns[0];
+};
+
 const findValidatorInPeriod = (period, idOrName) => {
     const lookup = String(idOrName || '').trim();
     if (!lookup) return null;
@@ -883,38 +922,7 @@ const realIndex = index;
     return;
   }
 
-if (multiple && Array.isArray(value)) {
-  value.forEach(val => {
-    const validateFn = allowedDataTypes[datatype];
-    if (typeof validateFn !== 'function') return;
-
-    const validation = validateFn(val);
-    if (!validation.isValid) {
-      result.status = false;
-      result.errors.push({
-        register: realIndex + 1,
-        message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
-        value: val === null || val === undefined || val === '' ? "Sin valor" : (typeof val === 'object' ? JSON.stringify(val) : String(val))
-      });
-    }
-  });
-} else {
-  // Solo validar tipo de dato si el campo es obligatorio O si tiene valor
-  if (required || !isBlankValue(value)) {
-    const validateFn = allowedDataTypes[datatype];
-    if (typeof validateFn === 'function') {
-      const validation = validateFn(value);
-      if (!validation.isValid) {
-        result.status = false;
-        result.errors.push({
-          register: realIndex + 1,
-          message: `Valor inválido encontrado en la columna ${name}, fila ${realIndex + 1}: ${validation.message}`,
-          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-        });
-      }
-    }
-  }
-}
+// Validación de tipo eliminada: solo se valida obligatorio/opcional y lista de valores permitidos
 
 if (columnToValidate && validValuesSet) {
   // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
@@ -1517,9 +1525,7 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 
 validatorController.giveValidatorToExcel = async (name, periodId = null) => {
     try {
-        const parts = String(name || '').split(' - ');
-        const requestedValidatorName = (parts[0] || '').trim();
-        const requestedColumnName = parts.slice(1).join(' - ').trim();
+        const { validatorName: requestedValidatorName, columnName: requestedColumnName } = splitValidateWithReference(name);
         let validator = await validatorController.findValidatorByName(requestedValidatorName, periodId);
 
         if (!validator && requestedColumnName) {
@@ -1531,9 +1537,17 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
         }
 
         // Asegúrate de inicializar acc como un array de objetos vacíos
+        const columnToValidate = findValidatorColumn(validator, requestedColumnName);
         const validatorFilled = {}
 
-        validatorFilled['name'] = requestedValidatorName || validator.name
+        validatorFilled['name'] = validator.name || requestedValidatorName
+        validatorFilled['columns'] = (validator.columns || []).map((column) => ({
+            name: column.name,
+            is_validator: columnToValidate
+                ? normalizeValidatorLookup(column.name) === normalizeValidatorLookup(columnToValidate.name)
+                : Boolean(column.is_validator),
+            type: column.type,
+        }));
         
         validatorFilled['values'] = validator.columns.reduce((acc, item) => {
             item.values.forEach((value, index) => {

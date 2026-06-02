@@ -19,10 +19,12 @@ async function recalcularProyecto(proyecto_id) {
 
     const presupuesto = acciones.reduce((acc, a) => acc + (a.presupuesto || 0), 0);
     const presupuesto_ejecutado = acciones.reduce((acc, a) => acc + (a.presupuesto_ejecutado || 0), 0);
+    const gasto = acciones.reduce((acc, a) => acc + (a.gasto || 0), 0);
+    const inversion = acciones.reduce((acc, a) => acc + (a.inversion || 0), 0);
 
     const proyecto = await Proyecto.findByIdAndUpdate(
         proyecto_id,
-        { avance, presupuesto, presupuesto_ejecutado },
+        { avance, presupuesto, presupuesto_ejecutado, gasto, inversion },
         { new: true }
     );
     if (proyecto) await recalcularMacroproyecto(proyecto.macroproyecto_id);
