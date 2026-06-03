@@ -865,17 +865,33 @@ const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = [], f
 };
 
 const processFile = async (req) => {
-  const periodId = req.body.period_id || req.body.periodId || null;
-  const parsed = await readUploadedWorkbook(req.file);
-  const validatorColumns = await buildValidatorColumns(parsed.headers, parsed.rows, periodId);
-  const result = await buildEnrichedRows({
-    rows: parsed.rows,
-    fieldMap: parsed.fieldMap,
-    periodId,
-    validatorColumns,
-  });
-
-  return { ...parsed, ...result, validatorColumns };
+  try {
+    console.log('[supportTemplates] Starting processFile...');
+    const periodId = req.body.period_id || req.body.periodId || null;
+    console.log('[supportTemplates] Period ID:', periodId);
+    
+    console.log('[supportTemplates] Reading workbook...');
+    const parsed = await readUploadedWorkbook(req.file);
+    console.log('[supportTemplates] Workbook read successfully. Headers:', parsed.headers.map(h => h.name));
+    
+    console.log('[supportTemplates] Building validator columns...');
+    const validatorColumns = await buildValidatorColumns(parsed.headers, parsed.rows, periodId);
+    console.log('[supportTemplates] Validator columns built:', validatorColumns.length);
+    
+    console.log('[supportTemplates] Building enriched rows...');
+    const result = await buildEnrichedRows({
+      rows: parsed.rows,
+      fieldMap: parsed.fieldMap,
+      periodId,
+      validatorColumns,
+    });
+    console.log('[supportTemplates] Enriched rows built successfully. Total rows:', result.enrichedRows.length);
+    
+    return { ...parsed, ...result, validatorColumns };
+  } catch (error) {
+    console.error('[supportTemplates] ERROR in processFile:', error.message, error.stack);
+    throw error;
+  }
 };
 
 const buildPreviewRows = (rows) =>
@@ -925,17 +941,27 @@ controller.preview = async (req, res) => {
 
 controller.download = async (req, res) => {
   try {
+    console.log('[supportTemplates] Starting download...');
     const result = await processFile(req);
+    console.log('[supportTemplates] ProcessFile completed successfully');
+    
+    console.log('[supportTemplates] Applying generated columns...');
     applyGeneratedColumns(result.worksheet, result.enrichedRows, result.validatorColumns, result.fieldMap);
+    console.log('[supportTemplates] Generated columns applied');
 
+    console.log('[supportTemplates] Writing workbook buffer...');
     const buffer = await result.workbook.xlsx.writeBuffer();
+    console.log('[supportTemplates] Buffer written, size:', buffer.length);
+    
     const originalName = path.basename(req.file.originalname || "plantilla.xlsx", path.extname(req.file.originalname || ""));
     const filename = `${originalName}_cruzada_siga_iceberg.xlsx`;
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(Buffer.from(buffer));
+    console.log('[supportTemplates] Download sent successfully');
   } catch (error) {
+    console.error('[supportTemplates] ERROR in download:', error.message, error.stack);
     res.status(error.status || 500).json({ message: error.message || "No fue posible generar la plantilla enriquecida." });
   } finally {
     await cleanupFile(req.file);
