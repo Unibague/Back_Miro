@@ -3,38 +3,17 @@ const path = require('path');
 const crypto = require('crypto');
 const {
     Document, Packer, Paragraph, TextRun, HeadingLevel,
-    ImageRun, Header,
-    HorizontalPositionRelativeFrom, VerticalPositionRelativeFrom,
 } = require('docx');
 const { UPLOAD_DIR, buildUrl, deleteFile } = require('./pdiFormularioStorage');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
 const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
-
-const MEMBRETE_PATH = path.join(__dirname, '../assets/pdi/membrete-header.jpeg');
-const MEMBRETE_W = 794;
-const MEMBRETE_H = Math.round(794 * 3300 / 2550);
+const {
+    buildMembreteHeader: buildPdiMembreteHeader,
+    applyMembreteDocxTemplate,
+} = require('./pdiWordAssets');
 
 function buildMembreteHeader() {
-    if (!fs.existsSync(MEMBRETE_PATH)) return null;
-    return new Header({
-        children: [
-            new Paragraph({
-                children: [
-                    new ImageRun({
-                        type: 'jpg',
-                        data: fs.readFileSync(MEMBRETE_PATH),
-                        transformation: { width: MEMBRETE_W, height: MEMBRETE_H },
-                        floating: {
-                            horizontalPosition: { relative: HorizontalPositionRelativeFrom.PAGE, offset: 0 },
-                            verticalPosition:   { relative: VerticalPositionRelativeFrom.PAGE,   offset: 0 },
-                            behindDocument: true,
-                            allowOverlap:   true,
-                        },
-                    }),
-                ],
-            }),
-        ],
-    });
+    return buildPdiMembreteHeader();
 }
 
 const DOCX_MIMETYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -146,7 +125,7 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
     if (membreteHeader) section.headers = { default: membreteHeader };
     const doc = new Document({ sections: [section] });
 
-    const buffer = await Packer.toBuffer(doc);
+    const buffer = applyMembreteDocxTemplate(await Packer.toBuffer(doc));
     const unique = crypto.randomBytes(8).toString('hex');
     const filename = `formulario_${sanitizeFilePart(formularioNombre)}_${sanitizeFilePart(respuesta.corte)}_${unique}.docx`;
     const driveNombre = `Reporte de avances - ${indicadorCodigo || indicadorNombre || formularioNombre}.docx`;

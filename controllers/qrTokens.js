@@ -5,6 +5,7 @@ const Template = require('../models/templates');
 const Dependency = require('../models/dependencies');
 const User = require('../models/users');
 const Validator = require('./validators');
+const { getEffectiveRequired } = require('../helpers/requiredFields');
 
 const qrController = {};
 
@@ -31,6 +32,14 @@ const parseValidateWith = (value = '') => {
 };
 
 const toPlainField = (field) => field?.toObject?.() || field;
+
+const withEffectiveRequired = (field) => {
+  const plainField = toPlainField(field) || {};
+  return {
+    ...plainField,
+    required: getEffectiveRequired(plainField),
+  };
+};
 
 const toOptionText = (value) => {
   if (value === null || value === undefined) return '';
@@ -174,7 +183,7 @@ qrController.generateToken = async (req, res) => {
 const enrichFields = async (fields, periodId) => {
   const editable = fields || [];
   return Promise.all(editable.map(async (field) => {
-    const plainField = toPlainField(field);
+    const plainField = withEffectiveRequired(field);
     if (!plainField.validate_with || typeof plainField.validate_with !== 'string') return plainField;
 
     try {

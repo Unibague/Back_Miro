@@ -11,6 +11,7 @@ const {
     getFieldDropdownOptions,
     normalizeOptionKey: normalizeDropdownOptionKey,
 } = require('../helpers/dropdownOptions');
+const { getEffectiveRequired } = require('../helpers/requiredFields');
 
 const validatorController = {}
 
@@ -688,6 +689,7 @@ validatorController.deleteValidator = async (req, res) => {
 validatorController.validateColumn = async (column, periodId = null) => {
   let { values } = column;
   let { name, datatype, validate_with, required, multiple } = column;
+  required = getEffectiveRequired(column);
   let result = { status: true, column: name, errors: [] };
 
 
@@ -904,11 +906,9 @@ const realIndex = index;
 
   const isEmpty = isBlankValue(value);
 
-
-
   // PRIMERO: Si el valor es vacío y no es requerido, saltar TODA validación
   if (!required && isEmpty) {
-    return; // Saltar toda validación para campos no obligatorios vacíos
+    return;
   }
 
   // SEGUNDO: Si es requerido y está vacío, error
@@ -916,7 +916,7 @@ const realIndex = index;
     result.status = false;
     result.errors.push({
       register: realIndex + 1,
-      message: `Valor vacío encontrado en la columna ${name}, fila ${realIndex + 1}`,
+      message: `El campo "${name}" es obligatorio y no puede estar vacío (fila ${realIndex + 1})`,
       value: "Sin valor"
     });
     return;
@@ -962,6 +962,17 @@ if (columnToValidate && validValuesSet) {
         if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
           const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
           isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
+        }
+        // Extrae código del valor completo (ej: "CC Cédula de ciudadanía" → "CC")
+        if (!isValidValue) {
+          const codePrefix = /^([A-Z0-9]{1,6})[\s\-]/.exec(normalizeComparableText(String(valueToNormalize)));
+          if (codePrefix) isValidValue = !!acceptedStringValuesSet?.has(codePrefix[1]);
+        }
+        // También verifica si el valor completo está en validValuesSet normalizado
+        if (!isValidValue) {
+          isValidValue = Array.from(validValuesSet).some(v =>
+            normalizeComparableText(String(v)) === normalizedVal
+          );
         }
       }
 
@@ -1010,6 +1021,17 @@ if (columnToValidate && validValuesSet) {
         if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
           const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
           isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
+        }
+        // Extrae código del valor completo (ej: "CC Cédula de ciudadanía" → "CC")
+        if (!isValidValue) {
+          const codePrefix = /^([A-Z0-9]{1,6})[\s\-]/.exec(normalizeComparableText(String(valueToNormalize)));
+          if (codePrefix) isValidValue = !!acceptedStringValuesSet?.has(codePrefix[1]);
+        }
+        // También verifica si el valor completo está en validValuesSet normalizado
+        if (!isValidValue) {
+          isValidValue = Array.from(validValuesSet).some(v =>
+            normalizeComparableText(String(v)) === normalizedVal
+          );
         }
       }
 

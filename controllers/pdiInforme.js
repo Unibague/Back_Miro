@@ -197,7 +197,16 @@ ctrl.informeMacro = async (req, res) => {
 // GET /pdi/informes/lista
 ctrl.lista = async (req, res) => {
     try {
-        const macros    = await Macroproyecto.find({}).lean();
+        const { email } = req.query;
+        const normalize = (v) => String(v ?? '').toLowerCase().trim();
+        const allMacros = await Macroproyecto.find({}).lean();
+        const macros = email
+            ? allMacros.filter((m) => {
+                const userEmail = normalize(email);
+                return (m.lider_email && normalize(m.lider_email) === userEmail)
+                    || (m.lider && normalize(m.lider) === userEmail);
+              })
+            : allMacros;
         const proyectos = await Proyecto.find({}).lean();
         const acciones  = await Accion.find({}).lean();
         const indicadores = await Indicador.find({}).lean();
@@ -250,11 +259,27 @@ ctrl.lista = async (req, res) => {
             nombre:    m.nombre,
             avance:    m.avance,
             lider:     m.lider,
+            lider_email: m.lider_email || '',
             informe_drive_web_view_link: m.informe_drive_web_view_link || null,
             proyectos: proyectosPorMacro[String(m._id)] ?? [],
         })));
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+};
+
+// GET /pdi/informes/is-leader?email=X
+ctrl.isLeader = async (req, res) => {
+    try {
+        const { email } = req.query;
+        if (!email) return res.json({ isLeader: false });
+        const normalized = String(email).toLowerCase().trim();
+        const match = await Macroproyecto.findOne({
+            lider_email: { $regex: new RegExp(`^${normalized}$`, 'i') }
+        }).lean();
+        res.json({ isLeader: !!match });
+    } catch (e) {
+        res.status(500).json({ isLeader: false });
     }
 };
 

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const ctrl   = require('../controllers/pdiInforme');
 
 router.get('/lista',           ctrl.lista);
+router.get('/is-leader',       ctrl.isLeader);
 router.get('/cortes',          ctrl.cortes);
 router.get('/indicador/:id',   ctrl.informeIndicador);
 router.get('/accion/:id',      ctrl.informeAccion);
