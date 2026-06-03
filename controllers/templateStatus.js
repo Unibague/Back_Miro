@@ -53,13 +53,22 @@ const buildTemplateSubmissionRows = async (template) => {
 
   if (template.loaded_data && template.loaded_data.length > 0) {
     for (const data of template.loaded_data) {
+      // Obtener información del usuario que envió
+      let userName = 'N/A';
+      let userEmail = 'N/A';
+      
+      if (data.send_by) {
+        userName = data.send_by?.full_name || data.send_by?.name || 'Sin nombre';
+        userEmail = data.send_by?.email || 'N/A';
+      }
+      
       rows.push({
         template_id: template._id,
         template_name: template.name,
         period: template.period?.name || 'N/A',
         deadline: template.deadline,
-        user_name: data.send_by?.full_name || data.send_by?.name || 'N/A',
-        user_email: data.send_by?.email || 'N/A',
+        user_name: userName,
+        user_email: userEmail,
         dependency: dependencyNameByCode.get(data.dependency) || data.dependency,
         has_submitted: true,
         submitted_date: data.loaded_date
@@ -132,13 +141,16 @@ const buildTemplateSubmissionRows = async (template) => {
     }
 
     for (const user of users) {
+      // Asegurar que el nombre de usuario se muestre correctamente
+      const displayName = (user.full_name && user.full_name.trim()) || (user.name && user.name.trim()) || 'Sin nombre';
+      
       rows.push({
         template_id: template._id,
         template_name: template.name,
         period: template.period?.name || 'N/A',
         deadline: template.deadline,
-        user_name: user.full_name || user.name,
-        user_email: user.email,
+        user_name: displayName,
+        user_email: user.email || 'N/A',
         dependency: dependencyName,
         has_submitted: false,
         submitted_date: null
