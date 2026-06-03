@@ -2376,11 +2376,23 @@ publTempController.getTemplateById = async (req, res) => {
     const response = {
       name: publishedTemplate.name,
       template: {
-        ...publishedTemplate.template._doc,
+        ...(publishedTemplate.template?.toObject?.() || publishedTemplate.template?._doc || publishedTemplate.template || {}),
         workbook_sheets: enrichedSheets,
         fields: fieldsWithValidatorIds,
         validators: Array.from(validatorsMap.values()),
         shared: templateShared,
+        producers: publishedTemplate.template?.producers && publishedTemplate.template.producers.length > 0
+          ? await Promise.all((publishedTemplate.template.producers || []).map(async (producerId) => {
+              const producer = await Dependency.findById(producerId).lean();
+              return {
+                _id: producer?._id,
+                dep_code: producer?.dep_code,
+                name: producer?.name,
+                responsible: producer?.responsible,
+                visualizers: producer?.visualizers || []
+              };
+            }))
+          : [],
       },
       publishedTemplate: publishedTemplate,
       qr_draft_data: qrDraftData,
