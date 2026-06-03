@@ -16,6 +16,7 @@ const Category = require('../models/categories.js');
 const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
 const RemindersService = require('../services/reminders');
+const { getEffectiveRequired } = require('../helpers/requiredFields');
 
 const axios = require('axios');
 
@@ -1210,6 +1211,17 @@ publTempController.loadProducerData = async (req, res) => {
           (sheet.fields || []).map((field) => toPlainField(field, sheet.name))
         ))) || []);
 
+    const applyEffectiveRequired = (field) => {
+      if (!field) return field;
+      field.required = getEffectiveRequired(field);
+      return field;
+    };
+    fieldsForLoad.forEach(applyEffectiveRequired);
+    (pubTem.template.fields || []).forEach(applyEffectiveRequired);
+    (pubTem.template.workbook_sheets || []).forEach((sheet) => {
+      (sheet.fields || []).forEach(applyEffectiveRequired);
+    });
+
     const normalizeProducerValue = (rawValue, field) => {
       let val = rawValue;
 
@@ -1310,7 +1322,7 @@ publTempController.loadProducerData = async (req, res) => {
       
       // Solo considerar como faltantes las columnas que son obligatorias (required = true)
       const missingColumns = fieldsForLoad
-        .filter(field => field.required && !excelColumns.includes(field.name))
+        .filter(field => getEffectiveRequired(field) && !excelColumns.includes(field.name))
         .map(field => field.name);
       const extraColumns = excelColumns.filter(col => !templateColumns.includes(col));
       
@@ -1351,6 +1363,33 @@ publTempController.loadProducerData = async (req, res) => {
 
 // Construcción robusta de `result` considerando `multiple
     if (isSheetSubmission) {
+      // Construir mapa de comments desde todas las fuentes disponibles
+      const commentByFieldName = new Map();
+      const addToMap = (fields) => (fields || []).forEach(f => {
+        if (f.name && f.comment && !commentByFieldName.has(f.name))
+          commentByFieldName.set(f.name, f.comment);
+      });
+      // Fuente 1: template.fields principal (snapshot)
+      addToMap(pubTem.template.fields);
+      // Fuente 2: workbook_sheets del snapshot
+      (pubTem.template.workbook_sheets || []).forEach(s => addToMap(s.fields));
+      // Fuente 3: template live de BD (más actualizado)
+      const templateId = pubTem.template?._id;
+      if (templateId) {
+        const liveT = await Template.findById(templateId).lean();
+        if (liveT) {
+          addToMap(liveT.fields);
+          (liveT.workbook_sheets || []).forEach(s => addToMap(s.fields));
+        }
+      }
+
+      fieldsForLoad.forEach(field => {
+        // Usar el comment del campo o buscarlo en el mapa
+        const comment = field.comment || commentByFieldName.get(field.name) || '';
+        if (!field.comment && comment) field.comment = comment;
+        field.required = getEffectiveRequired(field);
+      });
+
       const result = fieldsForLoad.map((field) => {
         const sheetRows = incomingSheetsData.find(({ name }) => name === field.sheet_name)?.data || [];
         return {
@@ -1388,8 +1427,13 @@ publTempController.loadProducerData = async (req, res) => {
           }
         }
 
+        templateField.required = getEffectiveRequired(templateField);
         templateField.values = fieldData.values;
-        return Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
+        const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
+        return {
+          ...validationResult,
+          sheet_name: templateField.sheet_name,
+        };
       });
 
       const validationResults = await Promise.all(validations);
@@ -1397,6 +1441,7 @@ publTempController.loadProducerData = async (req, res) => {
 
       if (validationErrors.length > 0) {
         const sanitizedErrors = validationErrors.map(err => ({
+          sheet_name: err.sheet_name,
           column: err.column ?? "Campo desconocido",
           errors: (err.errors ?? []).map(e => ({
             register: e.register ?? 1,
@@ -1569,6 +1614,7 @@ if (field.multiple) {
         }
       }
 
+      templateField.required = getEffectiveRequired(templateField);
       templateField.values = field.values;
 
       const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
@@ -2276,13 +2322,20 @@ publTempController.getTemplateById = async (req, res) => {
 
     const validatorsMap = new Map();
     const periodId = publishedTemplate.period?._id || publishedTemplate.period;
+    const withEffectiveRequired = (field) => {
+      const plainField = toPlainObject(field);
+      return {
+        ...plainField,
+        required: getEffectiveRequired(plainField),
+      };
+    };
 
     const fieldsWithValidatorIds = await Promise.all((publishedTemplate.template.fields || []).map(async (field) => {
       try {
-        return await enrichFieldWithCurrentValidator(field, periodId, validatorsMap);
+        return withEffectiveRequired(await enrichFieldWithCurrentValidator(field, periodId, validatorsMap));
       } catch (err) {
         console.error(`Error during validator lookup: ${err.message}`);
-        return field?.toObject?.() || field;
+        return withEffectiveRequired(field);
       }
     }));
 
@@ -2295,9 +2348,9 @@ publTempController.getTemplateById = async (req, res) => {
     const enrichedSheets = await Promise.all(rawSheets.map(async (sheet) => {
       const enrichedFields = await Promise.all((sheet.fields || []).map(async (field) => {
         try {
-          return await enrichFieldWithCurrentValidator(field, periodId, validatorsMap);
+          return withEffectiveRequired(await enrichFieldWithCurrentValidator(field, periodId, validatorsMap));
         } catch (_) {
-          return field?.toObject?.() || field;
+          return withEffectiveRequired(field);
         }
       }));
       return { ...sheet.toObject?.() || sheet, fields: enrichedFields };
