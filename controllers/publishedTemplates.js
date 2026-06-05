@@ -1132,7 +1132,7 @@ publTempController.exportPendingTemplates = async (req, res) => {
 }
 
 publTempController.loadProducerData = async (req, res) => {
-  const { email, pubTem_id, data, sheetsData, edit, asDraft } = req.body;
+  const { email, pubTem_id, data, sheetsData, edit, asDraft, bypassValidation } = req.body;
 
 
 
@@ -1429,6 +1429,10 @@ publTempController.loadProducerData = async (req, res) => {
 
         templateField.required = getEffectiveRequired(templateField);
         templateField.values = fieldData.values;
+        // Si bypassValidation=true (carga desde Excel), saltar validación de opciones del validador
+        if (bypassValidation) {
+          return { status: true, sheet_name: templateField.sheet_name };
+        }
         const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
         return {
           ...validationResult,
@@ -1840,11 +1844,19 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     // Buscar datos de cualquiera de las dependencias del usuario
     const index = pubTem.loaded_data.findIndex(data => allUserDependencies.includes(data.dependency))
     if (index === -1) { return res.status(404).json({ status: 'Data not found' }) }
-  
+
     const deletedData = pubTem.loaded_data[index];
     pubTem.loaded_data.splice(index, 1);
+
+    // Si estaba enviado al SNIES, resetear el estado para que vuelva a ser enviado
+    if (pubTem.final_submitted) {
+      pubTem.final_submitted = false;
+      pubTem.final_submitted_by = null;
+      pubTem.final_submitted_date = null;
+    }
+
     await pubTem.save();
-    
+
     // Audit log
     console.log('🔍 Executing audit log for publishedTemplateData deletion');
     await auditLogger.logDelete(req, user, 'publishedTemplateData', {
@@ -1853,7 +1865,7 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
       dependency: deletedData.dependency
     });
     console.log('✅ Audit log completed for publishedTemplateData deletion');
-    
+
     return res.status(200).json({ status: 'Data deleted successfully' })
   } catch (error) {
     console.log(error.message)

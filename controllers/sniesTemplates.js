@@ -597,7 +597,73 @@ const toOptionText = (value) => {
   return String(value).trim();
 };
 
-const getValidatorOptions = (validator, preferredColumnName) => {
+const escapeRegExp = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const shouldUseValidatorCodeOnly = (...values) =>
+  values.some((value) => {
+    const normalized = normalizeFieldName(value);
+    if (!normalized) return false;
+
+    return (
+      normalized === "ID" ||
+      normalized === "TIPO" ||
+      normalized === "CODIGO" ||
+      normalized === "COD" ||
+      normalized.startsWith("ID_") ||
+      normalized.startsWith("TIPO_") ||
+      normalized.startsWith("CODIGO_") ||
+      normalized.startsWith("COD_") ||
+      normalized.includes("_ID_") ||
+      normalized.includes("_TIPO_") ||
+      normalized.includes("_CODIGO_") ||
+      normalized.includes("_COD_")
+    );
+  });
+
+const extractInitialValidatorCode = (value, description = "") => {
+  const text = toOptionText(value);
+  if (!text) return "";
+
+  const descText = toOptionText(description);
+  if (descText) {
+    const withoutDescription = text
+      .replace(new RegExp(`\\s*${escapeRegExp(descText)}\\s*$`, "i"), "")
+      .replace(/[\s.:;\-]+$/g, "")
+      .trim();
+
+    if (withoutDescription && withoutDescription !== text) {
+      return withoutDescription;
+    }
+  }
+
+  const codeMatch = /^([A-Z]{1,6}[A-Z0-9]*|\d+(?:[.,]\d+)*)(?:\s*[\.):;\-]\s*|\s+).+$/u.exec(text);
+  if (!codeMatch) return text;
+
+  return codeMatch[1].replace(/[.,]+$/g, "").trim();
+};
+
+const normalizeValidatorValueKey = (value) => normalizeFieldName(toOptionText(value));
+
+const buildValidatorOptionLookup = (options = []) => {
+  const lookup = new Map();
+
+  options.forEach((option) => {
+    const value = option?.value;
+    const displayLabel = option?.displayLabel;
+    const normalizedValue = normalizeValidatorValueKey(value);
+    const normalizedDisplayLabel = normalizeValidatorValueKey(displayLabel);
+
+    if (normalizedValue) lookup.set(normalizedValue, value);
+    if (normalizedDisplayLabel) lookup.set(normalizedDisplayLabel, value);
+  });
+
+  return lookup;
+};
+
+const getWorksheetFieldLookupKey = (worksheetName, fieldName) =>
+  `${normalizeFieldName(worksheetName)}::${normalizeFieldName(fieldName)}`;
+
+const getValidatorOptions = (validator, preferredColumnName, fieldName = "") => {
   const options = [];
   const seen = new Set();
 
@@ -630,13 +696,10 @@ const getValidatorOptions = (validator, preferredColumnName) => {
     const descText = toOptionText(descValue);
     if (descKey && !descText) return;
 
-    // Para validadores de una sola columna con formato "CC Cédula de ciudadanía",
-    // extraer solo el código inicial como valor almacenado.
-    let storedValue = idText;
-    if (!descKey) {
-      const codeMatch = /^([A-Z0-9]{1,6})\s+.+$/.exec(idText);
-      if (codeMatch) storedValue = codeMatch[1];
-    }
+    // In SNIES code/id/type columns, store only the initial code.
+    const storedValue = shouldUseValidatorCodeOnly(fieldName, preferredColumnName, idKey, validator?.name)
+      ? extractInitialValidatorCode(idText, descText)
+      : idText;
 
     const seenKey = normalizeToken(storedValue);
     if (seen.has(seenKey)) return;
@@ -647,6 +710,71 @@ const getValidatorOptions = (validator, preferredColumnName) => {
   });
 
   return options;
+};
+
+const buildSniesValidatorNormalizationLookup = async (fields = [], periodId = null) => {
+  const fieldsWithValidator = fields.filter(
+    (field) => field?.worksheet_name && field?.name && field?.validate_with && !field?.multiple
+  );
+
+  const lookup = {
+    byWorksheet: new Map(),
+    byFieldName: new Map(),
+  };
+
+  if (fieldsWithValidator.length === 0) {
+    return lookup;
+  }
+
+  const validatorResults = await Promise.all(
+    fieldsWithValidator.map(async (field) => ({
+      field,
+      validator: await Validator.giveValidatorToExcel(field.validate_with, periodId),
+    }))
+  );
+
+  validatorResults.forEach(({ field, validator }) => {
+    if (!validator) return;
+
+    const validateWithParts = String(field.validate_with || "").split(" - ");
+    const validatorColumnName = validateWithParts.slice(1).join(" - ").trim();
+    const options = getValidatorOptions(validator, validatorColumnName, field.name);
+    if (options.length === 0) return;
+
+    const normalizedFieldName = normalizeFieldName(field.name);
+    const normalizer = {
+      field,
+      optionLookup: buildValidatorOptionLookup(options),
+      codeOnly: shouldUseValidatorCodeOnly(field.name, validatorColumnName, validator?.name),
+    };
+
+    lookup.byWorksheet.set(getWorksheetFieldLookupKey(field.worksheet_name, field.name), normalizer);
+    if (!lookup.byFieldName.has(normalizedFieldName)) {
+      lookup.byFieldName.set(normalizedFieldName, normalizer);
+    }
+  });
+
+  return lookup;
+};
+
+const getSniesValidatorNormalizer = (lookup, worksheetName, fieldName) =>
+  lookup.byWorksheet.get(getWorksheetFieldLookupKey(worksheetName, fieldName)) ||
+  lookup.byFieldName.get(normalizeFieldName(fieldName));
+
+const normalizeSniesValidatorOutputValue = (value, normalizer) => {
+  if (!normalizer) return value;
+
+  const text = toOptionText(value);
+  if (!text) return value;
+
+  const directMatch = normalizer.optionLookup.get(normalizeValidatorValueKey(text));
+  if (directMatch !== undefined) return directMatch;
+
+  if (!normalizer.codeOnly) return value;
+
+  const extractedCode = extractInitialValidatorCode(text);
+  const codeMatch = normalizer.optionLookup.get(normalizeValidatorValueKey(extractedCode));
+  return codeMatch !== undefined ? codeMatch : extractedCode;
 };
 
 const columnNameToNumber = (columnName = "") => {
@@ -1546,7 +1674,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
         return;
       }
 
-      const options = getValidatorOptions(validator, validatorColumnName);
+      const options = getValidatorOptions(validator, validatorColumnName, field.name);
       if (options.length === 0) {
         return;
       }
@@ -2200,6 +2328,7 @@ const buildSniesDataset = async (template) => {
 
   const useWorksheetMapping = worksheets.length > 1;
   const mergedRows = enrichedSourceDatasets.flatMap((sourceTemplate) => sourceTemplate.rows);
+  const validatorNormalizationLookup = await buildSniesValidatorNormalizationLookup(template.fields || [], template.period);
 
   const sheetDatasets = worksheets.map((worksheet) => {
     const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
@@ -2249,7 +2378,9 @@ const buildSniesDataset = async (template) => {
           ? getPeriodValueForHeader(normalizedHeader, periodValues)
           : undefined;
 
-        acc[header] = directValue ?? periodFallback ?? "";
+        const normalizer = getSniesValidatorNormalizer(validatorNormalizationLookup, worksheet.name, header);
+        const value = directValue ?? periodFallback ?? "";
+        acc[header] = normalizeSniesValidatorOutputValue(value, normalizer);
         return acc;
       }, {});
     });

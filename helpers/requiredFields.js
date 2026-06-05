@@ -10,29 +10,38 @@ const normalizeRequirementText = (value) => {
     .replace(/\r/g, '\n');
 };
 
+const checkLineForRequired = (line) => {
+  const compact = line.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+  for (const word of ['obligatorio', 'obligatario']) {
+    const idx = compact.indexOf(word);
+    if (idx >= 0 && !compact.slice(0, idx).endsWith('no') && !compact.slice(idx + word.length).startsWith('si')) return true;
+  }
+  return false;
+};
+
 const isRequiredComment = (comment) => {
+  const str = String(comment ?? '');
+  if (!str.trim()) return false;
+
+  // First: check using NFC normalization (handles standard Spanish accents)
+  if (str.normalize('NFC').split(/[\r\n]+/).some(checkLineForRequired)) return true;
+
+  // Fallback: full NFD normalization + diacritic removal
   const normalized = normalizeRequirementText(comment);
-  if (!normalized.trim()) return false;
-
-  return normalized.split('\n').some((line) => {
-    const text = line.trim().replace(/\s+/g, ' ').toLowerCase();
-    const compactText = text.replace(/[^a-z0-9]+/g, '');
-    const requiredIndex = compactText.indexOf('obligatorio');
-    if (requiredIndex < 0) return false;
-
-    const beforeRequired = compactText.slice(0, requiredIndex);
-    const afterRequired = compactText.slice(requiredIndex + 'obligatorio'.length);
-    return !beforeRequired.endsWith('no') && !afterRequired.startsWith('si');
-  });
+  return normalized.trim() ? normalized.split('\n').some(checkLineForRequired) : false;
 };
 
 const getEffectiveRequired = (field = {}) => {
   if (Boolean(field?.required)) return true;
   const comment = field?.comment;
-  if (typeof comment === 'string' && comment.trim()) {
-    return isRequiredComment(comment);
+  if (typeof comment !== 'string' || !comment.trim()) return false;
+  // Simple direct check for standard Spanish text
+  const lower = comment.toLowerCase();
+  for (const w of ['obligatorio', 'obligatario']) {
+    if (lower.includes(w) && !lower.includes(`no ${w}`) && !new RegExp(`${w}\\s+si\\b`).test(lower)) return true;
   }
-  return false;
+  // Fallback with full normalization
+  return isRequiredComment(comment);
 };
 
 module.exports = {

@@ -1,0 +1,792 @@
+{
+  "version": 1,
+  "saved_at": "2026-06-05T15:38:36.691Z",
+  "nodes": [
+    {
+      "id": "M1-P1",
+      "codigo": "M1-P1",
+      "nombre": "Travesías del Conocimiento",
+      "macro_codigo": "M1",
+      "macro_nombre": "Propuesta Formativa Integral y de Calidad",
+      "puntaje_total": 47,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 576.3855590820312,
+      "y": 80
+    },
+    {
+      "id": "M1-P2",
+      "codigo": "M1-P2",
+      "nombre": "Aseguramiento de la Calidad (SIAC)",
+      "macro_codigo": "M1",
+      "macro_nombre": "Propuesta Formativa Integral y de Calidad",
+      "puntaje_total": 27,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 748.6746826171875,
+      "y": 94.91716766357422
+    },
+    {
+      "id": "M1-P3",
+      "codigo": "M1-P3",
+      "nombre": "Tránsito Vital",
+      "macro_codigo": "M1",
+      "macro_nombre": "Propuesta Formativa Integral y de Calidad",
+      "puntaje_total": 28,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 618.6746826171875,
+      "y": 243.7123565673828
+    },
+    {
+      "id": "M1-P4",
+      "codigo": "M1-P4",
+      "nombre": "Voces y Saberes",
+      "macro_codigo": "M1",
+      "macro_nombre": "Propuesta Formativa Integral y de Calidad",
+      "puntaje_total": 27,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 526.2650756835938,
+      "y": 220.21836853027344
+    },
+    {
+      "id": "M1-P5",
+      "codigo": "M1-P5",
+      "nombre": "Trayectorias de Futuro",
+      "macro_codigo": "M1",
+      "macro_nombre": "Propuesta Formativa Integral y de Calidad",
+      "puntaje_total": 14,
+      "nivel_articulacion": "Baja",
+      "prioridad_gestion": "Prioridad Baja",
+      "x": 449.51806640625,
+      "y": 85.51957702636719
+    },
+    {
+      "id": "M2-P1",
+      "codigo": "M2-P1",
+      "nombre": "Redes del Conocimiento",
+      "macro_codigo": "M2",
+      "macro_nombre": "Redes Multidimensionales del Conocimiento",
+      "puntaje_total": 27,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 945.8162841796875,
+      "y": 146.93768310546875
+    },
+    {
+      "id": "M2-P2",
+      "codigo": "M2-P2",
+      "nombre": "Misiones Académicas y Científicas",
+      "macro_codigo": "M2",
+      "macro_nombre": "Redes Multidimensionales del Conocimiento",
+      "puntaje_total": 32,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 1004.7341749387349,
+      "y": 343.38100632188736
+    },
+    {
+      "id": "M2-P3",
+      "codigo": "M2-P3",
+      "nombre": "Laboratorios Vivos de Innovación",
+      "macro_codigo": "M2",
+      "macro_nombre": "Redes Multidimensionales del Conocimiento",
+      "puntaje_total": 32,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 880.0265167937757,
+      "y": 343.38100632188736
+    },
+    {
+      "id": "M3-P1",
+      "codigo": "M3-P1",
+      "nombre": "Viabilidad Financiera",
+      "macro_codigo": "M3",
+      "macro_nombre": "Universidad Sostenible",
+      "puntaje_total": 31,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 811.6026908252903,
+      "y": 498.1189936781127
+    },
+    {
+      "id": "M3-P2",
+      "codigo": "M3-P2",
+      "nombre": "Autorregulación Institucional",
+      "macro_codigo": "M3",
+      "macro_nombre": "Universidad Sostenible",
+      "puntaje_total": 24,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 873.9565198977699,
+      "y": 606.1189936781127
+    },
+    {
+      "id": "M3-P3",
+      "codigo": "M3-P3",
+      "nombre": "Alianzas y Cooperación para la Sostenibilidad",
+      "macro_codigo": "M3",
+      "macro_nombre": "Universidad Sostenible",
+      "puntaje_total": 19,
+      "nivel_articulacion": "Baja",
+      "prioridad_gestion": "Prioridad Baja",
+      "x": 749.2488617528107,
+      "y": 606.1189936781127
+    },
+    {
+      "id": "M4-P1",
+      "codigo": "M4-P1",
+      "nombre": "Cuidado Colectivo",
+      "macro_codigo": "M4",
+      "macro_nombre": "Cultura del Cuidado, la Ética y el Servicio",
+      "puntaje_total": 16,
+      "nivel_articulacion": "Baja",
+      "prioridad_gestion": "Prioridad Baja",
+      "x": 388.3973091747097,
+      "y": 516.1189936781127
+    },
+    {
+      "id": "M4-P2",
+      "codigo": "M4-P2",
+      "nombre": "Cultura del Servicio",
+      "macro_codigo": "M4",
+      "macro_nombre": "Cultura del Cuidado, la Ética y el Servicio",
+      "puntaje_total": 21,
+      "nivel_articulacion": "Baja",
+      "prioridad_gestion": "Prioridad Baja",
+      "x": 388.3973091747097,
+      "y": 624.1189936781127
+    },
+    {
+      "id": "M5-P1",
+      "codigo": "M5-P1",
+      "nombre": "Madurez Digital Institucional",
+      "macro_codigo": "M5",
+      "macro_nombre": "Ecosistema Digital",
+      "puntaje_total": 22,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 263.1325378417969,
+      "y": 213.95330810546875
+    },
+    {
+      "id": "M5-P2",
+      "codigo": "M5-P2",
+      "nombre": "Infraestructura Tecnológica",
+      "macro_codigo": "M5",
+      "macro_nombre": "Ecosistema Digital",
+      "puntaje_total": 15,
+      "nivel_articulacion": "Baja",
+      "prioridad_gestion": "Prioridad Baja",
+      "x": 397.8313293457031,
+      "y": 290.7002868652344
+    },
+    {
+      "id": "M5-P3",
+      "codigo": "M5-P3",
+      "nombre": "Herramientas Digitales",
+      "macro_codigo": "M5",
+      "macro_nombre": "Ecosistema Digital",
+      "puntaje_total": 49,
+      "nivel_articulacion": "Alta",
+      "prioridad_gestion": "Prioridad Alta",
+      "x": 242.77108764648438,
+      "y": 400.3388671875
+    },
+    {
+      "id": "M5-P4",
+      "codigo": "M5-P4",
+      "nombre": "Universidad Ágil",
+      "macro_codigo": "M5",
+      "macro_nombre": "Ecosistema Digital",
+      "puntaje_total": 29,
+      "nivel_articulacion": "Media",
+      "prioridad_gestion": "Prioridad Media",
+      "x": 112.77108764648438,
+      "y": 279.7364501953125
+    }
+  ],
+  "edges": [
+    {
+      "id": "M1-P1->M1-P3",
+      "origen": "M1-P1",
+      "destino": "M1-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "El diseño curricular y ambientes de aprendizaje inciden en permanencia, logro académico y empleabilidad.",
+      "recomendacion": "Asegurar que el modelo de éxito estudiantil dialogue con trayectorias curriculares."
+    },
+    {
+      "id": "M1-P1->M1-P5",
+      "origen": "M1-P1",
+      "destino": "M1-P5",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La oferta académica flexible y microcredenciales alimenta la articulación media-superior.",
+      "recomendacion": "Alinear currículos articulados con rutas de aprendizaje y oferta institucional."
+    },
+    {
+      "id": "M1-P1->M2-P2",
+      "origen": "M1-P1",
+      "destino": "M2-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La oferta académica y currículos transdisciplinares pueden articularse con misiones y retos territoriales.",
+      "recomendacion": "Usar misiones como escenarios de aprendizaje interdisciplinar."
+    },
+    {
+      "id": "M1-P1->M2-P3",
+      "origen": "M1-P1",
+      "destino": "M2-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Los laboratorios vivos pueden funcionar como ambientes de aprendizaje territorial y transdisciplinar.",
+      "recomendacion": "Integrar living labs a cursos, rutas y microcredenciales."
+    },
+    {
+      "id": "M1-P1->M3-P1",
+      "origen": "M1-P1",
+      "destino": "M3-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La nueva oferta y microcredenciales generan escenarios para ingresos y sostenibilidad financiera.",
+      "recomendacion": "Usar escenarios de demanda y empleabilidad como insumo del modelo financiero."
+    },
+    {
+      "id": "M1-P1->M5-P3",
+      "origen": "M1-P1",
+      "destino": "M5-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "M1-P1 incluye ambientes virtuales; M5-P3 incluye herramientas de aprendizaje y modelo tecnológico pedagógico híbrido.",
+      "recomendacion": "Unificar indicador, línea base, responsable y alcance de ambientes virtuales."
+    },
+    {
+      "id": "M1-P2->M1-P1",
+      "origen": "M1-P2",
+      "destino": "M1-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "El SIAC y estándares de calidad orientan creación, actualización y acreditación de programas.",
+      "recomendacion": "Asegurar que nuevos diseños curriculares nazcan alineados con SIAC."
+    },
+    {
+      "id": "M1-P2->M1-P3",
+      "origen": "M1-P2",
+      "destino": "M1-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La autorregulación y mejora continua soportan estrategias de permanencia y desempeño Saber Pro.",
+      "recomendacion": "Conectar resultados de autoevaluación con indicadores de trayectoria estudiantil."
+    },
+    {
+      "id": "M1-P2->M1-P4",
+      "origen": "M1-P2",
+      "destino": "M1-P4",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "El SIAC exige capacidades profesorales coherentes con docencia transformadora y estándares de calidad.",
+      "recomendacion": "Cruzar plan profesoral con brechas identificadas en autoevaluación."
+    },
+    {
+      "id": "M1-P2->M3-P2",
+      "origen": "M1-P2",
+      "destino": "M3-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "El SIAC aporta metodología de autorregulación para la reorganización y actualización de procesos.",
+      "recomendacion": "Usar SIAC como marco de seguimiento de procesos reorganizados."
+    },
+    {
+      "id": "M1-P3->M1-P5",
+      "origen": "M1-P3",
+      "destino": "M1-P5",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La orientación vocacional y transición media-superior se conecta con permanencia y éxito estudiantil.",
+      "recomendacion": "Articular acompañamiento desde educación media hasta primer año universitario."
+    },
+    {
+      "id": "M1-P3->M4-P1",
+      "origen": "M1-P3",
+      "destino": "M4-P1",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Egresados y estudiantes pueden participar en actividades de bienestar bajo modelos de capacidades colectivas.",
+      "recomendacion": "Diseñar oferta de bienestar para estudiantes, graduados y comunidad."
+    },
+    {
+      "id": "M1-P4->M1-P1",
+      "origen": "M1-P4",
+      "destino": "M1-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La docencia transformadora y competencias digitales docentes habilitan la nueva propuesta formativa.",
+      "recomendacion": "Programar formación profesoral según cambios curriculares y ambientes de aprendizaje."
+    },
+    {
+      "id": "M1-P4->M2-P1",
+      "origen": "M1-P4",
+      "destino": "M2-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "El desarrollo profesoral fortalece capacidades para investigación transdisciplinar y redes.",
+      "recomendacion": "Alinear formación profesoral con capacidades de investigación y redes."
+    },
+    {
+      "id": "M1-P4->M2-P2",
+      "origen": "M1-P4",
+      "destino": "M2-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Docentes con capacidades transdisciplinares son necesarios para misiones académicas y científicas.",
+      "recomendacion": "Incluir formación en trabajo multiactor y evaluación de impacto."
+    },
+    {
+      "id": "M1-P4->M2-P3",
+      "origen": "M1-P4",
+      "destino": "M2-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Los laboratorios vivos requieren capacidades docentes en innovación territorial y transdisciplinariedad.",
+      "recomendacion": "Formar equipos profesorales para gestión de living labs."
+    },
+    {
+      "id": "M1-P4->M5-P3",
+      "origen": "M1-P4",
+      "destino": "M5-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Ambos proyectos incluyen competencias digitales; M1-P4 en profesores y M5-P3 en toda la comunidad.",
+      "recomendacion": "Definir un solo marco de competencias digitales con responsabilidades diferenciadas."
+    },
+    {
+      "id": "M1-P5->M1-P1",
+      "origen": "M1-P5",
+      "destino": "M1-P1",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La articulación con educación media alimenta demanda cualificada para nuevos programas y trayectorias.",
+      "recomendacion": "Cruzar información de colegios articulados con inteligencia de mercados."
+    },
+    {
+      "id": "M1-P5->M1-P3",
+      "origen": "M1-P5",
+      "destino": "M1-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Una transición vocacional y socioemocional temprana puede reducir riesgos de deserción.",
+      "recomendacion": "Incluir variables de estudiantes articulados en modelo de éxito estudiantil."
+    },
+    {
+      "id": "M2-P1->M2-P2",
+      "origen": "M2-P1",
+      "destino": "M2-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Las redes y alianzas científicas facilitan misiones académicas y científicas multiactor.",
+      "recomendacion": "Conectar mapa de redes con portafolio de misiones."
+    },
+    {
+      "id": "M2-P1->M2-P3",
+      "origen": "M2-P1",
+      "destino": "M2-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Las redes de conocimiento soportan la conformación de living labs y bioterritorios inteligentes.",
+      "recomendacion": "Usar redes científicas y tecnológicas para fortalecer capacidades de laboratorios vivos."
+    },
+    {
+      "id": "M2-P1->M3-P3",
+      "origen": "M2-P1",
+      "destino": "M3-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Las redes académicas y la visibilidad internacional potencian el posicionamiento institucional en sostenibilidad, fortaleciendo la articulación con rankings, cooperación internacional y acciones alineadas con los ODS.",
+      "recomendacion": "Coordinar internacionalización científica con estrategia de rankings."
+    },
+    {
+      "id": "M2-P2->M2-P3",
+      "origen": "M2-P2",
+      "destino": "M2-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Misiones y laboratorios vivos comparten enfoque territorial, multiactor y sostenibilidad.",
+      "recomendacion": "Definir frontera: misiones como agenda; living labs como dispositivo territorial."
+    },
+    {
+      "id": "M2-P2->M3-P3",
+      "origen": "M2-P2",
+      "destino": "M3-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Misiones con sostenibilidad aportan evidencia a ODS, rankings y responsabilidad social.",
+      "recomendacion": "Diseñar desde el inicio trazabilidad de aportes ODS por misión."
+    },
+    {
+      "id": "M2-P3->M2-P2",
+      "origen": "M2-P3",
+      "destino": "M2-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Los laboratorios vivos son escenarios de implementación y medición de las misiones.",
+      "recomendacion": "Usar laboratorios vivos como plataforma de despliegue de misiones priorizadas."
+    },
+    {
+      "id": "M2-P3->M3-P3",
+      "origen": "M2-P3",
+      "destino": "M3-P3",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Bioterritorios y living labs aportan a sostenibilidad, impacto territorial y posicionamiento.",
+      "recomendacion": "Codificar contribución ODS y resultados territoriales de cada living lab."
+    },
+    {
+      "id": "M3-P1->M1-P1",
+      "origen": "M3-P1",
+      "destino": "M1-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La creación y actualización de programas exige análisis de costos y fuentes de financiación.",
+      "recomendacion": "Vincular modelo de costos a decisiones de apertura/actualización de oferta."
+    },
+    {
+      "id": "M3-P1->M2-P1",
+      "origen": "M3-P1",
+      "destino": "M2-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La investigación y redes requieren apalancamiento externo y sostenibilidad financiera.",
+      "recomendacion": "Articular recursos de I+D+i con estrategia financiera."
+    },
+    {
+      "id": "M3-P1->M2-P2",
+      "origen": "M3-P1",
+      "destino": "M2-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Las misiones requieren fuentes de financiación y modelos de sostenibilidad.",
+      "recomendacion": "Estructurar portafolio de financiación para misiones priorizadas."
+    },
+    {
+      "id": "M3-P1->M2-P3",
+      "origen": "M3-P1",
+      "destino": "M2-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Los laboratorios vivos demandan recursos y esquemas de sostenibilidad territorial.",
+      "recomendacion": "Definir modelo de sostenibilidad por laboratorio vivo."
+    },
+    {
+      "id": "M3-P1->M5-P1",
+      "origen": "M3-P1",
+      "destino": "M5-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La madurez digital requiere inversión sostenible y priorización financiera.",
+      "recomendacion": "Incluir criterios de costo total de propiedad en hoja de ruta digital."
+    },
+    {
+      "id": "M3-P1->M5-P2",
+      "origen": "M3-P1",
+      "destino": "M5-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La infraestructura tecnológica depende de recursos de inversión, renovación y sostenibilidad.",
+      "recomendacion": "Conectar plan de renovación tecnológica con presupuesto plurianual."
+    },
+    {
+      "id": "M3-P1->M5-P3",
+      "origen": "M3-P1",
+      "destino": "M5-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Herramientas digitales requieren presupuesto, licencias y evaluación de retorno.",
+      "recomendacion": "Evaluar costo-beneficio y adopción antes de adquirir nuevas plataformas."
+    },
+    {
+      "id": "M3-P2->M1-P2",
+      "origen": "M3-P2",
+      "destino": "M1-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La autorregulación institucional y el SIAC comparten lógica de mejora continua y normatividad.",
+      "recomendacion": "Definir frontera entre política/proceso institucional y sistema de calidad."
+    },
+    {
+      "id": "M3-P2->M4-P1",
+      "origen": "M3-P2",
+      "destino": "M4-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "El modelo de bienestar/cuidado puede requerir ajustes de procesos y marco normativo.",
+      "recomendacion": "Validar implicaciones normativas del modelo de capacidades colectivas."
+    },
+    {
+      "id": "M3-P2->M4-P2",
+      "origen": "M3-P2",
+      "destino": "M4-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La reorganización institucional incide en responsabilidades de servicio.",
+      "recomendacion": "Ajustar roles y protocolos de servicio en el marco de la reorganización."
+    },
+    {
+      "id": "M3-P2->M5-P4",
+      "origen": "M3-P2",
+      "destino": "M5-P4",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La reorganización actualiza procesos y marco normativo; Universidad Ágil rediseña y optimiza procesos.",
+      "recomendacion": "Coordinar mapa de procesos para evitar doble intervención sobre las mismas áreas."
+    },
+    {
+      "id": "M3-P3->M2-P1",
+      "origen": "M3-P3",
+      "destino": "M2-P1",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Los rankings de sostenibilidad pueden abrir cooperación y alianzas internacionales.",
+      "recomendacion": "Usar ranking y Pacto Global como canales de visibilidad para redes."
+    },
+    {
+      "id": "M4-P1->M1-P3",
+      "origen": "M4-P1",
+      "destino": "M1-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Bienestar, capacidades colectivas y salud mental son condiciones para permanencia y éxito estudiantil.",
+      "recomendacion": "Integrar variables de bienestar y salud mental al modelo de éxito estudiantil."
+    },
+    {
+      "id": "M4-P1->M4-P2",
+      "origen": "M4-P1",
+      "destino": "M4-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Cuidado colectivo y servicio comparten dimensión cultural y experiencia institucional.",
+      "recomendacion": "Evitar campañas separadas; construir narrativa común de cultura institucional."
+    },
+    {
+      "id": "M4-P2->M1-P3",
+      "origen": "M4-P2",
+      "destino": "M1-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La cultura del servicio mejora la experiencia del estudiante y la oportunidad de respuesta institucional.",
+      "recomendacion": "Medir experiencia estudiantil y PQR como señales de riesgo de permanencia."
+    },
+    {
+      "id": "M4-P2->M5-P4",
+      "origen": "M4-P2",
+      "destino": "M5-P4",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La cultura del servicio y Universidad Ágil comparten aprendizaje rápido e innovación continua.",
+      "recomendacion": "Integrar métricas de servicio a la priorización de procesos ágiles."
+    },
+    {
+      "id": "M5-P1->M1-P2",
+      "origen": "M5-P1",
+      "destino": "M1-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La calidad institucional requiere datos gobernados, seguridad de información e interoperabilidad.",
+      "recomendacion": "Incorporar gobernanza de datos al SIAC y a procesos de autoevaluación."
+    },
+    {
+      "id": "M5-P1->M1-P3",
+      "origen": "M5-P1",
+      "destino": "M1-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Éxito estudiantil y egresados requieren información integrada, analítica y trazabilidad.",
+      "recomendacion": "Definir modelo de datos de trayectoria estudiantil y egresados."
+    },
+    {
+      "id": "M5-P1->M3-P3",
+      "origen": "M5-P1",
+      "destino": "M3-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Reportes ODS y rankings dependen de información institucional confiable y trazable.",
+      "recomendacion": "Definir responsables de datos para reportes externos de sostenibilidad."
+    },
+    {
+      "id": "M5-P1->M5-P2",
+      "origen": "M5-P1",
+      "destino": "M5-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La hoja de ruta de madurez digital orienta el plan de renovación tecnológica y ciberseguridad.",
+      "recomendacion": "Alinear cronograma de infraestructura tecnológica con la hoja de ruta de madurez digital."
+    },
+    {
+      "id": "M5-P1->M5-P3",
+      "origen": "M5-P1",
+      "destino": "M5-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La gobernanza digital, datos y seguridad condicionan la adopción integrada de herramientas.",
+      "recomendacion": "Aplicar criterios institucionales comunes de interoperabilidad, datos y seguridad."
+    },
+    {
+      "id": "M5-P2->M5-P3",
+      "origen": "M5-P2",
+      "destino": "M5-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Las herramientas digitales requieren infraestructura modernizada, conectividad y seguridad.",
+      "recomendacion": "Definir prerrequisitos tecnológicos por herramienta antes de comprometer metas."
+    },
+    {
+      "id": "M5-P3->M1-P1",
+      "origen": "M5-P3",
+      "destino": "M1-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Herramientas digitales permiten ambientes virtuales, innovación curricular y modelo híbrido.",
+      "recomendacion": "Gestionar AVA como componente conjunto académico-tecnológico."
+    },
+    {
+      "id": "M5-P3->M1-P4",
+      "origen": "M5-P3",
+      "destino": "M1-P4",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "Las herramientas digitales habilitan competencias digitales docentes.",
+      "recomendacion": "Coordinar formación con plan profesoral para evitar doble oferta de capacitación."
+    },
+    {
+      "id": "M5-P3->M2-P1",
+      "origen": "M5-P3",
+      "destino": "M2-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "El sistema de gestión de investigación soporta redes, producción y visibilidad científica.",
+      "recomendacion": "Definir interoperabilidad entre sistema de investigación y reportes institucionales."
+    },
+    {
+      "id": "M5-P3->M2-P2",
+      "origen": "M5-P3",
+      "destino": "M2-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La evaluación de impacto de misiones requiere herramientas digitales de seguimiento.",
+      "recomendacion": "Diseñar tablero de misiones y evidencias de impacto."
+    },
+    {
+      "id": "M5-P3->M2-P3",
+      "origen": "M5-P3",
+      "destino": "M2-P3",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Los living labs requieren herramientas para gestión, trazabilidad territorial e indicadores.",
+      "recomendacion": "Construir tablero de laboratorios vivos y bioterritorios."
+    },
+    {
+      "id": "M5-P3->M5-P4",
+      "origen": "M5-P3",
+      "destino": "M5-P4",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La automatización de procesos con BPM/RPA habilita la Universidad Ágil.",
+      "recomendacion": "Priorizar procesos de alto impacto en un portafolio único de automatización."
+    },
+    {
+      "id": "M5-P4->M1-P2",
+      "origen": "M5-P4",
+      "destino": "M1-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "La mejora continua y gobernanza de datos apoyan procesos de calidad y autoevaluación.",
+      "recomendacion": "Priorizar procesos de autoevaluación y renovación de registros/acreditación."
+    },
+    {
+      "id": "M5-P4->M3-P1",
+      "origen": "M5-P4",
+      "destino": "M3-P1",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Procesos ágiles y automatización pueden mejorar eficiencia y optimización de recursos.",
+      "recomendacion": "Medir ahorros de tiempo/costo en procesos priorizados."
+    },
+    {
+      "id": "M5-P4->M3-P2",
+      "origen": "M5-P4",
+      "destino": "M3-P2",
+      "tipo_relacion": "Complementariedad",
+      "intensidad": "Media",
+      "puntaje": 3,
+      "justificacion": "Universidad Ágil puede operar como metodología para materializar la reorganización institucional.",
+      "recomendacion": "Usar equipos ágiles para implementar ajustes normativos y de procesos."
+    },
+    {
+      "id": "M5-P4->M4-P2",
+      "origen": "M5-P4",
+      "destino": "M4-P2",
+      "tipo_relacion": "Habilitadora",
+      "intensidad": "Alta",
+      "puntaje": 5,
+      "justificacion": "La mejora de procesos y automatización habilitan mejor servicio y oportunidad en PQR.",
+      "recomendacion": "Priorizar procesos visibles para estudiantes, profesores y usuarios externos."
+    }
+  ]
+}

@@ -4,6 +4,7 @@ const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const Indicador       = require('../models/pdiIndicador');
 const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
+const pdiNodeNetwork  = require('../services/pdiNodeNetwork');
 
 // Calcula el semáforo a partir del avance efectivo de un documento
 function semaforoDoc(doc) {
@@ -275,6 +276,46 @@ ctrl.corte = async (req, res) => {
         });
     } catch (e) {
         res.status(500).json({ error: 'Error interno', detalle: e.message });
+    }
+};
+
+/*
+  GET /pdi/dashboard/red-nodos
+  Red de interdependencias entre proyectos PDI, construida desde la matriz Excel
+  y con override editable guardado como JSON.
+*/
+ctrl.redNodos = async (req, res) => {
+    try {
+        const network = await pdiNodeNetwork.getNetwork();
+        res.json(network);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno', detalle: e.message });
+    }
+};
+
+/*
+  PUT /pdi/dashboard/red-nodos
+  Guarda una version editable de la red sin modificar la matriz Excel original.
+*/
+ctrl.guardarRedNodos = async (req, res) => {
+    try {
+        const network = await pdiNodeNetwork.saveNetwork(req.body);
+        res.json(network);
+    } catch (e) {
+        res.status(400).json({ error: 'No se pudo guardar la red de nodos', detalle: e.message });
+    }
+};
+
+/*
+  POST /pdi/dashboard/red-nodos/reiniciar
+  Descarta los cambios locales y vuelve a leer la matriz Excel base.
+*/
+ctrl.reiniciarRedNodos = async (req, res) => {
+    try {
+        const network = await pdiNodeNetwork.resetNetwork();
+        res.json(network);
+    } catch (e) {
+        res.status(500).json({ error: 'No se pudo reiniciar la red de nodos', detalle: e.message });
     }
 };
 
