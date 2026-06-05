@@ -2438,16 +2438,57 @@ publTempController.getTemplateById = async (req, res) => {
 
     const qrDraftData = await enrichQrDraftsWithDependencyInfo(publishedTemplate.qr_draft_data || []);
 
+    // Enriquecer loaded_data para asegurar que send_by tenga todos los campos necesarios
+    const enrichedLoadedData = await Promise.all((publishedTemplate.loaded_data || []).map(async (entry) => {
+      const plainEntry = toPlainObject(entry);
+      const sender = plainEntry.send_by || {};
+      
+      // Si send_by no tiene email, intentar obtener del usuario
+      let enrichedSender = { ...sender };
+      if (!enrichedSender.email && sender._id) {
+        const user = await User.findById(sender._id).lean();
+        if (user) {
+          enrichedSender = {
+            _id: user._id,
+            email: user.email,
+            full_name: user.full_name || user.name,
+            position: user.position,
+            dep_code: user.dep_code,
+          };
+        }
+      }
+      
+      return {
+        ...plainEntry,
+        send_by: enrichedSender,
+      };
+    }));
+
     const response = {
       name: publishedTemplate.name,
       template: {
-        ...publishedTemplate.template._doc,
+        ...(publishedTemplate.template?.toObject?.() || publishedTemplate.template?._doc || publishedTemplate.template || {}),
         workbook_sheets: enrichedSheets,
         fields: fieldsWithValidatorIds,
         validators: Array.from(validatorsMap.values()),
         shared: templateShared,
+        producers: publishedTemplate.template?.producers && publishedTemplate.template.producers.length > 0
+          ? await Promise.all((publishedTemplate.template.producers || []).map(async (producerId) => {
+              const producer = await Dependency.findById(producerId).lean();
+              return {
+                _id: producer?._id,
+                dep_code: producer?.dep_code,
+                name: producer?.name,
+                responsible: producer?.responsible,
+                visualizers: producer?.visualizers || []
+              };
+            }))
+          : [],
       },
-      publishedTemplate: publishedTemplate,
+      publishedTemplate: {
+        ...toPlainObject(publishedTemplate),
+        loaded_data: enrichedLoadedData,
+      },
       qr_draft_data: qrDraftData,
       shared_sheets_data: sharedSheetsData,
     };
