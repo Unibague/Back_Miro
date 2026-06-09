@@ -24,7 +24,10 @@ const normalizeLookupText = (value = '') => String(value ?? '')
   .toUpperCase();
 
 const parseValidateWith = (value = '') => {
-  const parts = String(value || '').split(' - ');
+  const text = typeof value === 'string'
+    ? value
+    : (value?.name || value?.id || '');
+  const parts = String(text || '').split(' - ');
   return {
     validatorName: (parts[0] || '').trim(),
     columnName: parts.slice(1).join(' - ').trim(),
@@ -184,7 +187,7 @@ const enrichFields = async (fields, periodId) => {
   const editable = fields || [];
   return Promise.all(editable.map(async (field) => {
     const plainField = withEffectiveRequired(field);
-    if (!plainField.validate_with || typeof plainField.validate_with !== 'string') return plainField;
+    if (!plainField.validate_with) return plainField;
 
     try {
       const { validatorName, columnName } = parseValidateWith(plainField.validate_with);

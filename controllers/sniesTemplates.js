@@ -98,6 +98,19 @@ const parseFieldsInput = (value) => {
     .filter((field) => field.name && field.datatype);
 };
 
+const parseFieldEquivalencesInput = (value) => {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return {};
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      return {};
+    }
+  }
+  return value && typeof value === "object" ? value : {};
+};
+
 const getWorkbookSheetsFromTemplate = async (template) => {
   const templateBuffer = await downloadDriveFileBuffer(template.drive_file_id);
   const workbook = new ExcelJS.Workbook();
@@ -176,6 +189,96 @@ const normalizeFieldName = (fieldName = "") =>
     .replace(/[^A-Z0-9]/g, "_")
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "");
+
+const normalizeEquivalenceItems = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value.miro_fields)) return value.miro_fields;
+  if (Array.isArray(value.fields)) return value.fields;
+  return [];
+};
+
+const getEquivalenceItemFieldName = (item) => {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return "";
+  return item.field_name || item.fieldName || item.name || item.value || "";
+};
+
+const getEquivalenceItemValueMappings = (item) => {
+  if (!item || typeof item !== "object" || typeof item === "string") return {};
+  const rawMappings = item.value_mappings || item.valueMappings;
+  if (!rawMappings || typeof rawMappings !== "object" || Array.isArray(rawMappings)) return {};
+
+  return Object.entries(rawMappings).reduce((acc, [targetValue, sourceValue]) => {
+    const cleanTargetValue = String(targetValue || "").trim();
+    const cleanSourceValue = String(sourceValue || "").trim();
+    if (cleanTargetValue && cleanSourceValue) {
+      acc[cleanTargetValue] = cleanSourceValue;
+    }
+    return acc;
+  }, {});
+};
+
+const hasUsableValue = (value) => value !== undefined && value !== null && value !== "";
+
+const applyValueMappings = (value, valueMappings = {}) => {
+  if (!hasUsableValue(value) || Object.keys(valueMappings).length === 0) return value;
+
+  const normalizedValue = normalizeFieldName(String(value).trim());
+  const matchingMapping = Object.entries(valueMappings).find(
+    ([targetValue, sourceValue]) =>
+      normalizeFieldName(sourceValue) === normalizedValue ||
+      normalizeFieldName(targetValue) === normalizedValue
+  );
+
+  return matchingMapping ? matchingMapping[0] : value;
+};
+
+const buildFieldEquivalenceLookup = (fieldEquivalences = {}) => {
+  const lookup = new Map();
+
+  Object.entries(fieldEquivalences || {}).forEach(([rawKey, rawValue]) => {
+    const equivalence = rawValue && typeof rawValue === "object" ? rawValue : {};
+    const worksheetName = equivalence.worksheet_name || equivalence.worksheetName || "";
+    const fieldName = equivalence.field_name || equivalence.fieldName || rawKey;
+    const normalizedFieldName = normalizeFieldName(fieldName);
+    const normalizedWorksheetName = normalizeFieldName(worksheetName);
+    const miroFieldMappings = normalizeEquivalenceItems(rawValue)
+      .map((item) => ({
+        fieldName: normalizeFieldName(getEquivalenceItemFieldName(item)),
+        valueMappings: getEquivalenceItemValueMappings(item),
+      }))
+      .filter((item) => item.fieldName);
+
+    if (!normalizedFieldName || miroFieldMappings.length === 0) {
+      return;
+    }
+
+    const keys = normalizedWorksheetName
+      ? [`${normalizedWorksheetName}::${normalizedFieldName}`]
+      : [normalizedFieldName];
+
+    keys.push(normalizedFieldName);
+
+    keys.forEach((key) => {
+      const current = lookup.get(key) || [];
+      lookup.set(key, [...current, ...miroFieldMappings]);
+    });
+  });
+
+  return lookup;
+};
+
+const getEquivalentFieldMappings = (lookup, worksheetName, fieldName) => {
+  const normalizedWorksheetName = normalizeFieldName(worksheetName);
+  const normalizedFieldName = normalizeFieldName(fieldName);
+  if (!normalizedFieldName) return [];
+
+  return [
+    ...(lookup.get(`${normalizedWorksheetName}::${normalizedFieldName}`) || []),
+    ...(lookup.get(normalizedFieldName) || []),
+  ];
+};
 
 const buildDownloadFileName = (template) => {
   const templateName = String(template?.name || "").trim();
@@ -485,6 +588,59 @@ const getWorksheetTemplateMatch = (worksheetName, worksheetHeaders, sourceTempla
   });
 
   return bestScore > 0 ? bestMatch : null;
+};
+
+const pickWorksheetRows = (rows = [], worksheetName = "", headers = []) => {
+  const normalizedWorksheetName = normalizeComparableName(worksheetName);
+  const rowsWithSheet = rows.filter((row) => row?.__SHEET_NAME);
+
+  if (rowsWithSheet.length === 0) {
+    return rows;
+  }
+
+  const exactSheetRows = rowsWithSheet.filter(
+    (row) => normalizeComparableName(row.__SHEET_NAME) === normalizedWorksheetName
+  );
+  if (exactSheetRows.length > 0) {
+    return exactSheetRows;
+  }
+
+  const partialSheetRows = rowsWithSheet.filter((row) => {
+    const normalizedRowSheetName = normalizeComparableName(row.__SHEET_NAME);
+    return normalizedRowSheetName.includes(normalizedWorksheetName) ||
+      normalizedWorksheetName.includes(normalizedRowSheetName);
+  });
+  if (partialSheetRows.length > 0) {
+    return partialSheetRows;
+  }
+
+  const normalizedHeaders = new Set(headers.map((header) => normalizeFieldName(header)).filter(Boolean));
+  const groups = rowsWithSheet.reduce((acc, row) => {
+    const key = normalizeComparableName(row.__SHEET_NAME);
+    if (!key) return acc;
+    if (!acc.has(key)) acc.set(key, []);
+    acc.get(key).push(row);
+    return acc;
+  }, new Map());
+
+  let bestRows = [];
+  let bestScore = 0;
+
+  groups.forEach((sheetRows) => {
+    const rowKeys = new Set(getNormalizedRowKeys(sheetRows));
+    const score = [...normalizedHeaders].filter((header) => rowKeys.has(header)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestRows = sheetRows;
+    }
+  });
+
+  if (bestRows.length > 0 && bestScore > 0) {
+    return bestRows;
+  }
+
+  const legacyRows = rows.filter((row) => !row?.__SHEET_NAME);
+  return legacyRows.length > 0 ? legacyRows : rows;
 };
 
 const convertCellValue = (value) => {
@@ -938,7 +1094,7 @@ const getOriginalHeaderCommentsBySheet = (templateBuffer, workbook) => {
   const originalCommentsBySheet = new Map();
 
   workbook.worksheets.forEach((worksheet) => {
-    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
     const commentsByRef = worksheetCommentsMap.get(worksheet.name) || new Map();
     const commentsByField = new Map();
 
@@ -948,7 +1104,8 @@ const getOriginalHeaderCommentsBySheet = (templateBuffer, workbook) => {
         return;
       }
 
-      const headerName = headers[parsedRef.columnNumber - 1];
+      const headerIndex = headerColumns.findIndex((columnNumber) => columnNumber === parsedRef.columnNumber);
+      const headerName = headerIndex >= 0 ? headers[headerIndex] : "";
       const normalizedHeaderName = normalizeFieldName(headerName);
 
       if (normalizedHeaderName && commentText) {
@@ -983,7 +1140,7 @@ const buildWorksheetHeaderCommentsPlan = (workbook, configuredFields, originalCo
       return acc;
     }
 
-    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
     const originalComments = originalCommentsBySheet.get(worksheet.name) || new Map();
     const configuredComments = configuredCommentsBySheet.get(worksheet.name) || new Map();
 
@@ -997,10 +1154,11 @@ const buildWorksheetHeaderCommentsPlan = (workbook, configuredFields, originalCo
         return sheetComments;
       }
 
+      const columnNumber = headerColumns[index] || index + 1;
       sheetComments.push({
-        ref: `${columnNumberToName(index + 1)}${headerRowNumber}`,
+        ref: `${columnNumberToName(columnNumber)}${headerRowNumber}`,
         text: commentText,
-        columnNumber: index + 1,
+        columnNumber,
         rowNumber: headerRowNumber,
       });
 
@@ -1256,7 +1414,7 @@ const injectWorksheetCommentsIntoWorkbook = (buffer, commentsPlan) => {
   );
 };
 
-const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
+const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber, headerColumns = []) => {
   const parser = new DOMParser();
   const serializer = new XMLSerializer();
   const doc = parser.parseFromString(xmlContent, "application/xml");
@@ -1279,7 +1437,8 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
     rowNode.setAttribute("r", String(excelRowNumber));
 
     headers.forEach((header, headerIndex) => {
-      const cellRef = `${columnNumberToName(headerIndex + 1)}${excelRowNumber}`;
+      const columnNumber = headerColumns[headerIndex] || headerIndex + 1;
+      const cellRef = `${columnNumberToName(columnNumber)}${excelRowNumber}`;
       const cellNode = buildCellNode(doc, cellRef, sanitizeExcelValue(row[header]));
       rowNode.appendChild(cellNode);
     });
@@ -1289,7 +1448,8 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
 
   const dimensionNode = doc.getElementsByTagName("dimension")[0];
   if (dimensionNode && headers.length > 0) {
-    const lastColumn = columnNumberToName(headers.length);
+    const lastColumnNumber = Math.max(...headerColumns.filter(Boolean), headers.length);
+    const lastColumn = columnNumberToName(lastColumnNumber);
     const lastRow = Math.max(headerRowNumber + rows.length, headerRowNumber);
     dimensionNode.setAttribute("ref", `A1:${lastColumn}${lastRow}`);
   }
@@ -1414,16 +1574,23 @@ const sanitizeWorkbookZipArtifacts = (buffer) => {
 const extractWorksheetHeaders = (worksheet) => {
   let bestRowNumber = 1;
   let bestHeaders = [];
+  let bestHeaderColumns = [];
 
   for (let rowNumber = 1; rowNumber <= Math.min(20, worksheet.rowCount || 20); rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
-    const values = Array.isArray(row.values) ? row.values.slice(1) : [];
-    const headers = values
-      .map((value) => String(convertCellValue(value) || "").trim())
-      .filter(Boolean);
+    const headers = [];
+    const headerColumns = [];
+
+    row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+      const header = String(convertCellValue(cell.value) || "").trim();
+      if (!header) return;
+      headers.push(header);
+      headerColumns.push(columnNumber);
+    });
 
     if (headers.length > bestHeaders.length) {
       bestHeaders = headers;
+      bestHeaderColumns = headerColumns;
       bestRowNumber = rowNumber;
     }
   }
@@ -1431,6 +1598,7 @@ const extractWorksheetHeaders = (worksheet) => {
   return {
     headerRowNumber: bestRowNumber,
     headers: bestHeaders,
+    headerColumns: bestHeaderColumns,
   };
 };
 
@@ -1522,13 +1690,14 @@ const applyConfiguredFieldsToWorksheet = (worksheet, configuredFields = []) => {
     return;
   }
 
-  const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+  const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
   if (!headerRowNumber) {
     return;
   }
 
   const headerRow = worksheet.getRow(headerRowNumber);
   const currentHeaders = [...headers];
+  let currentHeaderColumns = [...headerColumns];
   const normalizedHeaderNames = currentHeaders.map((header) => normalizeFieldName(header));
 
   normalizedFields.forEach((field) => {
@@ -1544,10 +1713,13 @@ const applyConfiguredFieldsToWorksheet = (worksheet, configuredFields = []) => {
       ? normalizedHeaderNames.findIndex((header) => header === normalizedInsertAfter)
       : -1;
     const insertColumnIndex = insertAfterIndex >= 0
-      ? insertAfterIndex + 2
-      : currentHeaders.length + 1;
+      ? (currentHeaderColumns[insertAfterIndex] || insertAfterIndex + 1) + 1
+      : Math.max(...currentHeaderColumns.filter(Boolean), currentHeaders.length) + 1;
 
     worksheet.spliceColumns(insertColumnIndex, 0, []);
+    currentHeaderColumns = currentHeaderColumns.map((columnNumber) =>
+      columnNumber >= insertColumnIndex ? columnNumber + 1 : columnNumber
+    );
 
     const targetCell = headerRow.getCell(insertColumnIndex);
     const styleSourceCell = insertColumnIndex > 1
@@ -1581,8 +1753,10 @@ const applyConfiguredFieldsToWorksheet = (worksheet, configuredFields = []) => {
       targetColumn.width = Math.max(fieldName.length + 4, 18);
     }
 
-    currentHeaders.splice(insertColumnIndex - 1, 0, fieldName);
-    normalizedHeaderNames.splice(insertColumnIndex - 1, 0, normalizedFieldName);
+    const insertHeaderIndex = insertAfterIndex >= 0 ? insertAfterIndex + 1 : currentHeaders.length;
+    currentHeaders.splice(insertHeaderIndex, 0, fieldName);
+    currentHeaderColumns.splice(insertHeaderIndex, 0, insertColumnIndex);
+    normalizedHeaderNames.splice(insertHeaderIndex, 0, normalizedFieldName);
   });
 };
 
@@ -1610,11 +1784,11 @@ const removeConfiguredFieldsFromWorksheet = (worksheet, configuredFields = []) =
     return;
   }
 
-  const { headers } = extractWorksheetHeaders(worksheet);
+  const { headers, headerColumns } = extractWorksheetHeaders(worksheet);
   for (let index = headers.length - 1; index >= 0; index -= 1) {
     const normalizedHeader = normalizeFieldName(headers[index]);
     if (normalizedFieldsToRemove.has(normalizedHeader)) {
-      worksheet.spliceColumns(index + 1, 1);
+      worksheet.spliceColumns(headerColumns[index] || index + 1, 1);
     }
   }
 };
@@ -1648,7 +1822,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
       return;
     }
 
-    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
     if (!headerRowNumber) {
       return;
     }
@@ -1685,7 +1859,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
 
       const colLetter = columnNumberToName(sourceCol);
       const rangeRef = `'${sourcesSheetName}'!$${colLetter}$1:$${colLetter}$${options.length}`;
-      const targetColumnIndex = fieldIndex + 1;
+      const targetColumnIndex = headerColumns[fieldIndex] || fieldIndex + 1;
       const normalizedComment = field.comment
         ? String(field.comment).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
         : "";
@@ -2123,16 +2297,27 @@ const getMergedDataForPublishedTemplate = async (publishedTemplateId) => {
       continue;
     }
 
-    const recordMap = [];
+    const recordMapsBySheet = new Map();
 
     loadedData.filled_data.forEach((fieldData) => {
       const values = Array.isArray(fieldData?.values) ? fieldData.values : [];
+      const sheetName = String(
+        fieldData?.sheet_name || fieldData?.sheet || fieldData?.sheetName || ""
+      ).trim();
+      const sheetKey = sheetName || "__legacy__";
+
+      if (!recordMapsBySheet.has(sheetKey)) {
+        recordMapsBySheet.set(sheetKey, []);
+      }
+
+      const recordMap = recordMapsBySheet.get(sheetKey);
 
       values.forEach((rawValue, index) => {
         if (!recordMap[index]) {
           recordMap[index] = {
             Dependencia: depCodeToNameMap[loadedData.dependency] || loadedData.dependency,
             __DEP_CODE: loadedData.dependency, // dep_code interno para enriquecimiento
+            ...(sheetName ? { __SHEET_NAME: sheetName } : {}),
           };
         }
 
@@ -2140,7 +2325,9 @@ const getMergedDataForPublishedTemplate = async (publishedTemplateId) => {
       });
     });
 
-    rows.push(...recordMap);
+    recordMapsBySheet.forEach((recordMap) => {
+      rows.push(...recordMap.filter(Boolean));
+    });
   }
 
   return enrichWithIntegraUserData(rows);
@@ -2329,9 +2516,10 @@ const buildSniesDataset = async (template) => {
   const useWorksheetMapping = worksheets.length > 1;
   const mergedRows = enrichedSourceDatasets.flatMap((sourceTemplate) => sourceTemplate.rows);
   const validatorNormalizationLookup = await buildSniesValidatorNormalizationLookup(template.fields || [], template.period);
+  const equivalenceLookup = buildFieldEquivalenceLookup(template.field_equivalences);
 
   const sheetDatasets = worksheets.map((worksheet) => {
-    const { headerRowNumber, headers } = extractWorksheetHeaders(worksheet);
+    const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
 
     if (isInfoWorksheet(worksheet.name)) {
       return {
@@ -2339,6 +2527,7 @@ const buildSniesDataset = async (template) => {
         worksheetName: worksheet.name,
         headerRowNumber,
         headers,
+        headerColumns,
         rows: [],
         sourceTemplate: null,
         preserveOriginalContent: true,
@@ -2351,6 +2540,7 @@ const buildSniesDataset = async (template) => {
         worksheetName: worksheet.name,
         headerRowNumber,
         headers: [],
+        headerColumns: [],
         rows: [],
         sourceTemplate: null,
         preserveOriginalContent: false,
@@ -2360,9 +2550,10 @@ const buildSniesDataset = async (template) => {
     const matchedSourceTemplate = useWorksheetMapping
       ? getWorksheetTemplateMatch(worksheet.name, headers, enrichedSourceDatasets)
       : null;
-    const sourceRows = useWorksheetMapping
+    const candidateSourceRows = useWorksheetMapping
       ? matchedSourceTemplate?.rows || mergedRows
       : mergedRows;
+    const sourceRows = pickWorksheetRows(candidateSourceRows, worksheet.name, headers);
 
     const normalizedHeaders = headers.map((header) => normalizeFieldName(header));
     const finalRows = sourceRows.map((row) => {
@@ -2374,12 +2565,19 @@ const buildSniesDataset = async (template) => {
       return headers.reduce((acc, header, index) => {
         const normalizedHeader = normalizedHeaders[index];
         const directValue = normalizedRow[normalizedHeader];
+        const equivalentValue = getEquivalentFieldMappings(equivalenceLookup, worksheet.name, header)
+          .map(({ fieldName, valueMappings }) =>
+            applyValueMappings(normalizedRow[fieldName], valueMappings)
+          )
+          .find(hasUsableValue);
         const periodFallback = periodYear
           ? getPeriodValueForHeader(normalizedHeader, periodValues)
           : undefined;
 
         const normalizer = getSniesValidatorNormalizer(validatorNormalizationLookup, worksheet.name, header);
-        const value = directValue ?? periodFallback ?? "";
+        const value = hasUsableValue(directValue)
+          ? directValue
+          : equivalentValue ?? periodFallback ?? "";
         acc[header] = normalizeSniesValidatorOutputValue(value, normalizer);
         return acc;
       }, {});
@@ -2390,6 +2588,7 @@ const buildSniesDataset = async (template) => {
       worksheetName: worksheet.name,
       headerRowNumber,
       headers,
+      headerColumns,
       rows: finalRows,
       sourceTemplate: matchedSourceTemplate
         ? {
@@ -2817,7 +3016,7 @@ controller.downloadConnectedData = async (req, res) => {
     const zip = new PizZip(templateBuffer);
     const worksheetXmlPathMap = getWorksheetXmlPathMap(zip);
 
-    sheetDatasets.forEach(({ worksheetName, headers, rows, headerRowNumber, preserveOriginalContent }) => {
+    sheetDatasets.forEach(({ worksheetName, headers, rows, headerRowNumber, headerColumns, preserveOriginalContent }) => {
       if (preserveOriginalContent || !headers.length) {
         return;
       }
@@ -2832,7 +3031,8 @@ controller.downloadConnectedData = async (req, res) => {
         worksheetFile.asText(),
         headers,
         rows,
-        headerRowNumber
+        headerRowNumber,
+        headerColumns
       );
 
       zip.file(worksheetPath, updatedWorksheetXml);
@@ -3017,6 +3217,10 @@ controller.getTemplateById = async (req, res) => {
       })),
       dimensions: (template.dimensions || []).map((item) => String(item)),
       producers: (template.producers || []).map((item) => String(item)),
+      source_published_template_id: template.source_published_template_id,
+      source_published_template_name: template.source_published_template_name,
+      source_published_templates: template.source_published_templates || [],
+      field_equivalences: template.field_equivalences || {},
       created_by: template.created_by,
       period: template.period,
       workbook_sheets: workbookSheets,
@@ -3040,6 +3244,7 @@ controller.createTemplate = async (req, res) => {
     const fields = parseFieldsInput(req.body.fields);
     const dimensions = parseIdArray(req.body.dimensions);
     const producers = parseIdArray(req.body.producers);
+    const fieldEquivalences = parseFieldEquivalencesInput(req.body.field_equivalences);
 
     if (!req.file) {
       return res.status(400).json({ error: "No file attached" });
@@ -3094,6 +3299,7 @@ controller.createTemplate = async (req, res) => {
       fields,
       dimensions,
       producers,
+      ...(fieldEquivalences !== undefined && { field_equivalences: fieldEquivalences }),
     });
 
     await template.save();
@@ -3132,6 +3338,7 @@ controller.updateTemplate = async (req, res) => {
     const fields = parseFieldsInput(req.body.fields);
     const dimensions = parseIdArray(req.body.dimensions);
     const producers = parseIdArray(req.body.producers);
+    const fieldEquivalences = parseFieldEquivalencesInput(req.body.field_equivalences);
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
@@ -3171,13 +3378,9 @@ controller.updateTemplate = async (req, res) => {
     if (req.body.producers !== undefined) {
       template.producers = producers;
     }
-    if (req.body.field_equivalences !== undefined) {
-      try {
-        template.field_equivalences = typeof req.body.field_equivalences === 'string'
-          ? JSON.parse(req.body.field_equivalences)
-          : req.body.field_equivalences;
-        template.markModified('field_equivalences');
-      } catch (_) {}
+    if (fieldEquivalences !== undefined) {
+      template.field_equivalences = fieldEquivalences;
+      template.markModified('field_equivalences');
     }
     if (sourcePublishedTemplateIds.length > 0) {
       const sourceTemplates = await getPublishedTemplateSources(sourcePublishedTemplateIds);

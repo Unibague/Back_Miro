@@ -101,6 +101,12 @@ const ID_ALIASES = new Set([
   "CEDULA_DE_CIUDADANIA",
   "DOC_IDENTIDAD",
   "IDENTIFICACION_BENEFICIARIO",
+  // abreviaciones comunes SNIES / otras fuentes
+  "NUM_DOC",
+  "NRO_DOC",
+  "NUMERO_DOC",
+  "NO_DOC",
+  "N_DOCUMENTO",
 ]);
 
 const normalizeHeader = (value = "") =>
@@ -204,12 +210,17 @@ const buildValidatorLookup = async (periodId = null) => {
 
 const isValidatorCandidateHeader = (header, sampleValues) => {
   const normalized = normalizeHeader(header.name);
+  console.log(`[VALIDATOR_CHECK v2] header="${header.name}" normalized="${normalized}"`);
   if (!sampleValues.length) return false;
   if (["NUM_DOCUMENTO", "NUMERO_DOCUMENTO", "NRO_DOCUMENTO", "NO_DOCUMENTO", "DOCUMENTO"].includes(normalized)) {
     return false;
   }
   if (normalized.includes("NUM_DOCUMENTO") || normalized.includes("NUMERO_DOCUMENTO")) return false;
   if (normalized.includes("HORAS") || normalized.includes("VALOR") || normalized.includes("CANTIDAD")) return false;
+  if (normalized.includes("DURACION") || normalized.includes("FECHA") || normalized.startsWith("ANO") || normalized.startsWith("AÑO") || normalized.endsWith("ANO") || normalized.endsWith("AÑO")) {
+    console.log(`[VALIDATOR_CHECK v2] EXCLUIDO por DURACION/FECHA/ANO: "${normalized}"`);
+    return false;
+  }
 
   const shortCodes = sampleValues.every((value) => /^[A-Z0-9]{1,8}$/.test(normalizeLookupValue(value)));
   if (!shortCodes) return false;
@@ -419,6 +430,8 @@ const getFieldKind = (fieldName) => {
   if (normalized.includes("IDENTIFICACION") || normalized.includes("CEDULA") || normalized.includes("DOCUMENTO")) {
     return "identification";
   }
+  // abreviaciones tipo NUM_DOC, NRO_DOC, NO_DOC no capturadas arriba
+  if (/^(NUM|NUMERO|NRO|NO|N)_?DOC$/.test(normalized)) return "identification";
   if (normalized.includes("TIPO") && normalized.includes("APOYO")) return "supportType";
   if (normalized.includes("NOMBRE") && normalized.includes("APOYO")) return "supportName";
   if (normalized.includes("DESCRIPCION") && normalized.includes("APOYO")) return "supportDescription";
@@ -526,6 +539,77 @@ const buildSupportHistory = async (periodId) => {
   return history;
 };
 
+const parseWorksheet = (worksheet) => {
+  try {
+    const headerRow = worksheet.getRow(1);
+    const headers = [];
+    headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
+      const name = cellToText(cell.value).trim();
+      if (name) headers.push({ column, name, normalized: normalizeHeader(name) });
+    });
+
+    if (headers.length === 0) {
+      console.warn(`[supportTemplates] Hoja "${worksheet.name}": sin encabezados en fila 1, se omite.`);
+      return null;
+    }
+
+    // Intentar detectar columna de identificación (no obligatorio)
+    let idHeader = findHeaderByKind(headers, "identification");
+
+    if (!idHeader) {
+      // Fallback: columna cuyos primeros valores sean cédulas numéricas (5-12 dígitos)
+      idHeader = headers.find((h) => {
+        const samples = [];
+        for (let r = 2; r <= Math.min(worksheet.rowCount, 20); r++) {
+          const v = cellToText(worksheet.getRow(r).getCell(h.column).value).trim();
+          if (v) samples.push(v);
+        }
+        const numeric = samples.filter((v) => /^\d{5,12}$/.test(v)).length;
+        return samples.length >= 3 && numeric / samples.length >= 0.7;
+      }) || null;
+    }
+
+    if (idHeader) {
+      console.log(`[supportTemplates] Hoja "${worksheet.name}": columna ID = "${idHeader.name}"`);
+    } else {
+      console.warn(`[supportTemplates] Hoja "${worksheet.name}": sin columna de ID detectada, se procesa sin identificación. Encabezados: ${headers.map(h => `${h.name}(${h.normalized})`).join(", ")}`);
+    }
+
+    const fieldMap = {
+      identification: idHeader,   // puede ser null — las filas quedarán como SIN_CEDULA
+      personName: findHeaderByKind(headers, "personName"),
+      supportType: findHeaderByKind(headers, "supportType"),
+      supportName: findHeaderByKind(headers, "supportName"),
+      supportDescription: findHeaderByKind(headers, "supportDescription"),
+      supportValue: findHeaderByKind(headers, "supportValue"),
+    };
+
+    const rows = [];
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      const excelRow = worksheet.getRow(rowNumber);
+      const valuesByColumn = {};
+      let hasValue = false;
+      headers.forEach((header) => {
+        const value = excelRow.getCell(header.column).value;
+        valuesByColumn[header.column] = value;
+        if (!isBlank(value)) hasValue = true;
+      });
+      if (!hasValue) continue;
+      rows.push({ rowNumber, valuesByColumn });
+    }
+
+    if (rows.length === 0) {
+      console.warn(`[supportTemplates] Hoja "${worksheet.name}": sin filas de datos, se omite.`);
+      return null;
+    }
+
+    return { worksheet, headers, fieldMap, rows };
+  } catch (e) {
+    console.warn(`[supportTemplates] Error parseando hoja "${worksheet.name}": ${e.message}`);
+    return null;
+  }
+};
+
 const readUploadedWorkbook = async (file) => {
   if (!file) {
     const error = new Error("Debes subir una plantilla en formato .xlsx o .xlsm.");
@@ -543,63 +627,24 @@ const readUploadedWorkbook = async (file) => {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(file.path);
 
-  const worksheet = workbook.worksheets[0];
-  if (!worksheet) {
+  console.log(`[supportTemplates] Hojas en workbook (${workbook.worksheets.length}): ${workbook.worksheets.map(ws => `"${ws.name}" rowCount=${ws.rowCount}`).join(" | ")}`);
+
+  if (workbook.worksheets.length === 0) {
     const error = new Error("La plantilla no contiene hojas para procesar.");
     error.status = 400;
     throw error;
   }
 
-  const headerRow = worksheet.getRow(1);
-  const headers = [];
-  headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
-    const name = cellToText(cell.value).trim();
-    if (name) headers.push({ column, name, normalized: normalizeHeader(name) });
-  });
+  const sheets = workbook.worksheets.map(parseWorksheet).filter(Boolean);
+  console.log(`[supportTemplates] Hojas procesables: ${sheets.length} — ${sheets.map(s => s.worksheet.name).join(", ")}`);
 
-  if (headers.length === 0) {
-    const error = new Error("La primera fila debe contener encabezados.");
+  if (sheets.length === 0) {
+    const error = new Error("Ninguna hoja tiene datos para procesar.");
     error.status = 400;
     throw error;
   }
 
-  const idHeader = findHeaderByKind(headers, "identification");
-  if (!idHeader) {
-    const error = new Error("No se encontro una columna de cedula o numero de documento.");
-    error.status = 400;
-    throw error;
-  }
-
-  const fieldMap = {
-    identification: idHeader,
-    personName: findHeaderByKind(headers, "personName"),
-    supportType: findHeaderByKind(headers, "supportType"),
-    supportName: findHeaderByKind(headers, "supportName"),
-    supportDescription: findHeaderByKind(headers, "supportDescription"),
-    supportValue: findHeaderByKind(headers, "supportValue"),
-  };
-
-  const rows = [];
-  for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
-    const excelRow = worksheet.getRow(rowNumber);
-    const valuesByColumn = {};
-    let hasValue = false;
-
-    headers.forEach((header) => {
-      const value = excelRow.getCell(header.column).value;
-      valuesByColumn[header.column] = value;
-      if (!isBlank(value)) hasValue = true;
-    });
-
-    if (!hasValue) continue;
-
-    rows.push({
-      rowNumber,
-      valuesByColumn,
-    });
-  }
-
-  return { workbook, worksheet, headers, fieldMap, rows };
+  return { workbook, sheets };
 };
 
 const buildValidatorColumns = async (headers, rows, periodId = null) => {
@@ -866,28 +911,17 @@ const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = [], f
 
 const processFile = async (req) => {
   try {
-    console.log('[supportTemplates] Starting processFile...');
     const periodId = req.body.period_id || req.body.periodId || null;
-    console.log('[supportTemplates] Period ID:', periodId);
-    
-    console.log('[supportTemplates] Reading workbook...');
-    const parsed = await readUploadedWorkbook(req.file);
-    console.log('[supportTemplates] Workbook read successfully. Headers:', parsed.headers.map(h => h.name));
-    
-    console.log('[supportTemplates] Building validator columns...');
-    const validatorColumns = await buildValidatorColumns(parsed.headers, parsed.rows, periodId);
-    console.log('[supportTemplates] Validator columns built:', validatorColumns.length);
-    
-    console.log('[supportTemplates] Building enriched rows...');
-    const result = await buildEnrichedRows({
-      rows: parsed.rows,
-      fieldMap: parsed.fieldMap,
-      periodId,
-      validatorColumns,
-    });
-    console.log('[supportTemplates] Enriched rows built successfully. Total rows:', result.enrichedRows.length);
-    
-    return { ...parsed, ...result, validatorColumns };
+    const { workbook, sheets } = await readUploadedWorkbook(req.file);
+
+    const processedSheets = [];
+    for (const sheet of sheets) {
+      const validatorColumns = await buildValidatorColumns(sheet.headers, sheet.rows, periodId);
+      const result = await buildEnrichedRows({ rows: sheet.rows, fieldMap: sheet.fieldMap, periodId, validatorColumns });
+      processedSheets.push({ ...sheet, ...result, validatorColumns });
+    }
+
+    return { workbook, sheets: processedSheets };
   } catch (error) {
     console.error('[supportTemplates] ERROR in processFile:', error.message, error.stack);
     throw error;
@@ -914,14 +948,14 @@ const cleanupFile = async (file) => {
 
 controller.preview = async (req, res) => {
   try {
-    const result = await processFile(req);
-    res.json({
-      sheetName: result.worksheet.name,
+    const { sheets } = await processFile(req);
+    res.json(sheets.map((sheet) => ({
+      sheetName: sheet.worksheet.name,
       columnsAdded: [
         ...GENERATED_COLUMNS.map(getGeneratedColumnLabel),
-        ...result.validatorColumns.map((item) => item.outputLabel || item.outputColumn),
+        ...sheet.validatorColumns.map((item) => item.outputLabel || item.outputColumn),
       ],
-      validatorColumns: result.validatorColumns.map((item) => ({
+      validatorColumns: sheet.validatorColumns.map((item) => ({
         sourceField: item.sourceField,
         outputColumn: item.outputColumn,
         outputLabel: item.outputLabel || item.outputColumn,
@@ -929,9 +963,9 @@ controller.preview = async (req, res) => {
         validatorColumn: item.validatorColumn,
         descriptionColumn: item.descriptionColumn,
       })),
-      summary: result.summary,
-      rows: buildPreviewRows(result.enrichedRows.slice(0, 100)),
-    });
+      summary: sheet.summary,
+      rows: buildPreviewRows(sheet.enrichedRows.slice(0, 100)),
+    })));
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message || "No fue posible procesar la plantilla." });
   } finally {
@@ -941,25 +975,16 @@ controller.preview = async (req, res) => {
 
 controller.download = async (req, res) => {
   try {
-    console.log('[supportTemplates] Starting download...');
-    const result = await processFile(req);
-    console.log('[supportTemplates] ProcessFile completed successfully');
-    
-    console.log('[supportTemplates] Applying generated columns...');
-    applyGeneratedColumns(result.worksheet, result.enrichedRows, result.validatorColumns, result.fieldMap);
-    console.log('[supportTemplates] Generated columns applied');
-
-    console.log('[supportTemplates] Writing workbook buffer...');
-    const buffer = await result.workbook.xlsx.writeBuffer();
-    console.log('[supportTemplates] Buffer written, size:', buffer.length);
-    
+    const { workbook, sheets } = await processFile(req);
+    for (const sheet of sheets) {
+      applyGeneratedColumns(sheet.worksheet, sheet.enrichedRows, sheet.validatorColumns, sheet.fieldMap);
+    }
+    const buffer = await workbook.xlsx.writeBuffer();
     const originalName = path.basename(req.file.originalname || "plantilla.xlsx", path.extname(req.file.originalname || ""));
     const filename = `${originalName}_cruzada_siga_iceberg.xlsx`;
-
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(Buffer.from(buffer));
-    console.log('[supportTemplates] Download sent successfully');
   } catch (error) {
     console.error('[supportTemplates] ERROR in download:', error.message, error.stack);
     res.status(error.status || 500).json({ message: error.message || "No fue posible generar la plantilla enriquecida." });

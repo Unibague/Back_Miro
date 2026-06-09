@@ -124,6 +124,8 @@ ctrl.importExecuted = async (req, res) => {
             return res.status(400).json({ error: 'Debes adjuntar un archivo Excel en el campo "file".' });
         }
 
+        const anioImport = String(req.body?.anio || new Date().getFullYear());
+
         let macroproyecto;
 
         if (req.body?.macroproyecto_id) {
@@ -296,6 +298,9 @@ ctrl.importExecuted = async (req, res) => {
             accion.presupuesto_ejecutado = presupuesto_ejecutado;
             accion.gasto = gasto;
             accion.inversion = inversion;
+            if (!accion.presupuesto_ejecutado_por_anio) accion.presupuesto_ejecutado_por_anio = new Map();
+            accion.presupuesto_ejecutado_por_anio.set(anioImport, presupuesto_ejecutado);
+            accion.markModified('presupuesto_ejecutado_por_anio');
             await accion.save();
             proyectosTocados.add(String(proyecto._id));
 

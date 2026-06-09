@@ -138,6 +138,101 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
 
 const toPlainObject = (value) => value?.toObject?.() || value || {};
 
+const UNCATEGORIZED_CATEGORY_FILTER = '__uncategorized__';
+const normalizeCategoryName = (value = '') =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+
+const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const normalizeCategoryForResponse = (category) => {
+  const plainCategory = toPlainObject(category);
+  const categoryId = plainCategory?._id || plainCategory?.id;
+  const categoryName = plainCategory?.name;
+
+  if (!categoryId && !categoryName) return { name: 'Sin categoría' };
+
+  return {
+    ...(categoryId && { _id: String(categoryId) }),
+    name: categoryName || 'Sin categoría',
+  };
+};
+
+const resolveCategoryFilter = async (filterByCategory = '') => {
+  const rawFilter = String(filterByCategory || '').trim();
+  if (!rawFilter) return null;
+
+  if (rawFilter === UNCATEGORIZED_CATEGORY_FILTER) {
+    return { uncategorized: true };
+  }
+
+  let category = null;
+  if (mongoose.Types.ObjectId.isValid(rawFilter)) {
+    category = await Category.findById(rawFilter).select('_id name').lean();
+  }
+
+  if (!category) {
+    category = await Category.findOne({
+      name: { $regex: new RegExp(`^${escapeRegExp(rawFilter)}$`, 'i') },
+    }).select('_id name').lean();
+  }
+
+  if (!category) {
+    return { id: rawFilter, name: rawFilter };
+  }
+
+  return { id: String(category._id), name: category.name };
+};
+
+const matchesCategoryFilter = (publishedTemplate, categoryFilter) => {
+  if (!categoryFilter) return true;
+
+  const category = normalizeCategoryForResponse(
+    publishedTemplate?.template?.category || publishedTemplate?.category
+  );
+  const categoryId = category?._id ? String(category._id) : '';
+  const categoryName = category?.name || '';
+  const isUncategorized = !categoryId && (!categoryName || categoryName === 'Sin categoría');
+
+  if (categoryFilter.uncategorized) return isUncategorized;
+
+  return (
+    (categoryFilter.id && categoryId === categoryFilter.id) ||
+    (categoryFilter.name && normalizeCategoryName(categoryName) === normalizeCategoryName(categoryFilter.name))
+  );
+};
+
+const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
+  const templateId = publishedTemplate?.template?._id || publishedTemplate?.template?.id;
+  const originalTemplate = templateId
+    ? await Template.findById(templateId)
+        .populate({
+          path: 'category',
+          model: 'categories',
+          select: 'name templates',
+        })
+        .lean()
+    : null;
+
+  return {
+    ...publishedTemplate,
+    template: {
+      ...publishedTemplate.template,
+      fields: originalTemplate?.fields || publishedTemplate.template?.fields || [],
+      workbook_sheets: originalTemplate?.workbook_sheets || publishedTemplate.template?.workbook_sheets || [],
+      allows_qr: originalTemplate?.allows_qr ?? publishedTemplate.template?.allows_qr ?? false,
+      shared: originalTemplate?.shared ?? publishedTemplate.template?.shared ?? false,
+      responsible_producers: originalTemplate?.responsible_producers || publishedTemplate.template?.responsible_producers || [],
+      category: normalizeCategoryForResponse(
+        originalTemplate?.category || publishedTemplate.template?.category || publishedTemplate.category
+      ),
+    },
+  };
+};
+
 const enrichQrDraftsWithDependencyInfo = async (qrDraftData = []) => {
   const plainDrafts = (qrDraftData || []).map(toPlainObject);
   const dependencyCodes = [...new Set(plainDrafts.map(draft => draft.dependency).filter(Boolean))];
@@ -688,7 +783,6 @@ publTempController.publishTemplate = async (req, res) => {
     };
 
     const category = template.category;  
-    const sequence = template.sequence;  
 
     const fechaFinal = req.body.fecha_final || req.body.deadline || template.fecha_final || null;
     const newPublTemp = new PublishedTemplate({
@@ -703,8 +797,7 @@ publTempController.publishTemplate = async (req, res) => {
       fecha_final: fechaFinal,
       responsible_producers: template.responsible_producers || [],
       published_date: datetime_now(),
-      category: category,
-      sequence: sequence
+      category: category
     })
 
     await newPublTemp.save()
@@ -2019,12 +2112,14 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
   const search = req.query.search || '';
   const periodId = req.query.periodId;
   const filterByDependency = req.query.filterByDependency;
+  const filterByCategory = req.query.filterByCategory;
   const skip = (page - 1) * limit;
 
   try {
     console.log('== DEBUG getUploadedTemplatesByProducer ===');
     console.log('Email:', email);
     console.log('FilterByDependency:', filterByDependency);
+    console.log('FilterByCategory:', filterByCategory);
     console.log('All query params:', req.query);
     
     const user = await User.findOne({ email });
@@ -2106,12 +2201,20 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
       return templateObject;
     });
 
+    const categoryFilter = await resolveCategoryFilter(filterByCategory);
+    const templatesWithCurrentCategories = await Promise.all(
+      normalizedTemplatesWithData.map(enrichPublishedTemplateWithLiveTemplate)
+    );
+    const categoryFilteredTemplates = templatesWithCurrentCategories.filter((template) =>
+      matchesCategoryFilter(template, categoryFilter)
+    );
+
     // Obtener IDs de dependencias del usuario para calcular isEncargado
     const userDeps = await Dependency.find({ dep_code: { $in: dependenciesToQuery } }).select('_id').lean();
     const userDepIds = userDeps.map(d => d._id.toString());
 
     const templatesWithValidators = await Promise.all(
-      normalizedTemplatesWithData.slice(skip, skip + limit).map(async (template) => {
+      categoryFilteredTemplates.slice(skip, skip + limit).map(async (template) => {
         template.validators = await collectValidatorsForTemplate(
           template.template,
           template.period?._id || template.period
@@ -2126,7 +2229,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     );
 
     // Contar total real después del filtrado
-    const totalWithData = normalizedTemplatesWithData.length;
+    const totalWithData = categoryFilteredTemplates.length;
 
     res.status(200).json({
       templates: templatesWithValidators,
@@ -2142,12 +2245,15 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
 };
 
 publTempController.getAvailableTemplatesToProductor = async (req, res) => {
-  const { email, periodId, page = 1, limit = 10, search = '', filterByDependency = '' } = req.query;
-  const skip = (page - 1) * limit;
+  const { email, periodId, page = 1, limit = 10, search = '', filterByDependency = '', filterByCategory = '' } = req.query;
+  const pageNumber = Number(page) || 1;
+  const limitNumber = Number(limit) || 10;
+  const skip = (pageNumber - 1) * limitNumber;
 
   try {
     console.log('=== DEBUG getAvailableTemplatesToProductor ===');
     console.log('Email:', email);
+    console.log('FilterByCategory:', filterByCategory);
     
     // Find user productor
     const user = await UserService.findUserByEmailAndRole(email, 'Productor');
@@ -2183,15 +2289,9 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
 
     console.log('Query for templates:', JSON.stringify(query, null, 2));
     
-    // Count total documents without pagination
-    const total = await PublishedTemplate.countDocuments(query);
-    console.log('Total templates found:', total);
-
     // Fetch templates with initial population
     const templates = await PublishedTemplate.find(query)
       .collation({ locale: 'es', strength: 1 })
-      .skip(skip)
-      .limit(limit)
       .populate('period')
       .populate({
         path: 'template',
@@ -2202,42 +2302,17 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
       }).lean();
 
     // Manually fetch categories
-    const templatesWithCategories = await Promise.all(templates.map(async (template) => {
-      // Find the category directly from the original template
-      const originalTemplate = await Template.findById(template.template._id)
-        .populate({
-          path: 'category',
-          model: 'categories',
-          select: 'name templates' // Select specific fields if needed
-        }).lean();
-      
-        // Find the sequence for this template within the category
-        let sequence = null;
-        if (originalTemplate.category) {
-          const sequenceObj = originalTemplate.category.templates.find(
-            t => t.templateId.toString() === template.template._id.toString()
-          );
-          sequence = sequenceObj ? sequenceObj.sequence : null;
-        }
-  
-        return {
-          ...template,
-          template: {
-            ...template.template,
-            workbook_sheets: originalTemplate?.workbook_sheets || template.template.workbook_sheets || [],
-            allows_qr: originalTemplate?.allows_qr ?? template.template.allows_qr ?? false,
-            shared: originalTemplate?.shared ?? template.template.shared ?? false,
-            responsible_producers: originalTemplate?.responsible_producers || template.template.responsible_producers || [],
-            category: {
-              ...originalTemplate.category,
-              templateSequence: sequence
-            }
-          }
-        };
-      }));
+    const templatesWithCategories = await Promise.all(
+      templates.map(enrichPublishedTemplateWithLiveTemplate)
+    );
+
+    const categoryFilter = await resolveCategoryFilter(filterByCategory);
+    const categoryFilteredTemplates = templatesWithCategories.filter((template) =>
+      matchesCategoryFilter(template, categoryFilter)
+    );
 
       // Custom sorting logic
-      const sortedTemplates = templatesWithCategories.sort((a, b) => {
+      const sortedTemplates = categoryFilteredTemplates.sort((a, b) => {
         // First, prioritize templates with categories
         const hasCategA = !!a.template.category.name && a.template.category.name !== 'Sin categoría';
         const hasCategB = !!b.template.category.name && b.template.category.name !== 'Sin categoría';
@@ -2252,22 +2327,13 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           b.template.category.name || ''
         );
         
-        // If categories are the same, sort by sequence
-        if (categoryComparison === 0) {
-          // Handle cases where sequence might be null
-          const seqA = a.template.category.templateSequence ?? Infinity;
-          const seqB = b.template.category.templateSequence ?? Infinity;
-          return seqA - seqB;
-        }
-        
-        return categoryComparison;
+        if (categoryComparison !== 0) return categoryComparison;
+
+        return (a.name || '').localeCompare(b.name || '');
       });
 
-    // Paginate the sorted templates
-    const paginatedTemplates = sortedTemplates.slice(skip, skip + limit);
-
     // Filter templates without loaded data for queried dependencies
-    const filteredTemplates = paginatedTemplates.filter(
+    const filteredTemplates = sortedTemplates.filter(
       (template) => {
         const hasLoadedData = template.loaded_data?.some((data) => dependenciesToQuery.includes(data.dependency));
         if (hasLoadedData) {
@@ -2279,12 +2345,15 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
       }
     );
     
-    console.log(`Templates after filtering: ${filteredTemplates.length} of ${paginatedTemplates.length}`);
+    console.log(`Templates after filtering: ${filteredTemplates.length} of ${sortedTemplates.length}`);
+
+    const total = filteredTemplates.length;
+    const paginatedTemplates = filteredTemplates.slice(skip, skip + limitNumber);
 
     // Get validators for filtered templates + marcar si el usuario es productor encargado
     const userDepIds = dependencies.map(d => d._id.toString());
     const templatesWithValidators = await Promise.all(
-      filteredTemplates.map(async (template) => {
+      paginatedTemplates.map(async (template) => {
         const validators = await collectValidatorsForTemplate(
           template.template,
           template.period?._id || template.period
@@ -2301,8 +2370,8 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     res.status(200).json({
       templates: templatesWithValidators,
       total,
-      page: Number(page),
-      pages: Math.ceil(total / limit),
+      page: pageNumber,
+      pages: Math.ceil(total / limitNumber),
     });
   } catch (error) {
     console.error('Error fetching available templates:', error);
@@ -2828,9 +2897,9 @@ publTempController.getPublishedByTemplateId = async (req, res) => {
 
     const published = await PublishedTemplate.findOne(baseQuery).lean();
     if (!published) {
-      return res.status(200).json({ loaded_data: [] });
+      return res.status(200).json({ found: false, loaded_data: [] });
     }
-    return res.status(200).json({ loaded_data: published.loaded_data || [] });
+    return res.status(200).json({ found: true, loaded_data: published.loaded_data || [] });
   } catch (error) {
     return res.status(500).json({ status: 'Internal server error', message: error.message });
   }

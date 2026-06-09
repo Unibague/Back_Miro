@@ -6,7 +6,8 @@ const Proyecto = require('../models/pdiProyecto');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
 
 const SPREADSHEET_ID = '1pGQkA-nu5kmy8HviHM4YzmC3AOmFrGoTS_X8U93f9YI';
-const CACHE_TTL_MS = 60 * 1000;
+const SUMMARY_RANGE  = 'Proyecto 2026!A:Z';
+const CACHE_TTL_MS   = 60 * 1000;
 
 let cache = { data: null, timestamp: 0 };
 
@@ -435,8 +436,6 @@ const parseBudgetDetailsRows = (rows, systemIndex) => {
     pushDetail(detailsByAction, normalizeSystemCode(codificacion), detail);
   }
 
-  applyImportedCausedByAction(detailsByAction, systemIndex.importedCausedByAction);
-
   return detailsByProject;
 };
 
@@ -444,6 +443,7 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject) =
   const colCentro        = findCol(headers, ['centro de costo'], 0);
   const colMacro         = findCol(headers, ['macroproyecto'], 1, { exact: true });
   const colProyecto      = findCol(headers, ['proyecto'], 2, { exact: true });
+  const colAccion        = findCol(headers, ['accion estrategica', 'acción estratégica', 'accion', 'acción'], 3);
   const colAutorizacion  = findCol(headers, ['n autorizaciones', 'numero autorizaciones'], 11);
   const colPresGasto     = findCol(headers, ['gasto'], 12, { exact: true });
   const colPresInv       = findCol(headers, ['inversion'], 13, { exact: true });
@@ -459,6 +459,7 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject) =
     const rawMacro = String(row[colCentro] || '').trim();
     const rawMacroName = String(row[colMacro] || '').trim();
     const rawProject = String(row[colProyecto] || '').trim();
+    const rawAccion = String(row[colAccion] || '').trim();
     const normalizedMacro = normalizeText(rawMacro);
     const normalizedProject = normalizeText(rawProject);
     if ((!rawMacro && !rawProject) || normalizedMacro === 'total' || normalizedProject === 'total') {
@@ -471,24 +472,9 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject) =
     const presupuestoInversion = normalizeNum(row[colPresInv]);
     const comprometidoGasto = normalizeNum(row[colCompGasto]);
     const comprometidoInversion = normalizeNum(row[colCompInv]);
-    let causadoGasto = normalizeNum(row[colCausGasto]);
-    let causadoInversion = normalizeNum(row[colCausInv]);
-    let causado = valueOrSplit(row[colCausTotal], causadoGasto, causadoInversion);
-
-    const importedCaused = systemIndex.importedCausedByProject?.get(normalizeSystemCode(proyecto?.codigo));
-    if (importedCaused) {
-      causadoGasto = importedCaused.gasto;
-      causadoInversion = importedCaused.inversion;
-      causado = importedCaused.causado;
-
-      if (!causadoGasto && !causadoInversion && causado > 0) {
-        if (presupuestoInversion > 0 && !presupuestoGasto) {
-          causadoInversion = causado;
-        } else {
-          causadoGasto = causado;
-        }
-      }
-    }
+    const causadoGasto = normalizeNum(row[colCausGasto]);
+    const causadoInversion = normalizeNum(row[colCausInv]);
+    const causado = valueOrSplit(row[colCausTotal], causadoGasto, causadoInversion);
 
     const codificacion = proyecto?.codigo || '';
 
@@ -496,6 +482,7 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject) =
       macroproyecto: macroSystemLabel(macro, rawMacro),
       proyecto: proyecto?.nombre || rawProject,
       codificacion,
+      accionEstrategica: rawAccion,
       presupuesto: valueOrSplit(row[colPresTotal], presupuestoGasto, presupuestoInversion),
       presupuestoGasto,
       presupuestoInversion,
@@ -543,7 +530,7 @@ controller.getData = async (req, res) => {
     const [summaryResponse, detailResponse, macros, proyectos, accionesConCausado] = await Promise.all([
       sheetsService.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
-        range: 'Proyecto 2026!A:Z',
+        range: SUMMARY_RANGE,
       }),
       sheetsService.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
@@ -554,23 +541,11 @@ controller.getData = async (req, res) => {
       }),
       Macroproyecto.find({}, 'codigo nombre').lean(),
       Proyecto.find({}, 'codigo nombre').lean(),
-      AccionEstrategica.find(
-        {
-          $or: [
-            { presupuesto_ejecutado: { $gt: 0 } },
-            { gasto: { $gt: 0 } },
-            { inversion: { $gt: 0 } },
-          ],
-        },
-        'codigo gasto inversion presupuesto_ejecutado proyecto_id'
-      )
-        .populate('proyecto_id', 'codigo')
-        .lean(),
     ]);
 
     const rows = summaryResponse.data.values || [];
     const detailRows = detailResponse.data.values || [];
-    const systemIndex = buildSystemIndex(macros, proyectos, accionesConCausado);
+    const systemIndex = buildSystemIndex(macros, proyectos);
     const detailsByProject = parseBudgetDetailsRows(detailRows, systemIndex);
     const parsed = parseRows(rows, systemIndex, detailsByProject);
 

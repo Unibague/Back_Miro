@@ -9,8 +9,7 @@ const categorySchema = new Schema({
   },
   templates: [
     {
-      templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'templates', required: true },
-      sequence: { type: Number, required: true } // Order within the category
+      templateId: { type: mongoose.Schema.Types.ObjectId, ref: 'templates', required: true }
     }
   ]
   

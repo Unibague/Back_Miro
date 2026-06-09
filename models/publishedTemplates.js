@@ -100,10 +100,6 @@ const publishedTemplateSchema = new Schema({
     type: Date,
     required: true
   },
-  sequence: {
-    type: Number,
-    required: false
-  },
   category: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'categories'

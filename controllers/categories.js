@@ -19,8 +19,7 @@ categoryController.createCategory = async (req, res) => {
     const category = new Category({
       name,
       templates: templates?.map(t => ({
-        templateId: t.templateId, // Reference to Template._id
-        sequence: t.sequence
+        templateId: t.templateId // Reference to Template._id
       })) || []
     });
 
@@ -78,9 +77,9 @@ categoryController.getCategoryById = async (req, res) => {
 categoryController.assignTemplateToCategory = async (req, res) => {
   try {
     const { categoryId } = req.params;
-    const { templateId, sequence } = req.body;
+    const { templateId } = req.body;
 
-    if (!templateId || sequence === undefined) {
+    if (!templateId) {
       return res.status(400).json({ message: "Datos incompletos" });
     }
 
@@ -94,7 +93,7 @@ categoryController.assignTemplateToCategory = async (req, res) => {
       return res.status(400).json({ message: "La plantilla ya está asignada a esta categoría" });
     }
 
-    category.templates.push({ templateId, sequence });
+    category.templates.push({ templateId });
     await category.save();
     await Template.findByIdAndUpdate(templateId, { category: categoryId });
 
@@ -123,7 +122,7 @@ categoryController.updateCategory = async (req, res) => {
     await Template.updateMany({ _id: { $in: templatesToRemove } }, { $unset: { category: "" } });
 
     category.name = name;
-    category.templates = templates.map(t => ({ templateId: t.templateId, sequence: t.sequence }));
+    category.templates = templates.map(t => ({ templateId: t.templateId }));
     await category.save();
 
     await Template.updateMany({ _id: { $in: newTemplateIds } }, { category: categoryId });
