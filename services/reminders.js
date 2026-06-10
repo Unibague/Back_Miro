@@ -272,7 +272,7 @@ sendReminderEmail: async function (to, nombre, fechaLimite, items = [], tipo = "
   }
 
   await transporter.sendMail({
-    from: `"${process.env.MAIL_FROM_NAME}" <${process.env.MAIL_FROM_ADDRESS}>`,
+    from: `"${emailConfig.fromName}" <${emailConfig.fromAddress || emailConfig.username}>`,
     to,
     subject: `📩 Recordatorio de ${plural} pendientes`,
     html: `
@@ -350,7 +350,7 @@ sendUploadNotificationEmail: async function (to, nombreResponsable, nombrePlanti
   const fechaFormateada = dayjs(fechaCarga).format('DD/MM/YYYY HH:mm');
 
   await transporter.sendMail({
-    from: `"${process.env.MAIL_FROM_NAME}" <${process.env.MAIL_FROM_ADDRESS}>`,
+    from: `"${emailConfig.fromName}" <${emailConfig.fromAddress || emailConfig.username}>`,
     to,
     subject: `📥 Nueva información cargada en: ${nombrePlantilla}`,
     html: `

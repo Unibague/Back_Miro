@@ -96,6 +96,10 @@ const publishedTemplateSchema = new Schema({
     ref: 'dependencies',
     default: []
   },
+  notify_producers: {
+    type: Boolean,
+    default: false
+  },
   published_date: {
     type: Date,
     required: true

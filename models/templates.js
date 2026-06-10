@@ -178,6 +178,10 @@ const templateSchema = new Schema({
       type: Boolean,
       default: false
     },
+    notify_producers: {
+      type: Boolean,
+      default: false
+    },
     fecha_inicio: {
       type: Date,
       required: false

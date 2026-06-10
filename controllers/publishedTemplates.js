@@ -224,6 +224,7 @@ const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
       fields: originalTemplate?.fields || publishedTemplate.template?.fields || [],
       workbook_sheets: originalTemplate?.workbook_sheets || publishedTemplate.template?.workbook_sheets || [],
       allows_qr: originalTemplate?.allows_qr ?? publishedTemplate.template?.allows_qr ?? false,
+      notify_producers: originalTemplate?.notify_producers ?? publishedTemplate.template?.notify_producers ?? false,
       shared: originalTemplate?.shared ?? publishedTemplate.template?.shared ?? false,
       responsible_producers: originalTemplate?.responsible_producers || publishedTemplate.template?.responsible_producers || [],
       category: normalizeCategoryForResponse(
@@ -313,15 +314,87 @@ const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
     String(publishedTemplate.template.original_workbook_base64 || "") !== String(latestTemplate.original_workbook_base64 || "") ||
     Boolean(publishedTemplate.template.shared) !== Boolean(latestTemplate.shared) ||
     Boolean(publishedTemplate.template.allows_qr) !== Boolean(latestTemplate.allows_qr) ||
+    Boolean(publishedTemplate.template.notify_producers) !== Boolean(latestTemplate.notify_producers) ||
     JSON.stringify(publishedTemplate.template.responsible_producers || []) !== JSON.stringify(latestTemplate.responsible_producers || []) ||
     JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
     JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
   ) {
     publishedTemplate.template = latestTemplate;
+    publishedTemplate.notify_producers = latestTemplate.notify_producers ?? false;
     await publishedTemplate.save();
   }
 
   return publishedTemplate;
+};
+
+const uploadNotificationsEnabled = (publishedTemplate) => (
+  Boolean(publishedTemplate?.notify_producers ?? publishedTemplate?.template?.notify_producers ?? false)
+);
+
+const getResponsibleProducerIds = (publishedTemplate) => {
+  const rawResponsible = publishedTemplate?.responsible_producers?.length > 0
+    ? publishedTemplate.responsible_producers
+    : publishedTemplate?.template?.responsible_producers;
+
+  return [...new Set((rawResponsible || [])
+    .map((item) => {
+      const value = item && typeof item === 'object' && item._id ? item._id : item;
+      return String(value || '');
+    })
+    .filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+};
+
+const notifyResponsibleProducersOnUpload = (publishedTemplate, user, userDependencies = []) => {
+  if (!uploadNotificationsEnabled(publishedTemplate)) return;
+
+  const responsibleIds = getResponsibleProducerIds(publishedTemplate);
+  if (responsibleIds.length === 0) return;
+
+  const templateName = publishedTemplate.name;
+  const uploaderEmail = user.email;
+  const uploaderName = user.full_name || user.name || user.email;
+  const uploaderDependency = userDependencies.find((dep) => dep.dep_code === user.dep_code) || userDependencies[0];
+  const uploaderDependencyName = uploaderDependency?.name || user.dep_code;
+
+  setImmediate(async () => {
+    try {
+      const responsibleDeps = await Dependency.find(
+        { _id: { $in: responsibleIds } },
+        'dep_code name'
+      ).lean();
+      const responsibleDepCodes = responsibleDeps.map((dep) => dep.dep_code).filter(Boolean);
+      if (responsibleDepCodes.length === 0) return;
+
+      const recipients = await User.find({
+        isActive: true,
+        roles: 'Productor',
+        email: { $ne: uploaderEmail },
+        $or: [
+          { dep_code: { $in: responsibleDepCodes } },
+          { additional_dependencies: { $in: responsibleDepCodes } },
+        ],
+      }, 'email name full_name').lean();
+
+      const sentTo = new Set();
+      for (const recipient of recipients) {
+        if (!recipient.email || sentTo.has(recipient.email)) continue;
+        sentTo.add(recipient.email);
+
+        await RemindersService.sendUploadNotificationEmail(
+          recipient.email,
+          recipient.full_name || recipient.name || recipient.email,
+          templateName,
+          uploaderDependencyName,
+          uploaderName,
+          new Date()
+        ).catch((error) => {
+          console.error(`[UPLOAD-NOTIFY] Error enviando a ${recipient.email}:`, error.message);
+        });
+      }
+    } catch (error) {
+      console.error('[UPLOAD-NOTIFY] Error preparando notificaciones:', error.message);
+    }
+  });
 };
 
 // Mapeo de códigos alfa-2 de países a IDs numéricos
@@ -796,6 +869,7 @@ publTempController.publishTemplate = async (req, res) => {
       fecha_final_responsables: req.body.fecha_final_responsables || template.fecha_final_responsables || null,
       fecha_final: fechaFinal,
       responsible_producers: template.responsible_producers || [],
+      notify_producers: template.notify_producers || false,
       published_date: datetime_now(),
       category: category
     })
@@ -1599,6 +1673,8 @@ publTempController.loadProducerData = async (req, res) => {
         recordsLoaded
       });
 
+      notifyResponsibleProducersOnUpload(pubTem, user, userDependencies);
+
       return res.status(200).json({
         status: 'Data loaded successfully',
         recordsLoaded
@@ -1791,39 +1867,7 @@ if (field.multiple) {
       recordsLoaded: data.length
     });
 
-    const depName = userDependencies[0]?.name || user.dep_code;
-    if (process.env.NOTIFY_ENCARGADO_ON_UPLOAD === 'true') {
-      setImmediate(async () => {
-        try {
-          const rawResp = pubTem.responsible_producers?.length > 0
-            ? pubTem.responsible_producers
-            : pubTem.template?.responsible_producers;
-          if (!rawResp?.length) return;
-
-          const encargadoDep = await Dependency.findById(rawResp[0]).lean();
-          if (!encargadoDep) return;
-
-          const encargadoUsers = await User.find({
-            dep_code: encargadoDep.dep_code,
-            roles: 'Productor',
-            isActive: true
-          }, 'email name full_name').lean();
-
-          for (const eu of encargadoUsers) {
-            if (eu.email && eu.email !== user.email) {
-              await RemindersService.sendUploadNotificationEmail(
-                eu.email,
-                eu.full_name || eu.name || eu.email,
-                pubTem.name,
-                depName,
-                `${user.full_name || user.name || user.email}`,
-                new Date()
-              ).catch(() => {});
-            }
-          }
-        } catch (_) {}
-      });
-    }
+    notifyResponsibleProducersOnUpload(pubTem, user, userDependencies);
 
     return res.status(200).json({
       status: 'Data loaded successfully',
@@ -1901,6 +1945,8 @@ publTempController.submitEmptyData = async (req, res) => {
       templateName: pubTem.name,
       dependency: user.dep_code
     });
+
+    notifyResponsibleProducersOnUpload(pubTem, user, userDependencies);
     
     return res.status(200).json({ status: 'Data loaded successfully' });
   } catch (error) {

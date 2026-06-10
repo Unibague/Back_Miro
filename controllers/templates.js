@@ -447,6 +447,7 @@ templateController.updatePlantilla = async (req, res) => {
       "template.active": updatedTemplate.active,
       "template.shared": updatedTemplate.shared ?? false,
       "template.allows_qr": updatedTemplate.allows_qr ?? false,
+      "template.notify_producers": updatedTemplate.notify_producers ?? false,
       "template.fecha_inicio": updatedTemplate.fecha_inicio ?? null,
       "template.fecha_final_productores": updatedTemplate.fecha_final_productores ?? null,
       "template.fecha_final_responsables": updatedTemplate.fecha_final_responsables ?? null,
@@ -454,6 +455,7 @@ templateController.updatePlantilla = async (req, res) => {
       "template.responsible_producers": updatedTemplate.responsible_producers ?? [],
       // Sincronizar también al nivel raíz de publishedTemplate para que el frontend lo lea sin fallback profundo
       responsible_producers: updatedTemplate.responsible_producers ?? [],
+      notify_producers: updatedTemplate.notify_producers ?? false,
       ...(updatedTemplate.fecha_final_productores != null && { fecha_final_productores: updatedTemplate.fecha_final_productores }),
       ...(updatedTemplate.fecha_final_responsables != null && { fecha_final_responsables: updatedTemplate.fecha_final_responsables }),
       ...(updatedTemplate.fecha_final != null && { fecha_final: updatedTemplate.fecha_final, deadline: updatedTemplate.fecha_final }),
@@ -492,7 +494,7 @@ templateController.updatePlantilla = async (req, res) => {
 
 templateController.syncAllPublishedTemplates = async (req, res) => {
   try {
-    const templates = await Template.find({}, "_id name file_name file_description fields workbook_sheets original_workbook_base64 producers dimensions active");
+    const templates = await Template.find({}, "_id name file_name file_description fields workbook_sheets original_workbook_base64 producers dimensions active notify_producers");
 
     let totalUpdated = 0;
     const logs = [];
@@ -512,6 +514,7 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
         producers: template.producers,
         dimensions: template.dimensions,
         active: template.active,
+        notify_producers: template.notify_producers ?? false,
       };
 
       const result = await PublishedTemplate.updateMany(
@@ -519,6 +522,7 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
         {
           $set: {
             template: templateSnapshot,
+            notify_producers: template.notify_producers ?? false,
             name: template.name, // <- actualiza el nombre del publishedTemplate también
           },
         }
