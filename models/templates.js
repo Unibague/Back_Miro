@@ -202,6 +202,10 @@ const templateSchema = new Schema({
     fecha_final: {
       type: Date,
       required: false
+    },
+    is_snies: {
+      type: Boolean,
+      default: false
     }
 },
 {

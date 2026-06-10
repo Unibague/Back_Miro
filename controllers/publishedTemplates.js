@@ -331,12 +331,12 @@ const uploadNotificationsEnabled = (publishedTemplate) => (
   Boolean(publishedTemplate?.notify_producers ?? publishedTemplate?.template?.notify_producers ?? false)
 );
 
-const getResponsibleProducerIds = (publishedTemplate) => {
-  const rawResponsible = publishedTemplate?.responsible_producers?.length > 0
-    ? publishedTemplate.responsible_producers
-    : publishedTemplate?.template?.responsible_producers;
+const getAllProducerIds = (publishedTemplate) => {
+  const rawProducers = publishedTemplate?.producers?.length > 0
+    ? publishedTemplate.producers
+    : publishedTemplate?.template?.producers;
 
-  return [...new Set((rawResponsible || [])
+  return [...new Set((rawProducers || [])
     .map((item) => {
       const value = item && typeof item === 'object' && item._id ? item._id : item;
       return String(value || '');
@@ -347,7 +347,7 @@ const getResponsibleProducerIds = (publishedTemplate) => {
 const notifyResponsibleProducersOnUpload = (publishedTemplate, user, userDependencies = []) => {
   if (!uploadNotificationsEnabled(publishedTemplate)) return;
 
-  const responsibleIds = getResponsibleProducerIds(publishedTemplate);
+  const responsibleIds = getAllProducerIds(publishedTemplate);
   if (responsibleIds.length === 0) return;
 
   const templateName = publishedTemplate.name;
