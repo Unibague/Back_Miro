@@ -254,11 +254,16 @@ templateController.getPlantillasByCreator = async (req, res) => {
 templateController.getPlantilla = async (req, res) => {
   try {
     const { id } = req.params;
+    const { periodId, withValidators } = req.query;
     const plantilla = await Template.findById(id);
     if (!plantilla) {
       return res.status(404).json({ mensaje: "Plantilla no encontrada" });
     }
-    res.status(200).json(plantilla);
+    const result = plantilla.toObject();
+    if (withValidators === 'true' || withValidators === '1') {
+      result.validators = await collectValidatorsForTemplate(result, periodId || null);
+    }
+    res.status(200).json(result);
   } catch (error) {
     res.status(500).json({ mensaje: "Error al obtener la plantilla", error });
   }

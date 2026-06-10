@@ -349,7 +349,7 @@ const normalizeHeader = (h) =>
 
 // GET /historico-docentes/data?email=&category=&id=&sheet=&page=&limit=&year=&search=
 controller.getData = async (req, res) => {
-  const { email, sheet, page = 1, limit = 100, year, category = 'snies', id } = req.query;
+  const { email, sheet, page = 1, limit = 100, year, yearFrom, yearTo, category = 'snies', id } = req.query;
 
   if (!email) return res.status(400).json({ message: "El email es requerido." });
 
@@ -401,6 +401,13 @@ controller.getData = async (req, res) => {
       filteredRows = filteredRows.filter(
         (row) => (row[yearColIndex] || "").toString().trim() === year
       );
+    } else if ((yearFrom || yearTo) && yearColIndex >= 0) {
+      filteredRows = filteredRows.filter((row) => {
+        const val = (row[yearColIndex] || "").toString().trim();
+        if (yearFrom && val < yearFrom) return false;
+        if (yearTo && val > yearTo) return false;
+        return true;
+      });
     }
     if (req.query.search) {
       const searchTerm = req.query.search.toString().trim().toLowerCase();

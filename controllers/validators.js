@@ -1548,10 +1548,35 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 validatorController.giveValidatorToExcel = async (name, periodId = null) => {
     try {
         const { validatorName: requestedValidatorName, columnName: requestedColumnName } = splitValidateWithReference(name);
-        let validator = await validatorController.findValidatorByName(requestedValidatorName, periodId);
 
+        // Usar el validador con más filas de datos (global vs snapshot de periodo)
+        const countValidatorRows = (v) => {
+            if (!v) return 0;
+            const cols = v.columns || [];
+            return cols.length > 0 ? Math.max(...cols.map(c => (c.values || []).length)) : 0;
+        };
+
+        const findBestValidator = async (lookupName) => {
+            if (!lookupName) return null;
+            const escaped = lookupName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const [globalValidator, periodValidator] = await Promise.all([
+                Validator.findOne({ name: new RegExp(`^${escaped}$`, 'i') }),
+                hasPeriodId(periodId)
+                    ? validatorController.findValidatorByName(lookupName, periodId)
+                    : Promise.resolve(null),
+            ]);
+            if (!globalValidator && !periodValidator) return null;
+            if (!globalValidator) return periodValidator;
+            if (!periodValidator) return globalValidator;
+            // Preferir el que tenga más filas (más completo/actualizado)
+            return countValidatorRows(periodValidator) > countValidatorRows(globalValidator)
+                ? periodValidator
+                : globalValidator;
+        };
+
+        let validator = await findBestValidator(requestedValidatorName);
         if (!validator && requestedColumnName) {
-            validator = await validatorController.findValidatorByName(requestedColumnName, periodId);
+            validator = await findBestValidator(requestedColumnName);
         }
 
         if (!validator) {

@@ -187,10 +187,21 @@ const enrichFields = async (fields, periodId) => {
   const editable = fields || [];
   return Promise.all(editable.map(async (field) => {
     const plainField = withEffectiveRequired(field);
-    if (!plainField.validate_with) return plainField;
 
     try {
-      const { validatorName, columnName } = parseValidateWith(plainField.validate_with);
+      let validatorName, columnName;
+
+      if (plainField.validate_with) {
+        const parsed = parseValidateWith(plainField.validate_with);
+        validatorName = parsed.validatorName;
+        columnName = parsed.columnName;
+      } else if (plainField.dropdown_options?.length) {
+        // Intentar encontrar validador por nombre del campo (igual que el Excel)
+        // Solo si el campo ya tiene dropdown_options (es un campo de selección)
+        validatorName = plainField.name;
+        columnName = null;
+      }
+
       if (!validatorName) return plainField;
 
       let validator = await Validator.findValidatorByName(validatorName, periodId);
@@ -202,14 +213,16 @@ const enrichFields = async (fields, periodId) => {
         const col = findValidatorColumn(validator, columnName || validatorName);
         if (col) {
           const dropdownOptions = buildDropdownOptions(validator, col);
-          return {
-            ...plainField,
-            validate_with: {
-              id: String(validator._id || validator.id || validator.name),
-              name: `${validator.name} - ${col.name}`,
-            },
-            dropdown_options: dropdownOptions.length ? dropdownOptions : plainField.dropdown_options,
-          };
+          if (dropdownOptions.length) {
+            return {
+              ...plainField,
+              validate_with: {
+                id: String(validator._id || validator.id || validator.name),
+                name: `${validator.name} - ${col.name}`,
+              },
+              dropdown_options: dropdownOptions,
+            };
+          }
         }
       }
     } catch (_) { /* ignore */ }

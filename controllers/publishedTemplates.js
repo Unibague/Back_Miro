@@ -106,9 +106,13 @@ const addValidatorToResponseMap = (validatorsMap, validator) => {
 const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) => {
   const plainField = field?.toObject?.() || field;
   const { validatorName, columnName } = splitValidateWithReference(plainField?.validate_with);
-  if (!validatorName) return plainField;
 
-  const validator = await Validator.findValidatorByName(validatorName, periodId);
+  // Si no tiene validate_with, intentar encontrar validador por nombre del campo
+  // (solo si el campo ya tiene dropdown_options, indicando que es un campo de selección)
+  const lookupName = validatorName || (plainField?.dropdown_options?.length ? plainField?.name : null);
+  if (!lookupName) return plainField;
+
+  const validator = await Validator.findValidatorByName(lookupName, periodId);
   if (!validator) return plainField;
 
   const column = (columnName
