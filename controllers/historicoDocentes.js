@@ -488,6 +488,26 @@ controller.downloadFile = async (req, res) => {
   }
 };
 
+// PATCH /historico-docentes/:id/anexos/:anexoId/rename
+controller.renameAnexo = async (req, res) => {
+  const { id, anexoId } = req.params;
+  const { file_name } = req.body;
+
+  if (!file_name?.trim()) return res.status(400).json({ message: "El nombre es requerido." });
+
+  try {
+    const registro = await HistoricoDocentes.findById(id);
+    if (!registro) return res.status(404).json({ message: "Informe no encontrado." });
+    const anexo = registro.anexos.id(anexoId);
+    if (!anexo) return res.status(404).json({ message: "Anexo no encontrado." });
+    anexo.file_name = file_name.trim();
+    await registro.save();
+    return res.status(200).json({ message: "Nombre actualizado.", file_name: anexo.file_name });
+  } catch (error) {
+    return res.status(500).json({ message: "Error al renombrar el anexo.", error: error.message });
+  }
+};
+
 // PATCH /historico-docentes/:id/rename
 controller.renameFile = async (req, res) => {
   const { id } = req.params;

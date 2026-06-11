@@ -15,6 +15,7 @@ router.get("/:id/pdf", controller.viewPdf);
 // Anexos
 router.get("/:id/anexos", controller.listAnexos);
 router.post("/:id/anexos", upload.single("anexo_file"), controller.addAnexo);
+router.patch("/:id/anexos/:anexoId/rename", controller.renameAnexo);
 router.get("/:id/anexos/:anexoId", controller.viewAnexo);
 router.delete("/:id/anexos/:anexoId", controller.deleteAnexo);
 
