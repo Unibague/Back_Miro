@@ -108,8 +108,8 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
   const { validatorName, columnName } = splitValidateWithReference(plainField?.validate_with);
 
   // Si no tiene validate_with, intentar encontrar validador por nombre del campo
-  // (solo si el campo ya tiene dropdown_options, indicando que es un campo de selección)
-  const lookupName = validatorName || (plainField?.dropdown_options?.length ? plainField?.name : null);
+  // Esto incluye campos que podrían tener validador aunque no tengan dropdown_options configuradas
+  const lookupName = validatorName || plainField?.name;
   if (!lookupName) return plainField;
 
   const validator = await Validator.findValidatorByName(lookupName, periodId);
@@ -131,10 +131,7 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
 
   return {
     ...plainField,
-    validate_with: {
-      id: String(validator._id || validator.name),
-      name: optName,
-    },
+    validate_with: optName, // ← Retornar SOLO el nombre del validador como string
     validator_values: (column.values || []).map(validatorValueToPlain),
     validator_type: column.type,
   };
@@ -2519,10 +2516,31 @@ publTempController.getTemplateById = async (req, res) => {
     const sharedSheetsData = {};
     const allProducerEntries = getLoadedDataIncludingQrDrafts(publishedTemplate);
     const allEntriesDepCodes = [...new Set(allProducerEntries.map(e => getEntryDependencyCode(e)).filter(Boolean))];
+    
+    // Buscar dependencias: algunos pueden ser ObjectIds, otros pueden ser dep_code
+    // Hacer una búsqueda por ambos
     const entriesDeps = allEntriesDepCodes.length
-      ? await Dependency.find({ dep_code: { $in: allEntriesDepCodes } }, 'dep_code name').lean()
+      ? await Dependency.find({
+          $or: [
+            { dep_code: { $in: allEntriesDepCodes } },
+            { _id: { $in: allEntriesDepCodes.map(code => {
+              try {
+                return new mongoose.Types.ObjectId(code);
+              } catch {
+                return null;
+              }
+            }).filter(Boolean) } }
+          ]
+        }, 'dep_code name _id').lean()
       : [];
-    const depNameByCode = new Map(entriesDeps.map(d => [d.dep_code, d.name]));
+    
+    // Crear mapas por dep_code y por _id
+    const depNameByCode = new Map();
+    const depNameById = new Map();
+    entriesDeps.forEach(d => {
+      if (d.dep_code) depNameByCode.set(d.dep_code, d.name);
+      if (d._id) depNameById.set(String(d._id), d.name);
+    });
     for (const sheet of enrichedSheets) {
       if (!sheet.fields?.length) continue;
       const sheetFieldNames = new Set((sheet.fields || []).map(f => f.name));
@@ -2534,18 +2552,41 @@ publTempController.getTemplateById = async (req, res) => {
         const entryDependency = getEntryDependencyCode(entry);
         if (sheetProducerCodes.size > 0 && !sheetProducerCodes.has(entryDependency)) continue;
 
-        const relevantFields = (entry.filled_data || []).filter(f => (
-          getFieldDataSheetName(f)
-            ? getFieldDataSheetName(f) === sheet.name
-            : sheetFieldNames.has(f.field_name)
-        ));
+        // Filtrar campos relevantes para esta hoja
+        // Estrategia 1: si el campo tiene sheet_name, verificar que coincida
+        // Estrategia 2: si no tiene sheet_name, verificar si el nombre coincide (con normalización)
+        const normalizeFieldName = (name) => (name || '').trim().toLowerCase();
+        const sheetFieldNamesNormalized = new Set(
+          Array.from(sheetFieldNames).map(normalizeFieldName)
+        );
+
+        const relevantFields = (entry.filled_data || []).filter(f => {
+          const fieldSheetName = getFieldDataSheetName(f);
+          if (fieldSheetName) {
+            return fieldSheetName === sheet.name;
+          }
+          // Fallback: si no hay sheet_name, verificar si el nombre del campo existe en la hoja (con normalización)
+          return sheetFieldNamesNormalized.has(normalizeFieldName(f.field_name));
+        });
+
         if (relevantFields.length === 0) continue;
         const sendBy = entry.send_by || {};
+        // Determinar si es un entry de QR (tiene sender_email y sender_name) o en línea
+        const fromQr = !!(entry.sender_email && entry.sender_name);
+        
+        // Resolver el nombre de la dependencia (puede ser dep_code o ObjectId)
+        let depName = depNameByCode.get(entryDependency) || depNameById.get(entryDependency);
+        if (!depName) {
+          // Fallback: usar el código de dependencia mismo
+          depName = entryDependency;
+        }
+        
         const origin = {
           code: entryDependency,
-          depName: depNameByCode.get(entryDependency) || entryDependency,
+          depName: depName,
           senderName: sendBy.full_name || sendBy.name || sendBy.email || entryDependency,
           senderEmail: sendBy.email || null,
+          fromQr: fromQr,
         };
         const builtRows = buildRowsFromFilledFields(relevantFields)
           .filter(row => Object.values(row).some(value => isMeaningfulMergedValue(value)));

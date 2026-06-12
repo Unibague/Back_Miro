@@ -195,9 +195,11 @@ const enrichFields = async (fields, periodId) => {
         const parsed = parseValidateWith(plainField.validate_with);
         validatorName = parsed.validatorName;
         columnName = parsed.columnName;
-      } else if (plainField.dropdown_options?.length) {
-        // Intentar encontrar validador por nombre del campo (igual que el Excel)
-        // Solo si el campo ya tiene dropdown_options (es un campo de selección)
+      }
+      
+      // Si no encontró validador por validate_with, intentar por nombre del campo
+      // Sin requerir que tenga dropdown_options
+      if (!validatorName) {
         validatorName = plainField.name;
         columnName = null;
       }
@@ -216,10 +218,7 @@ const enrichFields = async (fields, periodId) => {
           if (dropdownOptions.length) {
             return {
               ...plainField,
-              validate_with: {
-                id: String(validator._id || validator.id || validator.name),
-                name: `${validator.name} - ${col.name}`,
-              },
+              validate_with: `${validator.name} - ${col.name}`, // Retornar como string, no como objeto
               dropdown_options: dropdownOptions,
             };
           }
