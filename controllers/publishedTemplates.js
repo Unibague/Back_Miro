@@ -1468,6 +1468,7 @@ publTempController.loadProducerData = async (req, res) => {
         send_by: user,
         filled_data: result,
         loaded_date: datetime_now(),
+        source: 'excel' // ← Marcar que vino de Excel en línea
       };
 
       replaceDraftDataForDependency(pubTem, producersData);
@@ -1636,7 +1637,8 @@ publTempController.loadProducerData = async (req, res) => {
         dependency: user.dep_code,
         send_by: user,
         filled_data: result,
-        loaded_date: datetime_now()
+        loaded_date: datetime_now(),
+        source: 'excel' // ← Marcar que vino de Excel en línea
       };
 
       const recordsLoaded = incomingSheetsData.reduce((total, sheet) => total + (sheet.data?.length || 0), 0);
@@ -1822,11 +1824,15 @@ if (field.multiple) {
       return res.status(400).json({ status: 'Validation error', details: sanitizedErrors });
     }
 
+    // Determinar el origen: 'excel' si hay bypassValidation, 'manual' si no
+    const dataSource = bypassValidation ? 'excel' : 'online';
+    
     const producersData = {
       dependency: user.dep_code,
       send_by: user,
       filled_data: result,
-      loaded_date: datetime_now()
+      loaded_date: datetime_now(),
+      source: dataSource // ← 'excel' si bypassValidation, 'online' si formulario
     };
 
     if (saveAsDraft) {
@@ -1925,7 +1931,8 @@ publTempController.submitEmptyData = async (req, res) => {
       dependency: user.dep_code,
       send_by: user,
       loaded_date: datetime_now(),  // Agregar la fecha de carga
-      filled_data: []
+      filled_data: [],
+      source: 'manual' // ← Marcar como manual (envío vacío)
     };
 
     const existingDataIndex = pubTem.loaded_data.findIndex(
@@ -2571,8 +2578,25 @@ publTempController.getTemplateById = async (req, res) => {
 
         if (relevantFields.length === 0) continue;
         const sendBy = entry.send_by || {};
-        // Determinar si es un entry de QR (tiene sender_email y sender_name) o en línea
-        const fromQr = !!(entry.sender_email && entry.sender_name);
+        // Determinar el origen: QR, Excel en línea, en línea, o manual
+        // Prioridad: 1) source='excel' → Excel, 2) source='online' → En línea, 3) sender_email && sender_name → QR, 4) default → Manual
+        let fromQr = false;
+        let fromExcel = false;
+        let fromOnline = false;
+        
+        if (entry.source === 'excel') {
+          fromExcel = true;
+        } else if (entry.source === 'online') {
+          fromOnline = true;
+        } else if (entry.source === 'manual') {
+          // fromManual será Manual (todos false)
+        } else if (entry.sender_email && entry.sender_name) {
+          // Si no tiene source pero tiene sender_email y sender_name → es QR
+          fromQr = true;
+        } else {
+          // Fallback para datos viejos sin source y sin sender_email/name → es Manual
+          // (No hacer nada, quedarán todos en false = Manual)
+        }
         
         // Resolver el nombre de la dependencia (puede ser dep_code o ObjectId)
         let depName = depNameByCode.get(entryDependency) || depNameById.get(entryDependency);
@@ -2587,6 +2611,8 @@ publTempController.getTemplateById = async (req, res) => {
           senderName: sendBy.full_name || sendBy.name || sendBy.email || entryDependency,
           senderEmail: sendBy.email || null,
           fromQr: fromQr,
+          fromExcel: fromExcel,
+          fromOnline: fromOnline,
         };
         const builtRows = buildRowsFromFilledFields(relevantFields)
           .filter(row => Object.values(row).some(value => isMeaningfulMergedValue(value)));

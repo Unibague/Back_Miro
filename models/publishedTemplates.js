@@ -40,6 +40,11 @@ const producersData = new Schema({
     },
     filled_data: {
       type: [filled_fields]
+    },
+    source: {
+        type: String,
+        enum: ['excel', 'qr', 'online', 'manual'],
+        default: 'manual'
     }
 }, {
     _id: false
