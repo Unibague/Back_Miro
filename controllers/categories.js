@@ -25,13 +25,13 @@ categoryController.createCategory = async (req, res) => {
 
     await category.save();
 
-        // ✅ Update each template to store the category reference
         if (templates && templates.length > 0) {
+          const isSniesCategory = name.toUpperCase().includes("SNIES");
           await Promise.all(
             templates.map(t =>
               Template.findByIdAndUpdate(
                 t.templateId,
-                { category: category._id }, // Set category reference
+                { category: category._id, ...(isSniesCategory ? { is_snies: true } : {}) },
                 { new: true }
               )
             )
@@ -125,7 +125,11 @@ categoryController.updateCategory = async (req, res) => {
     category.templates = templates.map(t => ({ templateId: t.templateId }));
     await category.save();
 
-    await Template.updateMany({ _id: { $in: newTemplateIds } }, { category: categoryId });
+    const isSniesCategory = name.toUpperCase().includes("SNIES");
+    await Template.updateMany(
+      { _id: { $in: newTemplateIds } },
+      { category: categoryId, ...(isSniesCategory ? { is_snies: true } : {}) }
+    );
 
     res.status(200).json({ message: "Categoría actualizada exitosamente", category });
   } catch (error) {

@@ -57,6 +57,7 @@ const templateController = {};
 templateController.getTemplatesWithoutPagination = async (req,res) => {
   const search = req.query.search || "";
   const periodId = req.query.periodId;
+  const onlyPublishedInPeriod = req.query.onlyPublishedInPeriod === "true";
 
   try {
     const query = search
@@ -68,6 +69,24 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
           ],
         }
       : {};
+
+    if (periodId && onlyPublishedInPeriod) {
+      const publishedTemplates = await PubTemplate.find(
+        { period: periodId },
+        { "template._id": 1 }
+      ).lean();
+
+      const publishedTemplateIds = [
+        ...new Set(
+          publishedTemplates
+            .map((pt) => String(pt.template?._id || ""))
+            .filter((id) => mongoose.Types.ObjectId.isValid(id))
+        ),
+      ].map((id) => new ObjectId(id));
+
+      if (!query.$and) query.$and = [];
+      query.$and.push({ _id: { $in: publishedTemplateIds } });
+    }
 
     const templates = await Template.find(query)
       .collation({ locale: 'es', strength: 1 })
@@ -255,7 +274,7 @@ templateController.getPlantilla = async (req, res) => {
   try {
     const { id } = req.params;
     const { periodId, withValidators } = req.query;
-    const plantilla = await Template.findById(id);
+    const plantilla = await Template.findById(id).populate("category", "name");
     if (!plantilla) {
       return res.status(404).json({ mensaje: "Plantilla no encontrada" });
     }
