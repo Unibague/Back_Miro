@@ -123,8 +123,24 @@ const getFieldDropdownOptions = (field = {}) => uniqueOptionTexts([
 const getOptionAliases = (option) => {
   const text = toOptionText(option);
   const aliases = [text];
+
+  // Match "CODE - description" (separator: dash, colon, equals, etc.)
   const leadingCode = text.match(/^\s*([A-Za-z0-9]+)\s*(?:[-:=)]|\.)\s+.+$/);
-  if (leadingCode?.[1]) aliases.push(leadingCode[1]);
+  if (leadingCode?.[1]) {
+    aliases.push(leadingCode[1]);
+  } else {
+    // Match "CODE description" (space-only, short code ≤6 chars + longer description)
+    const spaceCode = text.match(/^\s*([A-Za-z0-9]{1,6})\s+\S.+$/);
+    if (spaceCode?.[1]) {
+      const code = spaceCode[1];
+      const rest = text.slice(text.indexOf(' ')).trim();
+      if (rest.length > code.length) {
+        aliases.push(code);
+        aliases.push(`${code} - ${rest}`);
+      }
+    }
+  }
+
   return uniqueOptionTexts(aliases);
 };
 
