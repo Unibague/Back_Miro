@@ -51,6 +51,21 @@ const fieldSchema = new Schema(
       required: false,
       default: "",
     },
+    dropdown_options: {
+      type: [Schema.Types.Mixed],
+      required: false,
+      default: [],
+    },
+    excel_validation_options: {
+      type: [Schema.Types.Mixed],
+      required: false,
+      default: [],
+    },
+    validator_options: {
+      type: [Schema.Types.Mixed],
+      required: false,
+      default: [],
+    },
     field_origin: {
       type: String,
       required: true,

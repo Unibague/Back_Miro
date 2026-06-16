@@ -20,20 +20,29 @@ const toOptionText = (value) => {
   return String(value).trim();
 };
 
-const cleanOptionCandidate = (value) =>
-  String(value || '')
+const cleanOptionCandidate = (value, { preserveLeadingCodes = false } = {}) => {
+  let option = String(value || '')
     .replace(/^\s*(?:[-*]|\u2022)\s*/, '')
-    .replace(/^\s*\d+[\).\-\s:]+/, '')
-    .replace(/^\s*[A-Za-z][\).\-\s:]+/, '')
+    .trim();
+
+  if (!preserveLeadingCodes) {
+    option = option
+      .replace(/^\s*\d+[\).\-\s:]+/, '')
+      .replace(/^\s*[A-Za-z][\).\-\s:]+/, '')
+      .trim();
+  }
+
+  return option
     .replace(/^"+|"+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+};
 
-const uniqueOptionTexts = (values) => {
+const uniqueOptionTexts = (values, options = {}) => {
   const seen = new Set();
 
   return (values || []).flatMap((value) => {
-    const option = cleanOptionCandidate(toOptionText(value));
+    const option = cleanOptionCandidate(toOptionText(value), options);
     const key = normalizeOptionKey(option);
     if (!option || seen.has(key)) return [];
 
@@ -42,14 +51,14 @@ const uniqueOptionTexts = (values) => {
   });
 };
 
-const splitOptionCandidates = (value, includeSingle = false) => {
+const splitOptionCandidates = (value, includeSingle = false, options = {}) => {
   const text = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
   if (!text) return [];
 
   const hasSeparators = /[\n;,|/]/.test(text);
-  if (!hasSeparators) return includeSingle ? uniqueOptionTexts([text]) : [];
+  if (!hasSeparators) return includeSingle ? uniqueOptionTexts([text], options) : [];
 
-  return uniqueOptionTexts(text.split(/\n|;|,|\||\//g));
+  return uniqueOptionTexts(text.split(/\n|;|,|\||\//g), options);
 };
 
 const normalizeMarker = (value) =>
@@ -62,23 +71,24 @@ const normalizeMarker = (value) =>
 
 const isOptionsMarker = (line) => {
   const marker = normalizeMarker(line);
+  const markerLabel = marker.includes(':') ? marker.slice(0, marker.indexOf(':') + 1) : marker;
   const hasValueWord =
-    marker.includes('VALORES') ||
-    marker.includes('VALOSR') ||
-    marker.includes('VALOSRES');
+    markerLabel.includes('VALORES') ||
+    markerLabel.includes('VALOSR') ||
+    markerLabel.includes('VALOSRES');
 
   return (
-    marker.endsWith(':') &&
+    marker.includes(':') &&
     hasValueWord &&
     (
-      marker.includes('VALIDOS') ||
-      marker.includes('POSIBLES') ||
-      marker.includes('PERMITIDOS')
+      markerLabel.includes('VALIDOS') ||
+      markerLabel.includes('POSIBLES') ||
+      markerLabel.includes('PERMITIDOS')
     )
   );
 };
 
-const extractDropdownOptionsFromComment = (comment) => {
+const extractDropdownOptionsFromComment = (comment, optionsConfig = {}) => {
   const text = String(comment || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
   if (!text) return [];
 
@@ -99,7 +109,7 @@ const extractDropdownOptionsFromComment = (comment) => {
     if (!inOptionsSection && isOptionsMarker(trimmed)) {
       inOptionsSection = true;
       const inlineText = trimmed.slice(trimmed.indexOf(':') + 1);
-      const inlineOptions = splitOptionCandidates(inlineText, true);
+      const inlineOptions = splitOptionCandidates(inlineText, true, optionsConfig);
       options.push(...inlineOptions);
       hasStartedOptions = inlineOptions.length > 0;
       continue;
@@ -111,11 +121,12 @@ const extractDropdownOptionsFromComment = (comment) => {
     }
   }
 
-  return uniqueOptionTexts(options);
+  return uniqueOptionTexts(options, optionsConfig);
 };
 
 const getFieldDropdownOptions = (field = {}) => uniqueOptionTexts([
   ...(Array.isArray(field.excel_validation_options) ? field.excel_validation_options : []),
+  ...(Array.isArray(field.validator_options) ? field.validator_options : []),
   ...(Array.isArray(field.dropdown_options) ? field.dropdown_options : []),
   ...extractDropdownOptionsFromComment(field.comment),
 ]);

@@ -9,6 +9,7 @@ const User = require("../models/users");
 const Dependency = require("../models/dependencies");
 const ValidatorModel = require("../models/validators");
 const Period = require("../models/periods");
+const { extractDropdownOptionsFromComment } = require("../helpers/dropdownOptions");
 
 const controller = {};
 
@@ -116,6 +117,28 @@ const normalizeHeader = (value = "") =>
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
+
+const columnNumberToName = (columnNumber) => {
+  let dividend = columnNumber;
+  let columnName = "";
+
+  while (dividend > 0) {
+    const modulo = (dividend - 1) % 26;
+    columnName = String.fromCharCode(65 + modulo) + columnName;
+    dividend = Math.floor((dividend - modulo) / 26);
+  }
+
+  return columnName || "A";
+};
+
+const noteToText = (note) => {
+  if (!note) return "";
+  if (typeof note === "string") return note;
+  if (Array.isArray(note.texts)) return note.texts.map((item) => item?.text || "").join("");
+  if (Array.isArray(note.richText)) return note.richText.map((item) => item?.text || "").join("");
+  if (note.text) return String(note.text);
+  return "";
+};
 
 const normalizeLookupValue = (value) => cellToText(value).trim().toUpperCase();
 
@@ -909,6 +932,46 @@ const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = [], f
   worksheet.getRow(1).commit();
 };
 
+const applyHeaderDropdownsFromNotes = (workbook, endRow = 1000) => {
+  const sourcesSheetName = "_Listas";
+  const sourcesSheet = workbook.getWorksheet(sourcesSheetName) || workbook.addWorksheet(sourcesSheetName);
+  sourcesSheet.state = "veryHidden";
+
+  let sourceCol = Math.max(1, sourcesSheet.columnCount + 1);
+
+  workbook.worksheets.forEach((worksheet) => {
+    if (worksheet.name === sourcesSheetName) return;
+
+    const headerRow = worksheet.getRow(1);
+    headerRow.eachCell({ includeEmpty: false }, (headerCell, columnNumber) => {
+      const options = extractDropdownOptionsFromComment(noteToText(headerCell.note), { preserveLeadingCodes: true });
+      if (options.length === 0) return;
+
+      options.forEach((option, optionIndex) => {
+        sourcesSheet.getCell(optionIndex + 1, sourceCol).value = option;
+      });
+
+      const colLetter = columnNumberToName(sourceCol);
+      const rangeRef = `'${sourcesSheetName}'!$${colLetter}$1:$${colLetter}$${options.length}`;
+
+      for (let rowNumber = 2; rowNumber <= endRow; rowNumber += 1) {
+        const cell = worksheet.getCell(rowNumber, columnNumber);
+
+        cell.dataValidation = {
+          type: "list",
+          allowBlank: true,
+          formulae: [rangeRef],
+          showErrorMessage: true,
+          errorTitle: "Valor no valido",
+          error: "Selecciona un valor de la lista desplegable.",
+        };
+      }
+
+      sourceCol += 1;
+    });
+  });
+};
+
 const processFile = async (req) => {
   try {
     const periodId = req.body.period_id || req.body.periodId || null;
@@ -979,6 +1042,7 @@ controller.download = async (req, res) => {
     for (const sheet of sheets) {
       applyGeneratedColumns(sheet.worksheet, sheet.enrichedRows, sheet.validatorColumns, sheet.fieldMap);
     }
+    applyHeaderDropdownsFromNotes(workbook);
     const buffer = await workbook.xlsx.writeBuffer();
     const originalName = path.basename(req.file.originalname || "plantilla.xlsx", path.extname(req.file.originalname || ""));
     const filename = `${originalName}_cruzada_siga_iceberg.xlsx`;

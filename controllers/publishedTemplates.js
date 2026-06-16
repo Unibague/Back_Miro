@@ -108,8 +108,8 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
   const { validatorName, columnName } = splitValidateWithReference(plainField?.validate_with);
 
   // Si no tiene validate_with, intentar encontrar validador por nombre del campo
-  // Esto incluye campos que podrían tener validador aunque no tengan dropdown_options configuradas
-  const lookupName = validatorName || plainField?.name;
+  // (solo si el campo ya tiene dropdown_options, indicando que es un campo de selección)
+  const lookupName = validatorName || (plainField?.dropdown_options?.length ? plainField?.name : null);
   if (!lookupName) return plainField;
 
   const validator = await Validator.findValidatorByName(lookupName, periodId);
@@ -131,7 +131,10 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
 
   return {
     ...plainField,
-    validate_with: optName, // ← Retornar SOLO el nombre del validador como string
+    validate_with: {
+      id: String(validator._id || validator.name),
+      name: optName,
+    },
     validator_values: (column.values || []).map(validatorValueToPlain),
     validator_type: column.type,
   };

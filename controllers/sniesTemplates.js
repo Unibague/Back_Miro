@@ -17,6 +17,7 @@ const {
   deleteDriveFile,
   downloadDriveFileBuffer,
 } = require("../config/googleDrive");
+const { extractDropdownOptionsFromComment } = require("../helpers/dropdownOptions");
 
 const axios = require("axios");
 
@@ -88,6 +89,9 @@ const parseFieldsInput = (value) => {
       required: normalizeBoolean(field?.required, true),
       validate_with: String(field?.validate_with || "").trim(),
       comment: String(field?.comment || "").trim(),
+      dropdown_options: Array.isArray(field?.dropdown_options) ? field.dropdown_options : [],
+      excel_validation_options: Array.isArray(field?.excel_validation_options) ? field.excel_validation_options : [],
+      validator_options: Array.isArray(field?.validator_options) ? field.validator_options : [],
       field_origin: String(field?.field_origin || "snies_extra").trim() === "snies_original"
         ? "snies_original"
         : "snies_extra",
@@ -1216,6 +1220,55 @@ const applyHeaderHelpPromptsToWorkbook = (workbook, commentsPlan, endRow = 1000)
   });
 };
 
+const applyHeaderDropdownsFromComments = (workbook, commentsPlan, endRow = 1000) => {
+  if (!commentsPlan || commentsPlan.size === 0) {
+    return;
+  }
+
+  const sourcesSheetName = "_Listas";
+  const existingSourcesSheet = workbook.getWorksheet(sourcesSheetName);
+  const sourcesSheet = existingSourcesSheet ?? workbook.addWorksheet(sourcesSheetName);
+  sourcesSheet.state = "veryHidden";
+
+  let sourceCol = Math.max(1, sourcesSheet.columnCount + 1);
+
+  commentsPlan.forEach((comments, worksheetName) => {
+    const worksheet = workbook.getWorksheet(worksheetName);
+    if (!worksheet || !Array.isArray(comments) || comments.length === 0) {
+      return;
+    }
+
+    comments.forEach((comment) => {
+      const options = extractDropdownOptionsFromComment(comment.text, { preserveLeadingCodes: true });
+      if (options.length === 0) {
+        return;
+      }
+
+      options.forEach((option, optionIndex) => {
+        sourcesSheet.getCell(optionIndex + 1, sourceCol).value = option;
+      });
+
+      const colLetter = columnNumberToName(sourceCol);
+      const rangeRef = `'${sourcesSheetName}'!$${colLetter}$1:$${colLetter}$${options.length}`;
+
+      for (let row = comment.rowNumber + 1; row <= endRow; row += 1) {
+        const cell = worksheet.getCell(row, comment.columnNumber);
+
+        cell.dataValidation = {
+          type: "list",
+          allowBlank: true,
+          formulae: [rangeRef],
+          showErrorMessage: true,
+          errorTitle: "Valor no valido",
+          error: "Selecciona un valor de la lista desplegable.",
+        };
+      }
+
+      sourceCol += 1;
+    });
+  });
+};
+
 const buildCommentsXml = (comments = []) => {
   const doc = new DOMParser().parseFromString(
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><author/></authors><commentList/></comments>',
@@ -1793,20 +1846,17 @@ const removeConfiguredFieldsFromWorksheet = (worksheet, configuredFields = []) =
   }
 };
 
-const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = [], periodId = null) => {
-  const fieldsWithValidator = configuredFields.filter(
-    (field) => field?.worksheet_name && field?.name && field?.validate_with && !field?.multiple
-  );
+const fieldHasDropdownSource = (field = {}) =>
+  Boolean(field?.worksheet_name && field?.name && !field?.multiple) &&
+  extractDropdownOptionsFromComment(field.comment, { preserveLeadingCodes: true }).length > 0;
 
-  if (fieldsWithValidator.length === 0) {
-    return;
-  }
+const getCommentDropdownOptions = (field = {}) =>
+  extractDropdownOptionsFromComment(field.comment, { preserveLeadingCodes: true }).map((value) => ({ value }));
 
-  const validators = (
-    await Promise.all(fieldsWithValidator.map((field) => Validator.giveValidatorToExcel(field.validate_with, periodId)))
-  ).filter(Boolean);
+const applyCommentDropdownsToWorkbook = (workbook, configuredFields = []) => {
+  const fieldsWithDropdown = configuredFields.filter(fieldHasDropdownSource);
 
-  if (validators.length === 0) {
+  if (fieldsWithDropdown.length === 0) {
     return;
   }
 
@@ -1827,7 +1877,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
       return;
     }
 
-    const worksheetFields = fieldsWithValidator.filter((field) => field.worksheet_name === worksheet.name);
+    const worksheetFields = fieldsWithDropdown.filter((field) => field.worksheet_name === worksheet.name);
     worksheetFields.forEach((field) => {
       const fieldIndex = headers.findIndex(
         (header) => normalizeFieldName(header) === normalizeFieldName(field.name)
@@ -1836,19 +1886,7 @@ const applyValidatorDropdownsToWorkbook = async (workbook, configuredFields = []
         return;
       }
 
-      const validateWithParts = String(field.validate_with || "").split(" - ");
-      const validatorName = validateWithParts[0]?.trim();
-      const validatorColumnName = validateWithParts.slice(1).join(" - ").trim();
-      if (!validatorName) {
-        return;
-      }
-
-      const validator = validators.find((item) => normalizeToken(item.name) === normalizeToken(validatorName));
-      if (!validator) {
-        return;
-      }
-
-      const options = getValidatorOptions(validator, validatorColumnName, field.name);
+      const options = getCommentDropdownOptions(field);
       if (options.length === 0) {
         return;
       }
@@ -1915,13 +1953,14 @@ const buildWorkbookWithConfiguredFields = async (
     applyConfiguredFieldsToWorksheet(worksheet, configuredFields);
   });
 
-  await applyValidatorDropdownsToWorkbook(workbook, configuredFields, periodId);
+  applyCommentDropdownsToWorkbook(workbook, configuredFields);
 
   const headerCommentsPlan = buildWorksheetHeaderCommentsPlan(
     workbook,
     configuredFields,
     originalCommentsBySheet
   );
+  applyHeaderDropdownsFromComments(workbook, headerCommentsPlan);
   applyHeaderHelpPromptsToWorkbook(workbook, headerCommentsPlan);
 
   const existingGuideWorksheet = workbook.getWorksheet(GUIDE_WORKSHEET_NAME);
@@ -1932,6 +1971,26 @@ const buildWorkbookWithConfiguredFields = async (
   const updatedBuffer = await workbook.xlsx.writeBuffer();
   const sanitizedBuffer = sanitizeWorkbookZipArtifacts(Buffer.from(updatedBuffer));
   return injectWorksheetCommentsIntoWorkbook(sanitizedBuffer, headerCommentsPlan);
+};
+
+const workbookHasHeaderCommentDropdowns = async (workbookInput) => {
+  const sourceBuffer = Buffer.isBuffer(workbookInput)
+    ? Buffer.from(workbookInput)
+    : fs.readFileSync(workbookInput);
+  const sourceWorkbook = new ExcelJS.Workbook();
+
+  await sourceWorkbook.xlsx.load(sourceBuffer);
+
+  const originalCommentsBySheet = getOriginalHeaderCommentsBySheet(sourceBuffer, sourceWorkbook);
+  for (const commentsByField of originalCommentsBySheet.values()) {
+    for (const commentText of commentsByField.values()) {
+      if (extractDropdownOptionsFromComment(commentText, { preserveLeadingCodes: true }).length > 0) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 };
 
 const createTemporaryExcelUpload = (fileName, buffer) => {
@@ -3153,7 +3212,10 @@ controller.downloadTemplateFile = async (req, res) => {
     }
 
     const fileBuffer = await downloadDriveFileBuffer(template.drive_file_id);
-    const downloadableBuffer = (template.fields || []).some((field) => field?.validate_with)
+    const shouldRebuildWorkbook =
+      (template.fields || []).some(fieldHasDropdownSource) ||
+      await workbookHasHeaderCommentDropdowns(fileBuffer);
+    const downloadableBuffer = shouldRebuildWorkbook
       ? await buildWorkbookWithConfiguredFields(
           fileBuffer,
           template.fields || [],
@@ -3210,6 +3272,9 @@ controller.getTemplateById = async (req, res) => {
         required: field.required ?? true,
         validate_with: field.validate_with || "",
         comment: field.comment || "",
+        dropdown_options: field.dropdown_options || [],
+        excel_validation_options: field.excel_validation_options || [],
+        validator_options: field.validator_options || [],
         field_origin: field.field_origin || "snies_extra",
         visible_for_producer: field.visible_for_producer ?? true,
         export_to_snies: field.export_to_snies ?? false,
