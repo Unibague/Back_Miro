@@ -1300,7 +1300,7 @@ publTempController.exportPendingTemplates = async (req, res) => {
 }
 
 publTempController.loadProducerData = async (req, res) => {
-  const { email, pubTem_id, data, sheetsData, edit, asDraft, bypassValidation } = req.body;
+  const { email, pubTem_id, data, sheetsData, edit, asDraft, bypassValidation, sender_email, sender_name, isFromPublicQr, hasQrOrigin } = req.body;
 
 
 
@@ -1463,12 +1463,21 @@ publTempController.loadProducerData = async (req, res) => {
         }));
       }
 
+      // Determinar origen: 'excel' si bypassValidation, 'qr' si hasQrOrigin/isFromPublicQr, 'online' si formulario en línea
+      let draftSource = 'online';
+      if (bypassValidation) {
+        draftSource = 'excel';
+      } else if (isFromPublicQr || hasQrOrigin) {
+        draftSource = 'qr';
+      }
+
       const producersData = {
         dependency: user.dep_code,
         send_by: user,
         filled_data: result,
         loaded_date: datetime_now(),
-        source: 'excel' // ← Marcar que vino de Excel en línea
+        source: draftSource,
+        ...(sender_email && sender_name ? { sender_email, sender_name } : {}),
       };
 
       replaceDraftDataForDependency(pubTem, producersData);
@@ -1633,12 +1642,21 @@ publTempController.loadProducerData = async (req, res) => {
         return res.status(400).json({ status: 'Validation error', details: sanitizedErrors });
       }
 
+      // Determinar origen: 'excel' si bypassValidation, 'qr' si hasQrOrigin/isFromPublicQr, 'online' si formulario en línea
+      let sheetsDataSource = 'online';
+      if (bypassValidation) {
+        sheetsDataSource = 'excel';
+      } else if (isFromPublicQr || hasQrOrigin) {
+        sheetsDataSource = 'qr';
+      }
+
       const producersData = {
         dependency: user.dep_code,
         send_by: user,
         filled_data: result,
         loaded_date: datetime_now(),
-        source: 'excel' // ← Marcar que vino de Excel en línea
+        source: sheetsDataSource,
+        ...(sender_email && sender_name ? { sender_email, sender_name } : {}),
       };
 
       const recordsLoaded = incomingSheetsData.reduce((total, sheet) => total + (sheet.data?.length || 0), 0);
@@ -1824,15 +1842,21 @@ if (field.multiple) {
       return res.status(400).json({ status: 'Validation error', details: sanitizedErrors });
     }
 
-    // Determinar el origen: 'excel' si hay bypassValidation, 'manual' si no
-    const dataSource = bypassValidation ? 'excel' : 'online';
+    // Determinar origen: 'excel' si bypassValidation, 'qr' si viene de /public/form/ o hasQrOrigin, 'online' si formulario en línea
+    let dataSource = 'online';
+    if (bypassValidation) {
+      dataSource = 'excel';
+    } else if (isFromPublicQr || hasQrOrigin) {
+      dataSource = 'qr';
+    }
     
     const producersData = {
       dependency: user.dep_code,
       send_by: user,
       filled_data: result,
       loaded_date: datetime_now(),
-      source: dataSource // ← 'excel' si bypassValidation, 'online' si formulario
+      source: dataSource,
+      ...(sender_email && sender_name ? { sender_email, sender_name } : {}),
     };
 
     if (saveAsDraft) {
@@ -1930,9 +1954,10 @@ publTempController.submitEmptyData = async (req, res) => {
     const producersData = {
       dependency: user.dep_code,
       send_by: user,
-      loaded_date: datetime_now(),  // Agregar la fecha de carga
+      loaded_date: datetime_now(),
       filled_data: [],
-      source: 'manual' // ← Marcar como manual (envío vacío)
+      source: 'manual',
+      ...(sender_email && sender_name ? { sender_email, sender_name } : {}),
     };
 
     const existingDataIndex = pubTem.loaded_data.findIndex(
@@ -2579,13 +2604,15 @@ publTempController.getTemplateById = async (req, res) => {
         if (relevantFields.length === 0) continue;
         const sendBy = entry.send_by || {};
         // Determinar el origen: QR, Excel en línea, en línea, o manual
-        // Prioridad: 1) source='excel' → Excel, 2) source='online' → En línea, 3) sender_email && sender_name → QR, 4) default → Manual
+        // Prioridad: 1) source='excel' → Excel, 2) source='qr' → QR, 3) source='online' → En línea, 4) sender_email && sender_name → QR, 5) default → Manual
         let fromQr = false;
         let fromExcel = false;
         let fromOnline = false;
         
         if (entry.source === 'excel') {
           fromExcel = true;
+        } else if (entry.source === 'qr') {
+          fromQr = true;
         } else if (entry.source === 'online') {
           fromOnline = true;
         } else if (entry.source === 'manual') {
@@ -2647,6 +2674,7 @@ publTempController.getTemplateById = async (req, res) => {
       return {
         ...plainEntry,
         send_by: enrichedSender,
+        source: plainEntry.source || 'manual', // Preservar el source, default 'manual'
       };
     }));
 
