@@ -254,9 +254,10 @@ const enrichQrDraftsWithDependencyInfo = async (qrDraftData = []) => {
     return {
       ...draft,
       dependency_code: draft.dependency,
-      dependency_name: dependency?.name || draft.dependency,
-      sender_name: sender.full_name || sender.name || sender.email || 'QR publico',
-      sender_email: sender.email || null,
+      // Si ya tiene dependency_name, preservarlo; si no, usar el de BD
+      dependency_name: draft.dependency_name || dependency?.name || draft.dependency,
+      sender_name: draft.sender_name || sender.full_name || sender.name || sender.email || 'QR publico',
+      sender_email: draft.sender_email || sender.email || null,
     };
   });
 };
@@ -1469,11 +1470,34 @@ publTempController.loadProducerData = async (req, res) => {
         draftSource = 'excel';
       } else if (isFromPublicQr || hasQrOrigin) {
         draftSource = 'qr';
+      } else {
+        // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
+        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+        if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
+          // Preservar el origen de los datos ya enviados
+          draftSource = existingLoadedData.source;
+        }
+      }
+
+      // Obtener información de la dependencia
+      const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+
+      // Si viene del QR, usar info del remitente original; si no, usar usuario actual
+      let sendBy = user;
+      if ((isFromPublicQr || hasQrOrigin) && sender_email && sender_name) {
+        sendBy = {
+          email: sender_email,
+          name: sender_name,
+          full_name: sender_name,
+          dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+        };
       }
 
       const producersData = {
         dependency: user.dep_code,
-        send_by: user,
+        dependency_code: user.dep_code,
+        dependency_name: userDependency?.name || user.dep_code,
+        send_by: sendBy,
         filled_data: result,
         loaded_date: datetime_now(),
         source: draftSource,
@@ -1648,11 +1672,34 @@ publTempController.loadProducerData = async (req, res) => {
         sheetsDataSource = 'excel';
       } else if (isFromPublicQr || hasQrOrigin) {
         sheetsDataSource = 'qr';
+      } else {
+        // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
+        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+        if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
+          // Preservar el origen de los datos ya enviados
+          sheetsDataSource = existingLoadedData.source;
+        }
+      }
+
+      // Obtener información de la dependencia
+      const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+
+      // Si viene del QR, usar info del remitente original; si no, usar usuario actual
+      let sendBy = user;
+      if ((isFromPublicQr || hasQrOrigin) && sender_email && sender_name) {
+        sendBy = {
+          email: sender_email,
+          name: sender_name,
+          full_name: sender_name,
+          dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+        };
       }
 
       const producersData = {
         dependency: user.dep_code,
-        send_by: user,
+        dependency_code: user.dep_code,
+        dependency_name: userDependency?.name || user.dep_code,
+        send_by: sendBy,
         filled_data: result,
         loaded_date: datetime_now(),
         source: sheetsDataSource,
@@ -1674,7 +1721,19 @@ publTempController.loadProducerData = async (req, res) => {
 
       const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
       if (existingDataIndex > -1) {
-        pubTem.loaded_data[existingDataIndex] = producersData;
+        // Si ya existe información, preservar el origen original
+        const existingData = pubTem.loaded_data[existingDataIndex];
+        const preservedSource = existingData.source || 'manual';
+        const preservedSenderInfo = {
+          sender_email: existingData.sender_email,
+          sender_name: existingData.sender_name,
+        };
+        
+        pubTem.loaded_data[existingDataIndex] = {
+          ...producersData,
+          source: preservedSource, // Mantener origen original
+          ...(preservedSenderInfo.sender_email && preservedSenderInfo.sender_name ? preservedSenderInfo : {}),
+        };
       } else {
         pubTem.loaded_data.push(producersData);
       }
@@ -1848,11 +1907,34 @@ if (field.multiple) {
       dataSource = 'excel';
     } else if (isFromPublicQr || hasQrOrigin) {
       dataSource = 'qr';
+    } else {
+      // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
+      const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+      if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
+        // Preservar el origen de los datos ya enviados
+        dataSource = existingLoadedData.source;
+      }
+    }
+
+    // Obtener información de la dependencia
+    const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+
+    // Si viene del QR, usar info del remitente original; si no, usar usuario actual
+    let sendBy = user;
+    if ((isFromPublicQr || hasQrOrigin) && sender_email && sender_name) {
+      sendBy = {
+        email: sender_email,
+        name: sender_name,
+        full_name: sender_name,
+        dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+      };
     }
     
     const producersData = {
       dependency: user.dep_code,
-      send_by: user,
+      dependency_code: user.dep_code,
+      dependency_name: userDependency?.name || user.dep_code,
+      send_by: sendBy,
       filled_data: result,
       loaded_date: datetime_now(),
       source: dataSource,
@@ -1874,8 +1956,20 @@ if (field.multiple) {
     const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
 
     if (existingDataIndex > -1) {
-      // Si ya existe, actualizar los datos existentes
-      pubTem.loaded_data[existingDataIndex] = producersData;
+      // Si ya existe información, preservar el origen original
+      const existingData = pubTem.loaded_data[existingDataIndex];
+      const preservedSource = existingData.source || 'manual';
+      const preservedSenderInfo = {
+        sender_email: existingData.sender_email,
+        sender_name: existingData.sender_name,
+      };
+      
+      // Si ya existe, actualizar los datos pero preservar origen original
+      pubTem.loaded_data[existingDataIndex] = {
+        ...producersData,
+        source: preservedSource, // Mantener origen original
+        ...(preservedSenderInfo.sender_email && preservedSenderInfo.sender_name ? preservedSenderInfo : {}),
+      };
     } else {
       // Si no existe, agregar nuevos datos
       pubTem.loaded_data.push(producersData);
@@ -2019,6 +2113,9 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
 
     const deletedData = pubTem.loaded_data[index];
     pubTem.loaded_data.splice(index, 1);
+
+    // NO eliminar borradores - el usuario debería poder seguir editando sus datos
+    // Los borradores se conservan en qr_draft_data para continuar la edición
 
     // Si estaba enviado al SNIES, resetear el estado para que vuelva a ser enviado
     if (pubTem.final_submitted) {
