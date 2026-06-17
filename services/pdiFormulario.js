@@ -605,6 +605,114 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
         reportado_por: doc.respondido_por,
         fecha_envio: doc.fecha_envio ?? new Date(),
     });
+
+    // Enviar notificaciones según el resultado de la evaluación
+    try {
+        if (estado_aval === 'Rechazado' && doc.respondido_por) {
+            // Importar función para enviar correos de evaluación
+            const { sendRespuestaEvaluationNotification } = require('./pdiRespuestaNotification');
+            
+            // Obtener información del indicador y formulario
+            const PdiIndicador = require('../models/pdiIndicador');
+            const Template = require('../models/templates');
+            
+            const indicador = await PdiIndicador.findById(doc.indicador_id).lean();
+            const template = doc.formulario_id ? await Template.findById(doc.formulario_id).lean() : null;
+            
+            console.log(`[avalRespuesta] Enviando notificación de rechazo a: ${doc.respondido_por}`);
+            
+            await sendRespuestaEvaluationNotification(
+              {
+                respondido_por: doc.respondido_por,
+                corte: doc.corte,
+              },
+              {
+                codigo: indicador?.codigo || 'Sin código',
+                nombre: indicador?.nombre || 'Sin nombre',
+              },
+              'Rechazado',
+              aval_comentario || ''
+            );
+            
+            console.log(`[avalRespuesta] ✓ Notificación de rechazo enviada`);
+        } else if (estado_aval === 'Aprobado' && doc.respondido_por) {
+            // Enviar notificación de aprobación al responsable + a administradores
+            const { sendRespuestaEvaluationNotification, sendRespuestaApprovedToAdmins } = require('./pdiRespuestaNotification');
+            
+            const PdiIndicador = require('../models/pdiIndicador');
+            const Template = require('../models/templates');
+            const User = require('../models/users');
+            
+            const indicador = await PdiIndicador.findById(doc.indicador_id).lean();
+            const template = doc.formulario_id ? await Template.findById(doc.formulario_id).lean() : null;
+            
+            // Notificación al responsable (quien subió la respuesta)
+            console.log(`[avalRespuesta] Enviando notificación de aprobación a: ${doc.respondido_por}`);
+            await sendRespuestaEvaluationNotification(
+              {
+                respondido_por: doc.respondido_por,
+                corte: doc.corte,
+              },
+              {
+                nombre: template?.nombre || 'Formulario',
+              },
+              {
+                codigo: indicador?.codigo || 'Sin código',
+                nombre: indicador?.nombre || 'Sin nombre',
+              },
+              'Aprobado',
+              ''
+            );
+            console.log(`[avalRespuesta] ✓ Notificación de aprobación enviada al responsable`);
+            
+            // Notificación a administradores para que evalúen
+            try {
+              console.log(`[avalRespuesta] Buscando administradores...`);
+              
+              // Buscar por roles array - "Administrador" con mayúscula
+              const admins = await User.find({ roles: 'Administrador' }).select('email full_name').lean();
+              console.log(`[avalRespuesta] Administradores encontrados: ${admins ? admins.length : 0}`);
+              
+              if (admins && admins.length > 0) {
+                const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+                console.log(`[avalRespuesta] Emails de administradores: ${adminEmails.join(', ')}`);
+                
+                if (adminEmails.length > 0) {
+                  const liderNombre = aval_por || 'Líder del Macroproyecto';
+                  console.log(`[avalRespuesta] Enviando notificación a administradores...`);
+                  
+                  await sendRespuestaApprovedToAdmins(
+                    {
+                      corte: doc.corte,
+                      respondido_por: doc.respondido_por,
+                    },
+                    {
+                      nombre: template?.nombre || 'Formulario',
+                    },
+                    {
+                      codigo: indicador?.codigo || 'Sin código',
+                      nombre: indicador?.nombre || 'Sin nombre',
+                    },
+                    liderNombre,
+                    adminEmails
+                  );
+                  console.log(`[avalRespuesta] ✓ Notificación de aprobación enviada a administradores: ${adminEmails.join(', ')}`);
+                } else {
+                  console.warn(`[avalRespuesta] No se encontraron emails válidos de administradores`);
+                }
+              } else {
+                console.warn(`[avalRespuesta] No se encontraron administradores en la base de datos`);
+              }
+            } catch (adminError) {
+              console.error(`[avalRespuesta] Error enviando a administradores:`, adminError.message);
+              console.error(`[avalRespuesta] Stack trace:`, adminError.stack);
+            }
+        }
+    } catch (notifyError) {
+        console.error('[avalRespuesta] Error al enviar notificación:', notifyError.message);
+        // No fallar la operación principal por error en notificación
+    }
+
     return doc;
 };
 
