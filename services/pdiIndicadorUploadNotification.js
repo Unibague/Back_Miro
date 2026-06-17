@@ -6,234 +6,489 @@
 const nodemailer = require('nodemailer');
 const { getEmailConfig } = require('../config/emailConfig');
 const User = require('../models/users');
-const dayjs = require('dayjs');
 
-const getAdministradores = async () => {
-  try {
-    const admins = await User.find({
-      roles: 'Administrador',
-      isActive: true
-    }).select('email full_name').lean();
-    
-    return admins.map(admin => ({
-      email: admin.email,
-      nombre: admin.full_name
-    }));
-  } catch (error) {
-    console.error('[PDI-UPLOAD-NOTIFY] Error obteniendo administradores:', error.message);
-    return [];
-  }
-};
-
-const buildEmailHtmlResponsable = (respuesta, formulario, indicador) => {
+const buildEmailHtmlResponsable = (respuesta, indicador) => {
   const indicadorCodigo = indicador?.codigo || 'Sin código';
   const indicadorNombre = indicador?.nombre || 'Sin nombre';
-  const formularioNombre = formulario?.nombre || 'Formulario de evidencias';
   const corteName = respuesta.corte || 'Sin corte';
-  const fechaEnvio = dayjs(respuesta.fecha_envio).format('DD/MM/YYYY HH:mm');
-  const liderEmail = respuesta.lider_email_aval || 'Por asignar';
 
   return `
-    <div style="margin:0;padding:0;background:#f1f5f9;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:28px 12px;">
-        <tr>
-          <td align="center">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e2e8f0;font-family:Arial,Helvetica,sans-serif;">
-              <tr>
-                <td style="background:linear-gradient(135deg,#312e81,#2563eb);padding:28px 30px;color:#ffffff;">
-                  <div style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.85;">PDI - Indicadores</div>
-                  <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Información de Indicador Subida</h1>
-                  <p style="margin:12px 0 0;font-size:16px;line-height:1.5;color:#dbeafe;">
-                    Se ha registrado exitosamente la información del indicador <strong>${indicadorCodigo}</strong>
-                  </p>
-                </td>
-              </tr>
-              <tr>
-                <td style="padding:28px 30px;">
-                  <p style="margin:0 0 14px;font-size:16px;color:#0f172a;">Hola <strong>${respuesta.respondido_por}</strong>,</p>
-                  
-                  <p style="margin:0 0 18px;font-size:15px;line-height:1.65;color:#334155;">
-                    Tu información ha sido subida correctamente al sistema. A continuación encontrarás los detalles de tu envío.
-                  </p>
+    <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+        <tr><td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            
+            <!-- Header -->
+            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
+              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Información Registrada</h1>
+            </td></tr>
+            
+            <!-- Body -->
+            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+              
+              <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado colaborador,</p>
+              
+              <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.8;">
+                Le informamos que su información ha sido registrada correctamente en el sistema. A continuación encontrará los detalles.
+              </p>
 
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:20px 0;border-collapse:separate;border-spacing:0;">
+              <!-- Status Section -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
+                <tr><td style="padding:20px 0;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                     <tr>
-                      <td style="padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:12px;">
-                        <div style="font-size:12px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Indicador</div>
-                        <div style="font-size:16px;color:#0f172a;font-weight:800;">${indicadorCodigo}</div>
-                        <div style="font-size:14px;color:#475569;margin-top:4px;">${indicadorNombre}</div>
+                      <td style="width:40%;padding-right:20px;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado Actual</div>
+                        <div style="font-size:18px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
                       </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:12px;">
-                        <div style="font-size:12px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Formulario</div>
-                        <div style="font-size:16px;color:#0f172a;font-weight:800;">${formularioNombre}</div>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:12px;">
-                        <div style="font-size:12px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Corte/Período</div>
-                        <div style="font-size:16px;color:#0f172a;font-weight:800;">${corteName}</div>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:12px;">
-                        <div style="font-size:12px;color:#64748b;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Fecha de Envío</div>
-                        <div style="font-size:16px;color:#0f172a;font-weight:800;">${fechaEnvio}</div>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:16px;background:#ecfeff;border:1px solid #a5f3fc;border-radius:12px;">
-                        <div style="font-size:12px;color:#0e7490;font-weight:700;text-transform:uppercase;margin-bottom:4px;">Estado</div>
-                        <div style="font-size:16px;color:#0e7490;font-weight:800;">Pendiente de Revisión</div>
-                        <div style="font-size:13px;color:#164e63;margin-top:4px;">El líder de macroproyecto revisará tu información</div>
+                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Próximo Paso</div>
+                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">Revisión del líder</div>
                       </td>
                     </tr>
                   </table>
+                </td></tr>
+              </table>
 
-                  <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin:20px 0;">
-                    <p style="margin:0;font-size:14px;color:#166534;">
-                      ✓ Tu información ha sido registrada correctamente y está en espera de revisión por parte del líder del macroproyecto.
-                    </p>
-                  </div>
+              <!-- Details -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
 
-                  <div style="margin:24px 0;text-align:center;">
-                    <a href="https://miro.unibague.edu.co/pdi/mis-indicadores" 
-                       style="background-color:#2563eb;color:white;text-decoration:none;padding:13px 24px;border-radius:999px;font-size:15px;font-weight:800;display:inline-block;">
-                      Ver en la Plataforma
-                    </a>
-                  </div>
+              <!-- Next Steps -->
+              <div style="margin:32px 0;padding:20px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
+                <div style="font-size:11px;color:#166534;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Próximos Pasos</div>
+                <div style="font-size:14px;color:#166534;line-height:1.8;">
+                  Su información está siendo revisada. El líder del macroproyecto evaluará los datos y notificará el resultado en breve. Puede acceder a la plataforma para monitorear el estado.
+                </div>
+              </div>
 
-                  <p style="font-size:14px;color:#6c757d;margin-top:20px;">
-                    Si tienes preguntas sobre tu envío, contacta al equipo de Planeación.
-                  </p>
-                </td>
-              </tr>
-              <tr>
-                <td style="background:#f8fafc;padding:20px 30px;border-top:1px solid #e2e8f0;">
-                  <p style="margin:0;font-size:13px;text-align:center;color:#999;">
-                    Este mensaje fue generado automáticamente por MIRÓ. Por favor no responda a este correo.
-                  </p>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
+              <!-- CTA -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;">
+                <tr><td align="center">
+                  <a href="https://miro.unibague.edu.co/pdi" 
+                     style="background-color:#1e3a5f;color:#ffffff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:14px;font-weight:600;display:inline-block;border:none;cursor:pointer;">
+                    Acceder a la Plataforma
+                  </a>
+                </td></tr>
+              </table>
+
+              <p style="font-size:13px;color:#7c8fa3;margin:28px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:20px;">
+                Para más información comunicarse al correo: <strong>gestionpdi@unibague.edu.co</strong>
+              </p>
+
+            </td></tr>
+            
+            <!-- Footer -->
+            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+              <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
+                Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
+              </p>
+            </td></tr>
+
+          </table>
+        </td></tr>
       </table>
     </div>
   `;
 };
 
-const buildEmailHtmlAdministrador = (respuesta, formulario, indicador) => {
+const buildEmailHtmlForAdmin = (respuesta, formulario, indicador, liderNombre) => {
   const indicadorCodigo = indicador?.codigo || 'Sin código';
   const indicadorNombre = indicador?.nombre || 'Sin nombre';
-  const formularioNombre = formulario?.nombre || 'Formulario de evidencias';
   const corteName = respuesta.corte || 'Sin corte';
-  const fechaEnvio = dayjs(respuesta.fecha_envio).format('DD/MM/YYYY HH:mm');
-  const responsable = respuesta.respondido_por || 'Sin especificar';
-  const liderEmail = respuesta.lider_email_aval || 'Por asignar';
 
   return `
-    <div style="margin:0;padding:0;background:#f1f5f9;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:28px 12px;">
-        <tr>
-          <td align="center">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:680px;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e2e8f0;font-family:Arial,Helvetica,sans-serif;">
-              <tr>
-                <td style="background:linear-gradient(135deg,#312e81,#2563eb);padding:28px 30px;color:#ffffff;">
-                  <div style="font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.85;">📊 PDI - Reporte Administrativo</div>
-                  <h1 style="margin:8px 0 0;font-size:28px;line-height:1.15;">Nueva Información de Indicador</h1>
-                  <p style="margin:12px 0 0;font-size:16px;line-height:1.5;color:#dbeafe;">
-                    Se ha registrado información para el indicador <strong>${indicadorCodigo}</strong>
-                  </p>
-                </td>
-              </tr>
-              <tr>
-                <td style="padding:28px 30px;">
-                  <p style="margin:0 0 14px;font-size:16px;color:#0f172a;">Hola,</p>
-                  
-                  <p style="margin:0 0 18px;font-size:15px;line-height:1.65;color:#334155;">
-                    Se ha registrado una nueva información de indicador en el sistema PDI. A continuación encontrarás los detalles.
-                  </p>
+    <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+        <tr><td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            
+            <!-- Header -->
+            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
+              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
+            </td></tr>
+            
+            <!-- Body -->
+            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+              
+              <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado Administrador,</p>
+              
+              <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.8;">
+                Le informamos que el líder del macroproyecto ha evaluado y aprobado un avance de indicador. A continuación encontrará los detalles para su revisión administrativa final.
+              </p>
 
-                  <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:16px;border-radius:8px;margin:20px 0;">
-                    <p style="margin:0;font-size:14px;color:#92400e;font-weight:700;">
-                      ⚠️ Información Registrada - Pendiente de Revisión
-                    </p>
-                  </div>
-
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:20px 0;border-collapse:collapse;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-                    <tbody>
-                      <tr>
-                        <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Indicador</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${indicadorCodigo} - ${indicadorNombre}</div>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Formulario</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${formularioNombre}</div>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Corte/Período</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${corteName}</div>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Responsable</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${responsable}</div>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 16px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Líder de Macroproyecto</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${liderEmail}</div>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:14px 16px;background:#f8fafc;">
-                          <div style="font-weight:700;color:#0f172a;font-size:14px;">Fecha de Envío</div>
-                          <div style="font-size:13px;color:#475569;margin-top:4px;">${fechaEnvio}</div>
-                        </td>
-                      </tr>
-                    </tbody>
+              <!-- Status Section -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
+                <tr><td style="padding:20px 0;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                      <td style="width:40%;padding-right:20px;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado</div>
+                        <div style="font-size:18px;color:#16a34a;font-weight:700;">APROBADO</div>
+                      </td>
+                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Por Evaluador</div>
+                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">Líder del Macroproyecto</div>
+                      </td>
+                    </tr>
                   </table>
+                </td></tr>
+              </table>
 
-                  <div style="background:#f0f9ff;border:1px solid #bfdbfe;border-radius:12px;padding:16px;margin:20px 0;">
-                    <p style="margin:0;font-size:14px;color:#1e40af;font-weight:700;margin-bottom:8px;">📋 Próximos Pasos:</p>
-                    <ul style="margin:0;padding-left:20px;font-size:14px;color:#334155;">
-                      <li style="margin-bottom:6px;">El líder del macroproyecto revisará la información</li>
-                      <li style="margin-bottom:6px;">Se aprobará o rechazará según corresponda</li>
-                      <li>Se notificará al responsable del resultado</li>
-                    </ul>
-                  </div>
+              <!-- Details -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Evaluador</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${liderNombre || 'Líder del Macroproyecto'}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
 
-                  <div style="margin:24px 0;text-align:center;">
-                    <a href="https://miro.unibague.edu.co/pdi/mis-indicadores" 
-                       style="background-color:#2563eb;color:white;text-decoration:none;padding:13px 24px;border-radius:999px;font-size:15px;font-weight:800;display:inline-block;">
-                      Ver Detalles en la Plataforma
-                    </a>
-                  </div>
+              <!-- Action Section -->
+              <div style="margin:32px 0;padding:20px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:4px;">
+                <div style="font-size:11px;color:#92400e;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Acción Requerida</div>
+                <div style="font-size:14px;color:#b45309;line-height:1.8;">
+                  Ingrese a la plataforma para realizar la respectiva validación de este avance. Verifique que cumpla con todos los requisitos.
+                </div>
+              </div>
 
-                  <p style="font-size:14px;color:#6c757d;margin-top:20px;">
-                    Este es un reporte informativo del sistema. No requiere acción inmediata.
-                  </p>
-                </td>
-              </tr>
-              <tr>
-                <td style="background:#f8fafc;padding:20px 30px;border-top:1px solid #e2e8f0;">
-                  <p style="margin:0;font-size:13px;text-align:center;color:#999;">
-                    Este mensaje fue generado automáticamente por MIRÓ. Por favor no responda a este correo.
-                  </p>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
+              <!-- CTA -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;">
+                <tr><td align="center">
+                  <a href="https://miro.unibague.edu.co/pdi" 
+                     style="background-color:#1e3a5f;color:#ffffff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:14px;font-weight:600;display:inline-block;border:none;cursor:pointer;">
+                    Acceder a la Plataforma
+                  </a>
+                </td></tr>
+              </table>
+
+              <p style="font-size:13px;color:#7c8fa3;margin:28px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:20px;">
+                Para más información comunicarse al correo: <strong>gestionpdi@unibague.edu.co</strong>
+              </p>
+
+            </td></tr>
+            
+            <!-- Footer -->
+            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+              <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
+                Mensaje automático del sistema. No responder.
+              </p>
+            </td></tr>
+
+          </table>
+        </td></tr>
+      </table>
+    </div>
+  `;
+};
+
+const buildEmailHtmlForLeader = (respuesta, formulario, indicador) => {
+  const indicadorCodigo = indicador?.codigo || 'Sin código';
+  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const corteName = respuesta.corte || 'Sin corte';
+
+  return `
+    <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+        <tr><td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            
+            <!-- Header -->
+            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
+              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación Pendiente</h1>
+            </td></tr>
+            
+            <!-- Body -->
+            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+              
+              <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado Líder del Macroproyecto,</p>
+              
+              <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.8;">
+                Se ha registrado nueva información de indicadores que requiere su revisión y calificación. Por favor, ingrese a la plataforma para evaluar los datos adjuntos.
+              </p>
+
+              <!-- Status Section -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
+                <tr><td style="padding:20px 0;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                      <td style="width:100%;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado</div>
+                        <div style="font-size:18px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
+                      </td>
+                    </tr>
+                  </table>
+                </td></tr>
+              </table>
+
+              <!-- Details -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Action Section -->
+              <div style="margin:32px 0;padding:20px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:4px;">
+                <div style="font-size:11px;color:#92400e;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Acción Requerida</div>
+                <div style="font-size:14px;color:#b45309;line-height:1.8;">
+                  Revise cuidadosamente los detalles del indicador y la información subida. Califique como Aprobado o Rechazado según corresponda. Agregue comentarios si lo considera necesario.
+                </div>
+              </div>
+
+              <!-- CTA -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;">
+                <tr><td align="center">
+                  <a href="https://miro.unibague.edu.co/pdi" 
+                     style="background-color:#1e3a5f;color:#ffffff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:14px;font-weight:600;display:inline-block;border:none;cursor:pointer;">
+                    Acceder a la Plataforma
+                  </a>
+                </td></tr>
+              </table>
+
+              <p style="font-size:13px;color:#7c8fa3;margin:28px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:20px;">
+                Si requiere asistencia adicional, contacte al equipo de Planeación y Desarrollo Institucional.
+              </p>
+
+            </td></tr>
+            
+            <!-- Footer -->
+            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+              <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
+                Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
+              </p>
+            </td></tr>
+
+          </table>
+        </td></tr>
+      </table>
+    </div>
+  `;
+};
+
+const buildEmailHtmlEvaluation = (respuesta, formulario, indicador, estado, comentario) => {
+  const indicadorCodigo = indicador?.codigo || 'Sin código';
+  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const corteName = respuesta.corte || 'Sin corte';
+
+  // Determinar colores y mensajes según el estado
+  const isAprobado = estado === 'Aprobado';
+  const statusColor = isAprobado ? '#16a34a' : '#dc2626';
+  const statusText = isAprobado ? 'APROBADO' : 'RECHAZADO';
+  const actionText = isAprobado ? 'Información Confirmada' : 'Revisar comentarios y reenviar';
+  const nextStepsMessage = isAprobado 
+    ? 'Su información ha sido aprobada exitosamente. El administrador lo revisará para la autorización final. Puede acceder a la plataforma para ver el estado actualizado.'
+    : 'Revise cuidadosamente los comentarios del líder. Realice los ajustes necesarios en el formulario y envíelo nuevamente para su revisión. Si tiene dudas, comuníquese con el responsable del proceso.';
+
+  return `
+    <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+        <tr><td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            
+            <!-- Header -->
+            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
+              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
+            </td></tr>
+            
+            <!-- Body -->
+            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+              
+              <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado colaborador,</p>
+              
+              <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.8;">
+                Le informamos que el líder del macroproyecto ha completado la evaluación de su información. A continuación encontrará el resultado.
+              </p>
+
+              <!-- Status Section -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
+                <tr><td style="padding:20px 0;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                      <td style="width:40%;padding-right:20px;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado de Evaluación</div>
+                        <div style="font-size:18px;color:${statusColor};font-weight:700;">${statusText}</div>
+                      </td>
+                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
+                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Acción Requerida</div>
+                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">${actionText}</div>
+                      </td>
+                    </tr>
+                  </table>
+                </td></tr>
+              </table>
+
+              <!-- Details -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding-bottom:16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
+                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Comments Section -->
+              ${comentario ? `
+                <div style="margin:28px 0;padding:20px;background:#f9fafb;border-left:4px solid ${statusColor};border-radius:4px;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Comentarios del Evaluador</div>
+                  <div style="font-size:14px;color:#2c3e50;line-height:1.8;font-weight:500;">${comentario}</div>
+                </div>
+              ` : ''}
+
+              <!-- Next Steps -->
+              <div style="margin:32px 0;padding:20px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
+                <div style="font-size:11px;color:#166534;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Próximos Pasos</div>
+                <div style="font-size:14px;color:#166534;line-height:1.8;">
+                  ${nextStepsMessage}
+                </div>
+              </div>
+
+              <!-- CTA -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;">
+                <tr><td align="center">
+                  <a href="https://miro.unibague.edu.co/pdi" 
+                     style="background-color:#1e3a5f;color:#ffffff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:14px;font-weight:600;display:inline-block;border:none;cursor:pointer;">
+                    Acceder a la Plataforma
+                  </a>
+                </td></tr>
+              </table>
+
+              <p style="font-size:13px;color:#7c8fa3;margin:28px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:20px;">
+                Para más información comunicarse al correo: <strong>gestionpdi@unibague.edu.co</strong>
+              </p>
+
+            </td></tr>
+            
+            <!-- Footer -->
+            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+              <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
+                Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
+              </p>
+            </td></tr>
+
+          </table>
+        </td></tr>
       </table>
     </div>
   `;
@@ -258,34 +513,38 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
     const corteName = respuesta.corte || 'Sin corte';
     const subject = `📤 Información Registrada: ${indicadorCodigo} - ${corteName}`;
 
-    // 1. Enviar email al responsable
-    if (respuesta.respondido_por) {
+    // Obtener email del productor - puede venir de respondido_por o de send_by.email
+    const producerEmail = respuesta.respondido_por || respuesta.send_by?.email;
+
+    // 1. Enviar email al responsable (quien subió la información)
+    if (producerEmail) {
       try {
         await transporter.sendMail({
           from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
-          to: respuesta.respondido_por,
+          to: producerEmail,
           subject,
           html: buildEmailHtmlResponsable(respuesta, formulario, indicador)
         });
-        console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al responsable: ${respuesta.respondido_por}`);
+        console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al responsable: ${producerEmail}`);
       } catch (error) {
         console.error(`[PDI-UPLOAD-NOTIFY] ✗ Error enviando al responsable:`, error.message);
       }
+    } else {
+      console.warn('[PDI-UPLOAD-NOTIFY] No se encontró email del productor');
     }
 
-    // 2. Enviar email a administradores
-    const administradores = await getAdministradores();
-    for (const admin of administradores) {
+    // 2. Enviar email al líder del macroproyecto (para que revise)
+    if (respuesta.lider_email_aval && respuesta.lider_email_aval !== 'Por asignar') {
       try {
         await transporter.sendMail({
           from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
-          to: admin.email,
-          subject: `[ADMIN] ${subject}`,
-          html: buildEmailHtmlAdministrador(respuesta, formulario, indicador)
+          to: respuesta.lider_email_aval,
+          subject: `[REVISIÓN] ${subject}`,
+          html: buildEmailHtmlForLeader(respuesta, formulario, indicador)
         });
-        console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al administrador: ${admin.email}`);
+        console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al líder: ${respuesta.lider_email_aval}`);
       } catch (error) {
-        console.error(`[PDI-UPLOAD-NOTIFY] ✗ Error enviando al administrador ${admin.email}:`, error.message);
+        console.error(`[PDI-UPLOAD-NOTIFY] ✗ Error enviando al líder:`, error.message);
       }
     }
   } catch (error) {
@@ -293,6 +552,79 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
   }
 };
 
+const sendIndicadorEvaluationNotification = async (respuesta, formulario, indicador, estado, comentario) => {
+  try {
+    const emailConfig = getEmailConfig('general');
+    
+    const transporter = nodemailer.createTransport({
+      host: emailConfig.host,
+      port: emailConfig.port,
+      secure: false,
+      auth: {
+        user: emailConfig.username,
+        pass: emailConfig.password
+      },
+      tls: { rejectUnauthorized: false }
+    });
+
+    const indicadorCodigo = indicador?.codigo || 'Sin código';
+    const corteName = respuesta.corte || 'Sin corte';
+    const statusLabel = estado === 'Aprobado' ? ' Aprobado' : ' Rechazado';
+    const subject = `${statusLabel}: ${indicadorCodigo} - ${corteName}`;
+
+    // Obtener email del productor - puede venir de respondido_por o de send_by.email
+    const producerEmail = respuesta.respondido_por || respuesta.send_by?.email;
+
+    // Email para el productor (quien subió la información)
+    if (producerEmail) {
+      try {
+        await transporter.sendMail({
+          from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
+          to: producerEmail,
+          subject,
+          html: buildEmailHtmlEvaluation(respuesta, formulario, indicador, estado, comentario)
+        });
+        console.log(`[PDI-EVALUATION-NOTIFY] ✓ Email enviado al productor: ${producerEmail} - Estado: ${estado}`);
+      } catch (error) {
+        console.error(`[PDI-EVALUATION-NOTIFY] ✗ Error enviando al productor:`, error.message);
+      }
+    } else {
+      console.warn('[PDI-EVALUATION-NOTIFY] No se encontró email del productor');
+    }
+
+    // Enviar correo al administrador SOLO si fue aprobado
+    if (estado === 'Aprobado') {
+      try {
+        // Obtener correos de administradores
+        const User = require('../models/users');
+        const admins = await User.find({ rol: 'admin' }).select('email full_name').lean();
+        
+        if (admins && admins.length > 0) {
+          const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+          const liderNombre = respuesta.send_by?.full_name || respuesta.send_by?.name || 'Líder del Macroproyecto';
+          
+          if (adminEmails.length > 0) {
+            await transporter.sendMail({
+              from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
+              to: adminEmails.join(','),
+              subject: `[APROBADO] ${indicadorCodigo} - ${corteName}`,
+              html: buildEmailHtmlForAdmin(respuesta, formulario, indicador, liderNombre)
+            });
+            console.log(`[PDI-EVALUATION-NOTIFY] ✓ Email enviado a administradores: ${adminEmails.join(', ')}`);
+          }
+        }
+      } catch (error) {
+        console.error(`[PDI-EVALUATION-NOTIFY] ✗ Error enviando a administradores:`, error.message);
+      }
+    }
+  } catch (error) {
+    console.error('[PDI-EVALUATION-NOTIFY] Error general:', error.message);
+  }
+};
+
 module.exports = {
-  sendIndicadorUploadNotification
+  sendIndicadorUploadNotification,
+  sendIndicadorEvaluationNotification,
+  buildEmailHtmlForLeader,
+  buildEmailHtmlForAdmin
 };

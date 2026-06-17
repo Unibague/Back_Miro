@@ -476,6 +476,165 @@ ctrl.updateEvidenciaEstado = async (req, res) => {
         ev.estado = estado;
         ev.comentario_revision = comentario_revision ?? '';
         await doc.save();
+
+        // Enviar notificación cuando se aprueba o rechaza (no en "En Revisión")
+        if (estado !== 'En Revisión') {
+          try {
+            const { sendIndicadorEvaluationNotification } = require('../services/pdiIndicadorUploadNotification');
+            const User = require('../models/users');
+            
+            // Obtener email del usuario que subió la evidencia
+            let emailProductor = null;
+            let nombreProductor = ev.subido_por || 'Productor desconocido';
+            
+            if (ev.subido_por) {
+              // Buscar usuario por nombre
+              const usuario = await User.findOne({
+                $or: [
+                  { full_name: ev.subido_por },
+                  { name: ev.subido_por }
+                ]
+              }).select('email full_name name').lean();
+              
+              if (usuario) {
+                emailProductor = usuario.email;
+                nombreProductor = usuario.full_name || usuario.name;
+              }
+            }
+            
+            // Si no encontramos email del productor, loguear y continuar (intentar enviar al responsable)
+            if (!emailProductor) {
+              console.warn(`[updateEvidenciaEstado] No se encontró email para productor: ${ev.subido_por}`);
+            }
+            
+            // Preparar datos para la notificación con send_by completo
+            const respuestaData = {
+              respondido_por: emailProductor,
+              send_by: {
+                email: emailProductor,
+                full_name: nombreProductor,
+                name: nombreProductor
+              },
+              corte: doc.corte?.nombre || 'Sin especificar'
+            };
+            
+            const formularioData = {
+              nombre: 'Evidencia de Indicador'
+            };
+
+            const indicadorData = {
+              codigo: doc.codigo,
+              nombre: doc.nombre
+            };
+
+            console.log(`[updateEvidenciaEstado] Enviando notificación: email=${emailProductor}, estado=${estado}`);
+
+            // Enviar al productor si tenemos su email
+            if (emailProductor) {
+              await sendIndicadorEvaluationNotification(
+                respuestaData,
+                formularioData,
+                indicadorData,
+                estado,
+                comentario_revision || ''
+              );
+            }
+
+            // Enviar al responsable del indicador si es rechazo
+            if (estado === 'Rechazado' && doc.responsable) {
+              console.log(`[updateEvidenciaEstado] Enviando notificación de rechazo al responsable: ${doc.responsable}`);
+              
+              await sendIndicadorEvaluationNotification(
+                {
+                  respondido_por: doc.responsable,
+                  send_by: {
+                    email: doc.responsable,
+                    full_name: 'Responsable del Indicador',
+                    name: 'Responsable del Indicador'
+                  },
+                  corte: doc.corte?.nombre || 'Sin especificar'
+                },
+                formularioData,
+                indicadorData,
+                estado,
+                comentario_revision || ''
+              );
+              
+              console.log(`[updateEvidenciaEstado] ✓ Notificación de rechazo enviada al responsable: ${doc.responsable}`);
+            }
+
+            // Enviar al admin cuando es aprobado
+            if (estado === 'Aprobado') {
+              console.log(`[updateEvidenciaEstado] Enviando notificación de aprobación a administradores...`);
+              const User = require('../models/users');
+              
+              try {
+                const admins = await User.find({ roles: 'Administrador' }).select('email full_name').lean();
+                console.log(`[updateEvidenciaEstado] Administradores encontrados: ${admins ? admins.length : 0}`);
+                
+                if (admins && admins.length > 0) {
+                  const adminEmails = admins.map(admin => admin.email).filter(Boolean);
+                  console.log(`[updateEvidenciaEstado] Emails de administradores: ${adminEmails.join(', ')}`);
+                  
+                  if (adminEmails.length > 0) {
+                    const { sendIndicadorUploadNotification } = require('../services/pdiIndicadorUploadNotification');
+                    
+                    // Enviar notificación especial al admin
+                    const respuestaForAdmin = {
+                      respondido_por: adminEmails[0],
+                      send_by: {
+                        email: adminEmails[0],
+                        full_name: 'Administrador'
+                      },
+                      corte: doc.corte?.nombre || 'Sin especificar'
+                    };
+                    
+                    // Usar la función de notificación a admin
+                    const { sendIndicadorUploadNotification: sendToAdmin } = require('../services/pdiIndicadorUploadNotification');
+                    
+                    // Crear un transportador para enviar a múltiples admins
+                    const nodemailer = require('nodemailer');
+                    const { getEmailConfig } = require('../config/emailConfig');
+                    const emailConfig = getEmailConfig('general');
+                    
+                    const transporter = nodemailer.createTransport({
+                      host: emailConfig.host,
+                      port: emailConfig.port,
+                      secure: false,
+                      auth: {
+                        user: emailConfig.username,
+                        pass: emailConfig.password
+                      },
+                      tls: { rejectUnauthorized: false }
+                    });
+
+                    const { buildEmailHtmlForAdmin } = require('../services/pdiIndicadorUploadNotification');
+                    const emailHtml = buildEmailHtmlForAdmin(respuestaForAdmin, formularioData, indicadorData, 'Líder del Macroproyecto');
+                    
+                    await transporter.sendMail({
+                      from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
+                      to: adminEmails.join(','),
+                      subject: `[EVALUACIÓN] Indicador Aprobado: ${indicadorData.codigo}`,
+                      html: emailHtml
+                    });
+                    
+                    console.log(`[updateEvidenciaEstado] ✓ Notificación de aprobación enviada a administradores: ${adminEmails.join(', ')}`);
+                  }
+                } else {
+                  console.warn(`[updateEvidenciaEstado] No se encontraron administradores`);
+                }
+              } catch (adminError) {
+                console.error(`[updateEvidenciaEstado] Error enviando a administradores:`, adminError.message);
+              }
+            }
+            
+            console.log(`[updateEvidenciaEstado] ✓ Notificación enviada - Estado: ${estado}`);
+          } catch (notifyError) {
+            console.error('[updateEvidenciaEstado] Error al enviar notificación:', notifyError.message);
+            // No fallar la solicitud principal por error en notificación
+          }
+        }
+
         res.json(ev);
     } catch (e) {
         res.status(500).json({ error: e.message });
