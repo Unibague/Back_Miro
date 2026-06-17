@@ -12,6 +12,7 @@ router.delete('/:id', ctrl.remove);
 
 // ── Respuestas ─────────────────────────────────────────────────────────────
 router.get('/respuestas/pendientes-aval',          ctrl.getRespuestasPendientesAval);
+router.get('/respuestas/pendientes-planeacion',    ctrl.getRespuestasPendientesPlaneacion);
 router.get('/respuestas/por-indicador',            ctrl.getRespuestasPorIndicador);
 router.get('/respuestas/lider-email-indicador',    ctrl.getLiderEmailIndicador);
 router.get('/:id/respuestas',                    ctrl.getRespuestas);

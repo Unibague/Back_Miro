@@ -155,6 +155,42 @@ const buildLegacyDocumento = (doc) => ({
 const getDocumentosTotalSize = (documentos = []) =>
     documentos.reduce((total, documento) => total + (Number(documento?.size) || 0), 0);
 
+const getRefId = (value) => {
+    if (!value) return '';
+    if (typeof value === 'object') {
+        if (value._id) return String(value._id);
+        if (typeof value.toString === 'function') return value.toString();
+        return String(value.id ?? '');
+    }
+    return String(value);
+};
+
+const buildEvaluacionUrl = ({ indicadorId, formularioId, respuestaId, modo }) => {
+    const params = new URLSearchParams();
+    if (indicadorId) params.set('indicador_id', indicadorId);
+    if (formularioId) params.set('formulario_id', formularioId);
+    if (respuestaId) params.set('respuesta_id', respuestaId);
+    if (modo) params.set('modo', modo);
+
+    const query = params.toString();
+    return `/pdi/mis-indicadores${query ? `?${query}` : ''}`;
+};
+
+const withEvaluacionNavigation = (doc, modo = 'planeacion') => {
+    const base = typeof doc?.toObject === 'function' ? doc.toObject() : doc;
+    const indicadorId = getRefId(base?.indicador_id);
+    const formularioId = getRefId(base?.formulario_id);
+    const respuestaId = getRefId(base?._id);
+
+    return {
+        ...base,
+        respuesta_id: respuestaId,
+        indicador_id_ref: indicadorId,
+        formulario_id_ref: formularioId,
+        evaluacion_url: buildEvaluacionUrl({ indicadorId, formularioId, respuestaId, modo }),
+    };
+};
+
 const syncLegacyDocumentoFields = (doc) => {
     const first = doc.documentos?.[0];
     doc.documento_filename = first?.filename || '';
@@ -373,6 +409,10 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
                     aval_por: respondido_por,
                     aval_comentario: '',
                     aval_fecha: new Date(),
+                    aval_planeacion: 'Pendiente',
+                    aval_planeacion_por: '',
+                    aval_planeacion_comentario: '',
+                    aval_planeacion_fecha: null,
                 }
                 : {
                     lider_email_aval: liderEmail,
@@ -380,6 +420,10 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
                     aval_por: '',
                     aval_comentario: '',
                     aval_fecha: null,
+                    aval_planeacion: null,
+                    aval_planeacion_por: '',
+                    aval_planeacion_comentario: '',
+                    aval_planeacion_fecha: null,
                 };
         } else {
             // No hay líder configurado → aprobación automática
@@ -389,6 +433,10 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
                 aval_por: respondido_por,
                 aval_comentario: '',
                 aval_fecha: new Date(),
+                aval_planeacion: 'Pendiente',
+                aval_planeacion_por: '',
+                aval_planeacion_comentario: '',
+                aval_planeacion_fecha: null,
             };
         }
     }
@@ -534,6 +582,10 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     doc.aval_razones    = razonesNormalizadas;
     doc.aval_otro_cual  = estado_aval === 'Rechazado' ? (aval_otro_cual ?? '') : '';
     doc.aval_fecha      = new Date();
+    doc.aval_planeacion = estado_aval === 'Aprobado' ? 'Pendiente' : null;
+    doc.aval_planeacion_por = '';
+    doc.aval_planeacion_comentario = '';
+    doc.aval_planeacion_fecha = null;
     for (const respuesta of doc.respuestas) {
         const campoId = String(respuesta.campo_id ?? '');
         respuesta.comentario_lider = comentariosPorCampo.get(campoId) ?? '';
@@ -604,14 +656,34 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
 
 // Retorna todas las respuestas pendientes de aval para un lider
 const getRespuestasPendientesAval = async (lider_email) => {
-    return Respuesta.find({ lider_email_aval: lider_email.toLowerCase().trim(), estado_aval: 'Pendiente' })
+    const docs = await Respuesta.find({ lider_email_aval: lider_email.toLowerCase().trim(), estado_aval: 'Pendiente' })
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre')
         .sort({ createdAt: -1 });
+    return docs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
+};
+
+// Retorna respuestas aprobadas por lider que aun debe evaluar Planeacion
+const getRespuestasPendientesPlaneacion = async () => {
+    const docs = await Respuesta.find({
+        estado: 'Enviado',
+        estado_aval: 'Aprobado',
+        $or: [
+            { aval_planeacion: null },
+            { aval_planeacion: 'Pendiente' },
+            { aval_planeacion: { $exists: false } },
+        ],
+    })
+        .populate('formulario_id', 'nombre campos')
+        .populate('indicador_id', 'codigo nombre responsable responsable_email')
+        .sort({ aval_fecha: -1, fecha_envio: -1, createdAt: -1 });
+
+    return docs.map((doc) => withEvaluacionNavigation(doc, 'planeacion'));
 };
 
 module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
-    avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion, getRespuestasPendientesAval, getLiderEmailForIndicador,
+    avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
+    getRespuestasPendientesAval, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
 };

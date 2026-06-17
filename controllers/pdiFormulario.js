@@ -287,6 +287,15 @@ ctrl.getRespuestasPendientesAval = async (req, res) => {
     }
 };
 
+ctrl.getRespuestasPendientesPlaneacion = async (req, res) => {
+    try {
+        const docs = await svc.getRespuestasPendientesPlaneacion();
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
 ctrl.deleteRespuesta = async (req, res) => {
     try {
         const doc = await svc.deleteRespuesta(req.params.respuestaId);
