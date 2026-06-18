@@ -53,6 +53,8 @@ router.put("/updateStatus", requireAdmin, controller.updateUserStatus);
 
 router.put("/migrate", requireAdmin, controller.migrateUserDependecy);
 
+router.get("/exportActiveUsers", requireAdmin, controller.exportActiveUsersExcel);
+
 router.get("/:dep_code/users", controller.getUsersByDependency);
 
 

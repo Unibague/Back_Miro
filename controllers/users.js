@@ -303,6 +303,51 @@ userController.getUsers = async (req, res) => {
     res.status(200).json(users);
 }
 
+// Export all active users to Excel
+userController.exportActiveUsersExcel = async (req, res) => {
+    try {
+        const ExcelJS = require('exceljs');
+        const activeUsers = await User.find({ isActive: true }).sort({ full_name: 1 });
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Usuarios Activos');
+
+        sheet.columns = [
+            { header: 'ID', key: 'identification', width: 15 },
+            { header: 'Nombre Completo', key: 'full_name', width: 35 },
+            { header: 'Posición', key: 'position', width: 40 },
+            { header: 'Email', key: 'email', width: 35 },
+            { header: 'Roles', key: 'roles', width: 30 },
+            { header: 'Estado', key: 'estado', width: 12 },
+        ];
+
+        sheet.getRow(1).eachCell((cell) => {
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2196F3' } };
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        });
+
+        activeUsers.forEach((user) => {
+            sheet.addRow({
+                identification: user.identification,
+                full_name: user.full_name,
+                position: user.position,
+                email: user.email,
+                roles: (user.roles || []).join(', '),
+                estado: 'Activo',
+            });
+        });
+
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', 'attachment; filename="usuarios_activos.xlsx"');
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (error) {
+        console.error('Error exporting users to Excel:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+};
+
 userController.getUser = async (req, res) => {
     const email = req.query.email; 
     try {
