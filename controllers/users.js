@@ -307,7 +307,13 @@ userController.getUsers = async (req, res) => {
 userController.exportActiveUsersExcel = async (req, res) => {
     try {
         const ExcelJS = require('exceljs');
-        const activeUsers = await User.find({ isActive: true }).sort({ full_name: 1 });
+        const [activeUsers, allDependencies] = await Promise.all([
+            User.find({ isActive: true }).sort({ full_name: 1 }),
+            Dependency.find({}, { dep_code: 1, name: 1 }).lean(),
+        ]);
+
+        const depMap = {};
+        allDependencies.forEach((d) => { depMap[d.dep_code] = d.name; });
 
         const workbook = new ExcelJS.Workbook();
         const sheet = workbook.addWorksheet('Usuarios Activos');
@@ -317,6 +323,7 @@ userController.exportActiveUsersExcel = async (req, res) => {
             { header: 'Nombre Completo', key: 'full_name', width: 35 },
             { header: 'Posición', key: 'position', width: 40 },
             { header: 'Email', key: 'email', width: 35 },
+            { header: 'Dependencia', key: 'dependencia', width: 40 },
             { header: 'Roles', key: 'roles', width: 30 },
             { header: 'Estado', key: 'estado', width: 12 },
         ];
@@ -333,6 +340,7 @@ userController.exportActiveUsersExcel = async (req, res) => {
                 full_name: user.full_name,
                 position: user.position,
                 email: user.email,
+                dependencia: depMap[user.dep_code] || user.dep_code || '',
                 roles: (user.roles || []).join(', '),
                 estado: 'Activo',
             });
