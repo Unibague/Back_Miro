@@ -192,9 +192,14 @@ ctrl.upsertRespuesta = async (req, res) => {
         if (justSent && doc) {
             try {
                 const formulario = await svc.getById(req.params.id);
-                const indicador = doc.indicador_id && typeof doc.indicador_id === 'object' 
-                    ? doc.indicador_id 
-                    : null;
+                
+                // Obtener indicador completo (no solo la referencia)
+                let indicador = null;
+                if (doc.indicador_id) {
+                    const Indicador = require('../models/pdiIndicador');
+                    indicador = await Indicador.findById(doc.indicador_id).select('codigo nombre').lean();
+                }
+                
                 await sendIndicadorUploadNotification(doc, formulario, indicador);
             } catch (notifyErr) {
                 console.error('[UPSERT-RESPUESTA] Error enviando notificación:', notifyErr.message);
