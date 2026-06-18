@@ -17,6 +17,7 @@ const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
 const RemindersService = require('../services/reminders');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
+const HistoricoDocentes = require('../models/historicoDocentes');
 
 const axios = require('axios');
 
@@ -3087,6 +3088,68 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     pubTem.final_submitted_by = user;
     pubTem.final_submitted_date = datetime_now();
     await pubTem.save();
+
+    // Guardar automáticamente en Consulta de Información > Plantillas (fire-and-forget)
+    const saveToHistorico = async () => {
+      try {
+        const sheetMap = new Map();
+        (pubTem.loaded_data || []).forEach((loadedEntry) => {
+          (loadedEntry.filled_data || []).forEach((fieldData) => {
+            const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
+            if (!sheetMap.has(sheetName)) {
+              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {} });
+            }
+            const info = sheetMap.get(sheetName);
+            const fieldName = fieldData.field_name;
+            if (fieldName && !info.colMap[fieldName]) {
+              info.colMap[fieldName] = true;
+              info.headers.push(fieldName);
+              info.valueArrays[fieldName] = [];
+            }
+            if (fieldName) {
+              const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
+              info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
+            }
+          });
+        });
+
+        const sheets = [];
+        for (const [name, info] of sheetMap.entries()) {
+          if (info.headers.length === 0) continue;
+          const maxRows = Math.max(...info.headers.map((h) => info.valueArrays[h]?.length || 0));
+          if (maxRows === 0) continue;
+          const rows = [];
+          for (let i = 0; i < maxRows; i++) {
+            rows.push(info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? "")));
+          }
+          sheets.push({ name, headers: info.headers, rows });
+        }
+
+        if (sheets.length === 0) return;
+
+        const fileName = `${pubTem.name || "plantilla"}.xlsx`;
+        const periodId = pubTem.period?._id || pubTem.period;
+
+        await HistoricoDocentes.findOneAndUpdate(
+          { category: "plantillas", period: periodId, file_name: fileName },
+          {
+            $set: {
+              file_name: fileName,
+              uploaded_by: { full_name: user.full_name || user.name || email, email },
+              file_type: "excel",
+              sheets,
+              category: "plantillas",
+              period: periodId,
+              active: true,
+            },
+          },
+          { upsert: true, new: true }
+        );
+      } catch (err) {
+        console.error("[HistoricoDocentes] Error guardando en consulta de información:", err.message);
+      }
+    };
+    saveToHistorico();
 
     await auditLogger.logCreate(req, user, 'finalSubmitToSnies', {
       publishedTemplateId: pubTem_id,

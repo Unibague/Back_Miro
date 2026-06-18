@@ -3143,16 +3143,18 @@ controller.downloadConnectedData = async (req, res) => {
       compression: "DEFLATE",
     });
 
+    const fileName = buildDownloadFileName(template);
+
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${buildDownloadFileName(template)}"; filename*=UTF-8''${encodeURIComponent(buildDownloadFileName(template))}`
+      `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
     );
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
 
-    return res.send(outputBuffer);
+    res.send(outputBuffer);
   } catch (error) {
     console.error("Error downloading SNIES connected data:", error);
     return res.status(500).json({
