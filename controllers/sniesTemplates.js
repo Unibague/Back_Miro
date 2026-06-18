@@ -285,14 +285,11 @@ const getEquivalentFieldMappings = (lookup, worksheetName, fieldName) => {
 };
 
 const buildDownloadFileName = (template) => {
+  const fileName = String(template?.file_name || "").trim();
+  if (fileName) return fileName;
+
   const templateName = String(template?.name || "").trim();
-  const extension = path.extname(String(template?.file_name || "").trim()) || ".xlsx";
-
-  if (!templateName) {
-    return `plantilla_snies${extension}`;
-  }
-
-  return `${templateName}${extension}`;
+  return templateName ? `${templateName}.xlsx` : "plantilla_snies.xlsx";
 };
 
 const sanitizeWorksheetName = (value, fallback = "Hoja") => {
@@ -996,9 +993,13 @@ const getWorksheetXmlPathMap = (zip) => {
   }, {});
 };
 
-const buildCellNode = (doc, cellRef, value) => {
+const buildCellNode = (doc, cellRef, value, styleId = null) => {
   const cellNode = doc.createElement("c");
   cellNode.setAttribute("r", cellRef);
+
+  if (styleId !== null && styleId !== undefined && styleId !== "") {
+    cellNode.setAttribute("s", String(styleId));
+  }
 
   if (typeof value === "number" && Number.isFinite(value)) {
     const valueNode = doc.createElement("v");
@@ -1478,7 +1479,25 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber, headerC
     return xmlContent;
   }
 
-  Array.from(sheetDataNode.getElementsByTagName("row"))
+  // Capture column styles from the first data row BEFORE removing it, so
+  // new data rows inherit the original template's cell formatting.
+  const columnStyleMap = {};
+  const allDataRows = Array.from(sheetDataNode.getElementsByTagName("row"));
+  const firstDataRow = allDataRows.find(
+    (rowNode) => Number(rowNode.getAttribute("r")) === headerRowNumber + 1
+  );
+  if (firstDataRow) {
+    Array.from(firstDataRow.getElementsByTagName("c")).forEach((cell) => {
+      const ref = cell.getAttribute("r") || "";
+      const colLetter = ref.replace(/[0-9]/g, "");
+      const styleId = cell.getAttribute("s");
+      if (colLetter && styleId !== null && styleId !== undefined && styleId !== "") {
+        columnStyleMap[colLetter] = styleId;
+      }
+    });
+  }
+
+  allDataRows
     .filter((rowNode) => Number(rowNode.getAttribute("r")) > headerRowNumber)
     .forEach((rowNode) => {
       sheetDataNode.removeChild(rowNode);
@@ -1491,8 +1510,10 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber, headerC
 
     headers.forEach((header, headerIndex) => {
       const columnNumber = headerColumns[headerIndex] || headerIndex + 1;
-      const cellRef = `${columnNumberToName(columnNumber)}${excelRowNumber}`;
-      const cellNode = buildCellNode(doc, cellRef, sanitizeExcelValue(row[header]));
+      const colLetter = columnNumberToName(columnNumber);
+      const cellRef = `${colLetter}${excelRowNumber}`;
+      const styleId = columnStyleMap[colLetter] ?? null;
+      const cellNode = buildCellNode(doc, cellRef, sanitizeExcelValue(row[header]), styleId);
       rowNode.appendChild(cellNode);
     });
 
@@ -2512,7 +2533,7 @@ const injectPeriodFields = (rows, year, semester, periodName) => {
   });
 };
 
-const buildSniesDataset = async (template) => {
+const buildSniesDataset = async (template, fallbackPubTemId = null) => {
   // Cargar período para inyectar año y semestre en las filas
   let periodYear = null;
   let periodSemester = null;
@@ -2534,7 +2555,27 @@ const buildSniesDataset = async (template) => {
     periodName,
   };
 
-  const sourceTemplates = getSourceTemplatesFromSnies(template);
+  let sourceTemplates = getSourceTemplatesFromSnies(template);
+
+  // When the frontend provides a specific published template ID (e.g. user navigated
+  // from that template), add it to the source list if it's not already there.
+  // This handles the case where source_published_templates has a stale/wrong ID.
+  if (fallbackPubTemId) {
+    const alreadyIncluded = sourceTemplates.some(
+      (s) => String(s.template_id) === String(fallbackPubTemId)
+    );
+    if (!alreadyIncluded) {
+      try {
+        const pubTem = await PublishedTemplate.findById(fallbackPubTemId).select("_id name").lean();
+        if (pubTem) {
+          sourceTemplates = [...sourceTemplates, { template_id: pubTem._id, template_name: pubTem.name }];
+          console.log(`[SNIES-Dataset] Added fallback pubTemId ${fallbackPubTemId} → "${pubTem.name}"`);
+        }
+      } catch (e) {
+        console.warn("[SNIES-Dataset] Could not load fallback pubTem:", e.message);
+      }
+    }
+  }
   const sourceDatasetResults = await Promise.allSettled(
     sourceTemplates.map(async (sourceTemplate) => ({
       ...sourceTemplate,
@@ -3022,7 +3063,7 @@ controller.getFeedOptions = async (req, res) => {
 controller.getConnectedData = async (req, res) => {
   try {
     const { id } = req.params;
-    const { email } = req.query;
+    const { email, pubTemId } = req.query;
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
@@ -3031,7 +3072,7 @@ controller.getConnectedData = async (req, res) => {
       return res.status(404).json({ error: "SNIES template not found" });
     }
 
-    const dataset = await buildSniesDataset(template);
+    const dataset = await buildSniesDataset(template, pubTemId || null);
 
     return res.status(200).json({
       template: {
@@ -3060,7 +3101,7 @@ controller.getConnectedData = async (req, res) => {
 controller.downloadConnectedData = async (req, res) => {
   try {
     const { id } = req.params;
-    const { email } = req.query;
+    const { email, pubTemId } = req.query;
 
     await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
@@ -3069,7 +3110,7 @@ controller.downloadConnectedData = async (req, res) => {
       return res.status(404).json({ error: "SNIES template not found" });
     }
 
-    const { workbook, sheetDatasets, workbookNotes, templateBuffer } = await buildSniesDataset(template);
+    const { workbook, sheetDatasets, workbookNotes, templateBuffer } = await buildSniesDataset(template, pubTemId || null);
     restoreWorkbookNotes(workbook, workbookNotes);
 
     const zip = new PizZip(templateBuffer);

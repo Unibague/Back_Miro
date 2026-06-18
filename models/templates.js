@@ -206,6 +206,10 @@ const templateSchema = new Schema({
     is_snies: {
       type: Boolean,
       default: false
+    },
+    skip_comment_validation: {
+      type: Boolean,
+      default: false
     }
 },
 {

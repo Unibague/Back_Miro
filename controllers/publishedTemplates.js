@@ -1383,9 +1383,14 @@ publTempController.loadProducerData = async (req, res) => {
           (sheet.fields || []).map((field) => toPlainField(field, sheet.name))
         ))) || []);
 
+    const liveTemplateSnapshotId = pubTem.template?._id || pubTem.template?.id;
+    const liveTemplateForFlag = liveTemplateSnapshotId ? await Template.findById(liveTemplateSnapshotId).lean() : null;
+    const templateName = liveTemplateForFlag?.name || pubTem.template?.name || pubTem.name || '';
+    const skipCommentValidation = Boolean(liveTemplateForFlag?.skip_comment_validation ?? pubTem.template?.skip_comment_validation) ||
+      templateName === 'Docentes_IES';
     const applyEffectiveRequired = (field) => {
       if (!field) return field;
-      field.required = getEffectiveRequired(field);
+      field.required = skipCommentValidation ? false : getEffectiveRequired(field);
       return field;
     };
     fieldsForLoad.forEach(applyEffectiveRequired);
@@ -2782,6 +2787,9 @@ publTempController.getTemplateById = async (req, res) => {
       name: publishedTemplate.name,
       template: {
         ...(publishedTemplate.template?.toObject?.() || publishedTemplate.template?._doc || publishedTemplate.template || {}),
+        skip_comment_validation: Boolean(liveTemplate?.skip_comment_validation ?? publishedTemplate.template?.skip_comment_validation) ||
+          (liveTemplate?.name === 'Docentes_IES') ||
+          (publishedTemplate.template?.name === 'Docentes_IES'),
         workbook_sheets: enrichedSheets,
         fields: fieldsWithValidatorIds,
         validators: Array.from(validatorsMap.values()),
