@@ -1350,8 +1350,8 @@ publTempController.loadProducerData = async (req, res) => {
 
       // Verificar fecha límite para productores (fecha_final_productores > fecha_final > deadline)
       const fechaLimiteProductores = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
-      const fechaLimite = new Date(fechaLimiteProductores);
-      fechaLimite.setHours(23, 59, 59, 999);
+      // Fin del día en Colombia (UTC-5): medianoche UTC + 28h59m59s999ms = 23:59:59 hora Colombia
+      const fechaLimite = new Date(new Date(fechaLimiteProductores).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
       if (fechaLimite < now) {
         return res.status(403).json({ status: 'The period is closed' });
       }
