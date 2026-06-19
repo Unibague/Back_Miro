@@ -533,18 +533,31 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
       console.warn('[PDI-UPLOAD-NOTIFY] No se encontró email del productor');
     }
 
-    // 2. Enviar email al líder del macroproyecto (para que revise)
+    // 2. Enviar email a TODOS los líderes del macroproyecto (para que revisen)
     if (respuesta.lider_email_aval && respuesta.lider_email_aval !== 'Por asignar') {
       try {
-        await transporter.sendMail({
-          from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
-          to: respuesta.lider_email_aval,
-          subject: `[REVISIÓN] ${subject}`,
-          html: buildEmailHtmlForLeader(respuesta, formulario, indicador)
-        });
-        console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al líder: ${respuesta.lider_email_aval}`);
+        // Obtener todos los líderes del macroproyecto del indicador
+        const svc = require('./pdiFormulario');
+        const lideresEmails = await svc.getLideresEmailsForIndicador(respuesta.indicador_id);
+        
+        if (lideresEmails && lideresEmails.length > 0) {
+          // Enviar a CADA líder por separado (evita exponer emails)
+          for (const liderEmail of lideresEmails) {
+            try {
+              await transporter.sendMail({
+                from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
+                to: liderEmail,
+                subject: `[REVISIÓN] ${subject}`,
+                html: buildEmailHtmlForLeader(respuesta, formulario, indicador)
+              });
+              console.log(`[PDI-UPLOAD-NOTIFY] ✓ Email enviado al líder: ${liderEmail}`);
+            } catch (error) {
+              console.error(`[PDI-UPLOAD-NOTIFY] ✗ Error enviando al líder ${liderEmail}:`, error.message);
+            }
+          }
+        }
       } catch (error) {
-        console.error(`[PDI-UPLOAD-NOTIFY] ✗ Error enviando al líder:`, error.message);
+        console.error(`[PDI-UPLOAD-NOTIFY] Error obteniendo líderes:`, error.message);
       }
     }
   } catch (error) {

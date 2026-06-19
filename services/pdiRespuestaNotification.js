@@ -222,8 +222,6 @@ const buildEmailHtmlApprovedForAdmins = (respuesta, formulario, indicador, lider
                         <div style="font-size:18px;color:#16a34a;font-weight:700;">APROBADO</div>
                       </td>
                       <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Evaluador</div>
-                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">${liderNombre} (Líder del Macroproyecto)</div>
                       </td>
                     </tr>
                   </table>

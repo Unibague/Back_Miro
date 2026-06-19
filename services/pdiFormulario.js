@@ -269,10 +269,42 @@ const getLiderEmailForIndicador = async (indicador_id) => {
         if (!acc?.proyecto_id) return '';
         const proy = await Proyecto.findById(acc.proyecto_id).select('macroproyecto_id');
         if (!proy?.macroproyecto_id) return '';
-        const macro = await Macroproyecto.findById(proy.macroproyecto_id).select('lider_email');
+        const macro = await Macroproyecto.findById(proy.macroproyecto_id).select('lider_email lideres');
+        
+        // Soporte para múltiples líderes
+        if (macro?.lideres && Array.isArray(macro.lideres) && macro.lideres.length > 0) {
+            return (macro.lideres[0].email ?? '').toLowerCase().trim();
+        }
+        // Fallback a lider_email antiguo
         return (macro?.lider_email ?? '').toLowerCase().trim();
     } catch {
         return '';
+    }
+}
+
+// Nueva función para obtener todos los líderes de un indicador
+getLideresEmailsForIndicador = async (indicador_id) => {
+    if (!indicador_id) return [];
+    try {
+        const ind = await Indicador.findById(indicador_id).select('accion_id');
+        if (!ind?.accion_id) return [];
+        const acc = await Accion.findById(ind.accion_id).select('proyecto_id');
+        if (!acc?.proyecto_id) return [];
+        const proy = await Proyecto.findById(acc.proyecto_id).select('macroproyecto_id');
+        if (!proy?.macroproyecto_id) return [];
+        const macro = await Macroproyecto.findById(proy.macroproyecto_id).select('lider_email lideres');
+        
+        // Soporte para múltiples líderes
+        if (macro?.lideres && Array.isArray(macro.lideres) && macro.lideres.length > 0) {
+            return macro.lideres
+                .map(l => (l.email ?? '').toLowerCase().trim())
+                .filter(email => email.length > 0);
+        }
+        // Fallback a lider_email antiguo
+        const singleEmail = (macro?.lider_email ?? '').toLowerCase().trim();
+        return singleEmail ? [singleEmail] : [];
+    } catch {
+        return [];
     }
 };
 
@@ -762,9 +794,37 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
     return doc;
 };
 
-// Retorna todas las respuestas pendientes de aval para un lider
+// Retorna todas las respuestas pendientes de aval para un lider (en CUALQUIER posición del array)
 const getRespuestasPendientesAval = async (lider_email) => {
-    const docs = await Respuesta.find({ lider_email_aval: lider_email.toLowerCase().trim(), estado_aval: 'Pendiente' })
+    const email = lider_email.toLowerCase().trim();
+    
+    // CORRECCIÓN: Buscar respuestas donde el usuario es líder del macroproyecto
+    // Ya sea en lider_email_aval (legacy) o si está en el array lideres del macro
+    const macrosDelLider = await Macroproyecto.find({
+        $or: [
+            { lider_email: email },
+            { 'lideres.email': email }
+        ]
+    }).select('_id');
+    
+    const macroIds = macrosDelLider.map(m => m._id);
+    
+    // Obtener indicadores de esos macroproyectos
+    const proyectos = await Proyecto.find({ macroproyecto_id: { $in: macroIds } }).select('_id');
+    const proyectoIds = proyectos.map(p => p._id);
+    
+    const acciones = await Accion.find({ proyecto_id: { $in: proyectoIds } }).select('_id');
+    const accionIds = acciones.map(a => a._id);
+    
+    const indicadores = await Indicador.find({ accion_id: { $in: accionIds } }).select('_id');
+    const indicadorIds = indicadores.map(i => i._id);
+    
+    // Buscar respuestas de esos indicadores que estén pendientes y asignadas a este usuario
+    const docs = await Respuesta.find({ 
+        indicador_id: { $in: indicadorIds },
+        estado_aval: 'Pendiente',
+        lider_email_aval: email  // El usuario es el líder asignado
+    })
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre')
         .sort({ createdAt: -1 });
@@ -794,4 +854,5 @@ module.exports = {
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
     avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
     getRespuestasPendientesAval, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
+    getLideresEmailsForIndicador,
 };

@@ -176,7 +176,7 @@ const collectRecipients = async () => {
     const recipients = new Map();
 
     const proyectos = await Proyecto.find({}, 'codigo nombre responsable responsable_email macroproyecto_id')
-        .populate('macroproyecto_id', 'codigo nombre lÍder lider_email')
+        .populate('macroproyecto_id', 'codigo nombre lider lider_email lideres')
         .lean();
     const proyectosVigentes = proyectos.filter((proyecto) => proyecto.macroproyecto_id);
     const macrosById = new Map();
@@ -188,23 +188,46 @@ const collectRecipients = async () => {
     }
 
     for (const macro of macrosById.values()) {
-        personNames.push(macro.lider);
+        // Agregar nombres de líderes (nuevo formato)
+        if (macro.lideres && Array.isArray(macro.lideres)) {
+            macro.lideres.forEach(l => personNames.push(l.nombre));
+        }
+        // Agregar nombre de líder antiguo (formato legacy) - por compatibilidad
+        if (macro.lider) personNames.push(macro.lider);
     }
 
     const usersByName = await buildUsersByName(personNames);
 
     for (const macro of macrosById.values()) {
-        const recipient = resolveUserRecipient(usersByName, macro.lider, macro.lider_email);
-        addRecipient(recipients, {
-            email: recipient.email,
-            name: recipient.name,
-            role: 'Lider de macroproyecto',
-            item: {
-                tipo: 'Macroproyecto',
-                codigo: macro.codigo,
-                nombre: macro.nombre,
-            },
-        });
+        // Procesar múltiples líderes (nuevo formato)
+        if (macro.lideres && Array.isArray(macro.lideres) && macro.lideres.length > 0) {
+            for (const lider of macro.lideres) {
+                const recipient = resolveUserRecipient(usersByName, lider.nombre, lider.email);
+                addRecipient(recipients, {
+                    email: recipient.email,
+                    name: recipient.name,
+                    role: 'Lider de macroproyecto',
+                    item: {
+                        tipo: 'Macroproyecto',
+                        codigo: macro.codigo,
+                        nombre: macro.nombre,
+                    },
+                });
+            }
+        } else {
+            // Fallback a formato legacy
+            const recipient = resolveUserRecipient(usersByName, macro.lider, macro.lider_email);
+            addRecipient(recipients, {
+                email: recipient.email,
+                name: recipient.name,
+                role: 'Lider de macroproyecto',
+                item: {
+                    tipo: 'Macroproyecto',
+                    codigo: macro.codigo,
+                    nombre: macro.nombre,
+                },
+            });
+        }
     }
 
     for (const proyecto of proyectosVigentes) {

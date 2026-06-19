@@ -586,9 +586,13 @@ controller.getUserMacros = async (req, res) => {
     const codes = new Set();
     let isLider = false;
 
-    // Líder de macroproyecto
+    // Líder de macroproyecto - búsqueda en lider_email O en array lideres
     const macrosLider = await Macroproyecto.find(
-      { lider_email: email }, 'codigo'
+      { $or: [
+        { lider_email: email },
+        { 'lideres.email': email }
+      ]}, 
+      'codigo'
     ).lean();
     if (macrosLider.length > 0) {
       isLider = true;

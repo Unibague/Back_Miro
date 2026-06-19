@@ -203,8 +203,17 @@ ctrl.lista = async (req, res) => {
         const macros = email
             ? allMacros.filter((m) => {
                 const userEmail = normalize(email);
-                return (m.lider_email && normalize(m.lider_email) === userEmail)
-                    || (m.lider && normalize(m.lider) === userEmail);
+                // Buscar en lider_email (legacy)
+                if (m.lider_email && normalize(m.lider_email) === userEmail) return true;
+                if (m.lider && normalize(m.lider) === userEmail) return true;
+                // Buscar en array lideres (nuevo formato)
+                if (m.lideres && Array.isArray(m.lideres)) {
+                    return m.lideres.some(l => 
+                        (l.email && normalize(l.email) === userEmail) ||
+                        (l.nombre && normalize(l.nombre) === userEmail)
+                    );
+                }
+                return false;
               })
             : allMacros;
         const proyectos = await Proyecto.find({}).lean();
@@ -275,7 +284,10 @@ ctrl.isLeader = async (req, res) => {
         if (!email) return res.json({ isLeader: false });
         const normalized = String(email).toLowerCase().trim();
         const match = await Macroproyecto.findOne({
-            lider_email: { $regex: new RegExp(`^${normalized}$`, 'i') }
+            $or: [
+                { lider_email: { $regex: new RegExp(`^${normalized}$`, 'i') } },
+                { 'lideres.email': { $regex: new RegExp(`^${normalized}$`, 'i') } }
+            ]
         }).lean();
         res.json({ isLeader: !!match });
     } catch (e) {

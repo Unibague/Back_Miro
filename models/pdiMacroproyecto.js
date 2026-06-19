@@ -3,6 +3,11 @@ const mongoose = require('mongoose');
 const pdiMacroproyectoSchema = new mongoose.Schema({
     codigo: { type: String, required: true, unique: true },
     nombre: { type: String, required: true },
+    lideres: [{
+        nombre: { type: String, default: '' },
+        email: { type: String, default: '' }
+    }],
+    // Deprecated - mantener para compatibilidad backwards
     lider:        { type: String, default: '' },
     lider_email:  { type: String, default: '' },
     num_proyectos: { type: Number, default: 0 },
