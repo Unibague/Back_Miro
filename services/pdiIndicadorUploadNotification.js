@@ -7,7 +7,7 @@ const nodemailer = require('nodemailer');
 const { getEmailConfig } = require('../config/emailConfig');
 const User = require('../models/users');
 
-const buildEmailHtmlResponsable = (respuesta, indicador) => {
+const buildEmailHtmlResponsable = (respuesta, formulario, indicador) => {
   const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
   const indicadorNombre = indicador?.nombre || indicador?.name || 'Sin nombre';
   const corteName = respuesta.corte || 'Sin corte';
@@ -451,7 +451,7 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
       tls: { rejectUnauthorized: false }
     });
 
-    const indicadorCodigo = indicador?.codigo || 'Sin código';
+    const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
     const corteName = respuesta.corte || 'Sin corte';
     const subject = `📤 Información Registrada: ${indicadorCodigo} - ${corteName}`;
 
@@ -461,6 +461,14 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
     // 1. Enviar email al responsable (quien subió la información)
     if (producerEmail) {
       try {
+        console.log(`[PDI-UPLOAD-NOTIFY] Enviando email al responsable:`, {
+          email: producerEmail,
+          indicador: {
+            codigo: indicador?.codigo,
+            nombre: indicador?.nombre,
+            completo: indicador
+          }
+        });
         await transporter.sendMail({
           from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
           to: producerEmail,

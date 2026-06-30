@@ -193,11 +193,21 @@ ctrl.upsertRespuesta = async (req, res) => {
             try {
                 const formulario = await svc.getById(req.params.id);
                 
-                // Obtener indicador completo (no solo la referencia)
+                // Obtener indicador completo - puede venir de indicador_id del body o del documento guardado
                 let indicador = null;
-                if (doc.indicador_id) {
+                const indicadorIdToFetch = doc.indicador_id || indicador_id;
+                
+                if (indicadorIdToFetch) {
                     const Indicador = require('../models/pdiIndicador');
-                    indicador = await Indicador.findById(doc.indicador_id).select('codigo nombre').lean();
+                    indicador = await Indicador.findById(indicadorIdToFetch).lean();
+                    console.log('[UPSERT-RESPUESTA] Indicador obtenido:', {
+                        id: indicadorIdToFetch,
+                        codigo: indicador?.codigo,
+                        nombre: indicador?.nombre,
+                        indicadorCompleto: indicador
+                    });
+                } else {
+                    console.warn('[UPSERT-RESPUESTA] No hay indicador_id disponible');
                 }
                 
                 await sendIndicadorUploadNotification(doc, formulario, indicador);
