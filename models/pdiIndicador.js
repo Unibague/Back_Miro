@@ -15,7 +15,7 @@ const metaPeriodoSchema = new mongoose.Schema({
     justificacion_retrasos:   { type: String, default: '' },
     estado_reporte:           {
         type: String,
-        enum: ['Borrador', 'Enviado', 'Aprobado', 'Rechazado'],
+        enum: ['Borrador', 'Enviado', 'Aprobado', 'Rechazado', 'Validado'],
         default: 'Borrador',
     },
     fecha_envio:              { type: Date, default: null },

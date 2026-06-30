@@ -790,6 +790,11 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
         });
     } else {
         await doc.save();
+        await syncPeriodoReporte({
+            indicador_id:   doc.indicador_id,
+            corte:          doc.corte,
+            estado_reporte: 'Validado',
+        });
     }
     return doc;
 };
@@ -831,6 +836,19 @@ const getRespuestasPendientesAval = async (lider_email) => {
     return docs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
 };
 
+// Retorna respuestas enviadas que aun esperan evaluacion del lider de macroproyecto
+const getRespuestasPendientesLider = async () => {
+    const docs = await Respuesta.find({
+        estado: 'Enviado',
+        estado_aval: 'Pendiente',
+    })
+        .populate('formulario_id', 'nombre campos')
+        .populate('indicador_id', 'codigo nombre responsable responsable_email')
+        .sort({ fecha_envio: -1, createdAt: -1 });
+
+    return docs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
+};
+
 // Retorna respuestas aprobadas por lider que aun debe evaluar Planeacion
 const getRespuestasPendientesPlaneacion = async () => {
     const docs = await Respuesta.find({
@@ -853,6 +871,6 @@ module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
     avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
-    getRespuestasPendientesAval, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
+    getRespuestasPendientesAval, getRespuestasPendientesLider, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
     getLideresEmailsForIndicador,
 };

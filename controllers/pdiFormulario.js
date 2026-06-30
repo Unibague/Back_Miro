@@ -302,6 +302,15 @@ ctrl.getRespuestasPendientesAval = async (req, res) => {
     }
 };
 
+ctrl.getRespuestasPendientesLider = async (req, res) => {
+    try {
+        const docs = await svc.getRespuestasPendientesLider();
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
 ctrl.getRespuestasPendientesPlaneacion = async (req, res) => {
     try {
         const docs = await svc.getRespuestasPendientesPlaneacion();
