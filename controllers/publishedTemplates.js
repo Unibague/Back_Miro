@@ -2016,7 +2016,7 @@ if (field.multiple) {
 
 
 publTempController.submitEmptyData = async (req, res) => {
-  const { pubTemId, email } = req.body;
+  const { pubTemId, email, sender_email, sender_name } = req.body;
 
   try {
     const user = await User.findOne({ email });
@@ -2038,19 +2038,19 @@ publTempController.submitEmptyData = async (req, res) => {
       throw new Error('Published template not found');
     }
 
-    // Solo el productor responsable puede enviar en ceros
+    // Cualquier dependencia productora puede reportar en cero (sin envío a SNIES)
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
-    const userDependencyIds = userDependencies.map(dep => dep._id.toString());
 
-    const rawResponsibleSubmit = pubTem.responsible_producers?.length > 0
-      ? pubTem.responsible_producers
-      : pubTem.template?.responsible_producers;
-    const responsibleProducers = (rawResponsibleSubmit || []).map(id => id.toString());
-    if (responsibleProducers.length > 0) {
-      const isResponsible = userDependencyIds.some(id => responsibleProducers.includes(id));
-      if (!isResponsible) {
-        return res.status(403).json({ status: 'Solo el productor responsable puede enviar información en esta plantilla' });
+    // producers puede estar poblado (objetos Dependency) o como ObjectIds; comparar por dep_code es lo más seguro
+    const producerDepCodes = (pubTem.template?.producers || [])
+      .map(p => (typeof p === 'object' && p !== null) ? (p.dep_code ?? null) : null)
+      .filter(Boolean);
+
+    if (producerDepCodes.length > 0) {
+      const isProducer = allUserDependencies.some(code => producerDepCodes.includes(code));
+      if (!isProducer) {
+        return res.status(403).json({ status: 'Solo los productores de esta plantilla pueden reportar en cero' });
       }
     }
 
@@ -2074,7 +2074,7 @@ publTempController.submitEmptyData = async (req, res) => {
     }
 
     await pubTem.save();
-    
+
     // Audit log
     await auditLogger.logCreate(req, user, 'publishedTemplateEmptyData', {
       publishedTemplateId: pubTemId,
@@ -2083,7 +2083,7 @@ publTempController.submitEmptyData = async (req, res) => {
     });
 
     notifyResponsibleProducersOnUpload(pubTem, user, userDependencies);
-    
+
     return res.status(200).json({ status: 'Data loaded successfully' });
   } catch (error) {
     console.log(error.message);
