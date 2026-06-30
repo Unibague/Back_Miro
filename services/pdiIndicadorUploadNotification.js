@@ -8,24 +8,24 @@ const { getEmailConfig } = require('../config/emailConfig');
 const User = require('../models/users');
 
 const buildEmailHtmlResponsable = (respuesta, indicador) => {
-  const indicadorCodigo = indicador?.codigo || 'Sin código';
-  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
+  const indicadorNombre = indicador?.nombre || indicador?.name || 'Sin nombre';
   const corteName = respuesta.corte || 'Sin corte';
 
   return `
     <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
         <tr><td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
             
             <!-- Header -->
-            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
-              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
-              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Información Registrada</h1>
+            <tr><td style="background:#1e3a5f;padding:30px 20px;text-align:left;">
+              <div style="font-size:11px;color:#8899aa;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:20px;line-height:1.3;font-weight:600;color:#ffffff;">Información Registrada</h1>
             </td></tr>
             
             <!-- Body -->
-            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+            <tr><td style="padding:30px 20px;color:#2c3e50;line-height:1.7;">
               
               <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado colaborador,</p>
               
@@ -35,52 +35,36 @@ const buildEmailHtmlResponsable = (respuesta, indicador) => {
 
               <!-- Status Section -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
-                <tr><td style="padding:20px 0;">
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td style="width:40%;padding-right:20px;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado Actual</div>
-                        <div style="font-size:18px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
-                      </td>
-                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Próximo Paso</div>
-                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">Revisión del líder</div>
-                      </td>
-                    </tr>
-                  </table>
+                <tr><td style="padding:20px 0;text-align:center;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Estado Actual</div>
+                  <div style="font-size:24px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
                 </td></tr>
               </table>
 
-              <!-- Details -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
-                <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
-                      </tr>
-                    </table>
+              <!-- Details Table -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+                <tr style="background:#f9fafb;">
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Indicador</div>
+                  </td>
+                  <td style="padding:12px 16px;width:60%;">
+                    <div style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Descripción</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${indicadorNombre}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Corte/Período</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${corteName}</div>
                   </td>
                 </tr>
               </table>
@@ -110,7 +94,7 @@ const buildEmailHtmlResponsable = (respuesta, indicador) => {
             </td></tr>
             
             <!-- Footer -->
-            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+            <tr><td style="background:#f9fafb;padding:15px 20px;border-top:1px solid #e5e7eb;text-align:center;">
               <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
                 Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
               </p>
@@ -124,24 +108,24 @@ const buildEmailHtmlResponsable = (respuesta, indicador) => {
 };
 
 const buildEmailHtmlForAdmin = (respuesta, formulario, indicador, liderNombre) => {
-  const indicadorCodigo = indicador?.codigo || 'Sin código';
-  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
+  const indicadorNombre = indicador?.nombre || indicador?.name || 'Sin nombre';
   const corteName = respuesta.corte || 'Sin corte';
 
   return `
     <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
         <tr><td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
             
             <!-- Header -->
-            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
-              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
-              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
+            <tr><td style="background:#1e3a5f;padding:30px 20px;text-align:left;">
+              <div style="font-size:11px;color:#8899aa;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:20px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
             </td></tr>
             
             <!-- Body -->
-            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+            <tr><td style="padding:30px 20px;color:#2c3e50;line-height:1.7;">
               
               <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado Administrador,</p>
               
@@ -151,62 +135,46 @@ const buildEmailHtmlForAdmin = (respuesta, formulario, indicador, liderNombre) =
 
               <!-- Status Section -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
-                <tr><td style="padding:20px 0;">
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td style="width:40%;padding-right:20px;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado</div>
-                        <div style="font-size:18px;color:#16a34a;font-weight:700;">APROBADO</div>
-                      </td>
-                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Por Evaluador</div>
-                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">Líder del Macroproyecto</div>
-                      </td>
-                    </tr>
-                  </table>
+                <tr><td style="padding:20px 0;text-align:center;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Estado</div>
+                  <div style="font-size:24px;color:#16a34a;font-weight:700;margin-bottom:20px;">APROBADO</div>
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Por Evaluador</div>
+                  <div style="font-size:14px;color:#2c3e50;font-weight:600;">Líder del Macroproyecto</div>
                 </td></tr>
               </table>
 
-              <!-- Details -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
-                <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
-                      </tr>
-                    </table>
+              <!-- Details Table -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+                <tr style="background:#f9fafb;">
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Indicador</div>
+                  </td>
+                  <td style="padding:12px 16px;width:60%;">
+                    <div style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Descripción</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${indicadorNombre}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Corte/Período</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${corteName}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td>
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Evaluador</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${liderNombre || 'Líder del Macroproyecto'}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Evaluador</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${liderNombre || 'Líder del Macroproyecto'}</div>
                   </td>
                 </tr>
               </table>
@@ -236,7 +204,7 @@ const buildEmailHtmlForAdmin = (respuesta, formulario, indicador, liderNombre) =
             </td></tr>
             
             <!-- Footer -->
-            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+            <tr><td style="background:#f9fafb;padding:15px 20px;border-top:1px solid #e5e7eb;text-align:center;">
               <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
                 Mensaje automático del sistema. No responder.
               </p>
@@ -250,24 +218,24 @@ const buildEmailHtmlForAdmin = (respuesta, formulario, indicador, liderNombre) =
 };
 
 const buildEmailHtmlForLeader = (respuesta, formulario, indicador) => {
-  const indicadorCodigo = indicador?.codigo || 'Sin código';
-  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
+  const indicadorNombre = indicador?.nombre || indicador?.name || 'Sin nombre';
   const corteName = respuesta.corte || 'Sin corte';
 
   return `
     <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
         <tr><td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
             
             <!-- Header -->
-            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
-              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
-              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación Pendiente</h1>
+            <tr><td style="background:#1e3a5f;padding:30px 20px;text-align:left;">
+              <div style="font-size:11px;color:#8899aa;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:20px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación Pendiente</h1>
             </td></tr>
             
             <!-- Body -->
-            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+            <tr><td style="padding:30px 20px;color:#2c3e50;line-height:1.7;">
               
               <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado Líder del Macroproyecto,</p>
               
@@ -277,48 +245,36 @@ const buildEmailHtmlForLeader = (respuesta, formulario, indicador) => {
 
               <!-- Status Section -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
-                <tr><td style="padding:20px 0;">
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td style="width:100%;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado</div>
-                        <div style="font-size:18px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
-                      </td>
-                    </tr>
-                  </table>
+                <tr><td style="padding:20px 0;text-align:center;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Estado</div>
+                  <div style="font-size:24px;color:#f59e0b;font-weight:700;">PENDIENTE</div>
                 </td></tr>
               </table>
 
-              <!-- Details -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
-                <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
-                      </tr>
-                    </table>
+              <!-- Details Table -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+                <tr style="background:#f9fafb;">
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Indicador</div>
+                  </td>
+                  <td style="padding:12px 16px;width:60%;">
+                    <div style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Descripción</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${indicadorNombre}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td>
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Corte/Período</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${corteName}</div>
                   </td>
                 </tr>
               </table>
@@ -348,7 +304,7 @@ const buildEmailHtmlForLeader = (respuesta, formulario, indicador) => {
             </td></tr>
             
             <!-- Footer -->
-            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+            <tr><td style="background:#f9fafb;padding:15px 20px;border-top:1px solid #e5e7eb;text-align:center;">
               <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
                 Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
               </p>
@@ -362,8 +318,8 @@ const buildEmailHtmlForLeader = (respuesta, formulario, indicador) => {
 };
 
 const buildEmailHtmlEvaluation = (respuesta, formulario, indicador, estado, comentario) => {
-  const indicadorCodigo = indicador?.codigo || 'Sin código';
-  const indicadorNombre = indicador?.nombre || 'Sin nombre';
+  const indicadorCodigo = indicador?.codigo || indicador?.code || 'Sin código';
+  const indicadorNombre = indicador?.nombre || indicador?.name || 'Sin nombre';
   const corteName = respuesta.corte || 'Sin corte';
 
   // Determinar colores y mensajes según el estado
@@ -377,18 +333,18 @@ const buildEmailHtmlEvaluation = (respuesta, formulario, indicador, estado, come
 
   return `
     <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
-      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:40px 20px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
         <tr><td align="center">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
             
             <!-- Header -->
-            <tr><td style="background:#1e3a5f;padding:40px 30px;text-align:left;">
-              <div style="font-size:11px;color:#ffffff;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
-              <h1 style="margin:0;font-size:24px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
+            <tr><td style="background:#1e3a5f;padding:30px 20px;text-align:left;">
+              <div style="font-size:11px;color:#8899aa;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:20px;line-height:1.3;font-weight:600;color:#ffffff;">Evaluación de Indicador</h1>
             </td></tr>
             
             <!-- Body -->
-            <tr><td style="padding:40px 30px;color:#2c3e50;line-height:1.7;">
+            <tr><td style="padding:30px 20px;color:#2c3e50;line-height:1.7;">
               
               <p style="margin:0 0 20px;font-size:15px;color:#2c3e50;">Estimado colaborador,</p>
               
@@ -398,52 +354,38 @@ const buildEmailHtmlEvaluation = (respuesta, formulario, indicador, estado, come
 
               <!-- Status Section -->
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
-                <tr><td style="padding:20px 0;">
-                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                    <tr>
-                      <td style="width:40%;padding-right:20px;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Estado de Evaluación</div>
-                        <div style="font-size:18px;color:${statusColor};font-weight:700;">${statusText}</div>
-                      </td>
-                      <td style="width:60%;padding-left:20px;border-left:1px solid #e5e7eb;">
-                        <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Acción Requerida</div>
-                        <div style="font-size:14px;color:#2c3e50;font-weight:600;">${actionText}</div>
-                      </td>
-                    </tr>
-                  </table>
+                <tr><td style="padding:20px 0;text-align:center;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Estado de Evaluación</div>
+                  <div style="font-size:24px;color:${statusColor};font-weight:700;margin-bottom:20px;">${statusText}</div>
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Acción Requerida</div>
+                  <div style="font-size:14px;color:#2c3e50;font-weight:600;">${actionText}</div>
                 </td></tr>
               </table>
 
-              <!-- Details -->
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;">
-                <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Indicador</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</span></td>
-                      </tr>
-                    </table>
+              <!-- Details Table -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+                <tr style="background:#f9fafb;">
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Indicador</div>
+                  </td>
+                  <td style="padding:12px 16px;width:60%;">
+                    <div style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td style="padding-bottom:16px;">
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Descripción</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${indicadorNombre}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Descripción</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${indicadorNombre}</div>
                   </td>
                 </tr>
                 <tr>
-                  <td>
-                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
-                      <tr>
-                        <td style="width:30%;"><span style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;">Corte/Período</span></td>
-                        <td style="width:70%;"><span style="font-size:14px;color:#475569;">${corteName}</span></td>
-                      </tr>
-                    </table>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Corte/Período</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${corteName}</div>
                   </td>
                 </tr>
               </table>
@@ -481,7 +423,7 @@ const buildEmailHtmlEvaluation = (respuesta, formulario, indicador, estado, come
             </td></tr>
             
             <!-- Footer -->
-            <tr><td style="background:#f9fafb;padding:20px 30px;border-top:1px solid #e5e7eb;text-align:center;">
+            <tr><td style="background:#f9fafb;padding:15px 20px;border-top:1px solid #e5e7eb;text-align:center;">
               <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
                 Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
               </p>
