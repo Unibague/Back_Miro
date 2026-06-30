@@ -213,7 +213,14 @@ function crearTabla(headers, filas, options = {}) {
 }
 
 // ── Tabla de periodos ──────────────────────────────────────────────────────────────
-function tablaPeriodos(periodos = []) {
+function resolverEstadoPeriodo(p, corteActivo) {
+    const estado = p.estado_reporte ?? '';
+    if (estado === 'Enviado' || estado === 'Aprobado' || estado === 'Rechazado') return estado;
+    if (corteActivo && normalizeCorte(p.periodo) === normalizeCorte(corteActivo)) return 'Pendiente';
+    return 'Periodo no activo';
+}
+
+function tablaPeriodos(periodos = [], corteActivo = null) {
     if (!periodos.length) return [];
     return [
         new Paragraph({ spacing: { before: 100, after: 60 }, children: [new TextRun({ text: 'Periodos reportados', bold: true })] }),
@@ -223,7 +230,7 @@ function tablaPeriodos(periodos = []) {
                 p.periodo,
                 p.meta,
                 p.avance,
-                p.estado_reporte ?? 'Borrador',
+                resolverEstadoPeriodo(p, corteActivo),
                 p.reportado_por,
                 p.fecha_envio ? new Date(p.fecha_envio).toLocaleDateString('es-CO') : '—',
             ]),
@@ -410,7 +417,7 @@ function seccionIndicador(ind, respuestasInd = [], corte = null) {
         campo('Avance actual', `${ind.avance_total_real ?? ind.avance ?? 0}%`),
         campo('Meta final', ind.meta_final_2029),
         campo('Tipo de cálculo', ind.tipo_calculo),
-        ...tablaPeriodos(periodosAMostrar),
+        ...tablaPeriodos(periodosAMostrar, corte),
     ];
 
     // Campos cualitativos por periodo
