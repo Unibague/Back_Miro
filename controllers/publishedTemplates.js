@@ -56,27 +56,8 @@ const collectValidatorsForTemplate = async (templateData, periodId) => {
 const validatorValueToPlain = (value) => {
   if (value && typeof value === 'object' && value.$numberInt !== undefined) return value.$numberInt;
   if (value && typeof value === 'object' && value.$numberDouble !== undefined) return value.$numberDouble;
+  if (value && typeof value === 'object' && value.value !== undefined) return value.value;
   return value;
-};
-
-const validatorRowsFromColumns = (columns = []) => (
-  (columns || []).reduce((acc, col) => {
-    (col.values || []).forEach((value, index) => {
-      if (!acc[index]) acc[index] = {};
-      acc[index][col.name] = validatorValueToPlain(value);
-    });
-    return acc;
-  }, [])
-);
-
-const splitValidateWithReference = (validateWith) => {
-  const text = validateWithToText(validateWith);
-  const parts = text.split(' - ');
-  return {
-    text,
-    validatorName: (parts[0] || '').trim(),
-    columnName: parts.slice(1).join(' - ').trim(),
-  };
 };
 
 const normalizeValidatorText = (value = '') =>
@@ -89,6 +70,79 @@ const normalizeValidatorText = (value = '') =>
 const isValidatorDescriptionColumn = (columnName = '') => {
   const normalized = normalizeValidatorText(columnName);
   return normalized.includes('DESCRIPCION') || normalized.includes('NOMBRE') || normalized.startsWith('DESC');
+};
+
+const isValidatorCodeColumn = (columnName = '') => {
+  const normalized = normalizeValidatorText(columnName).replace(/[^A-Z0-9]+/g, '_');
+  return normalized === 'ID' || normalized.startsWith('ID_') || normalized.includes('CODIGO') || normalized === 'CODIGO';
+};
+
+const formatValidatorDisplayOption = (code, description) => {
+  const codeText = String(validatorValueToPlain(code) ?? '').trim();
+  const descriptionText = String(validatorValueToPlain(description) ?? '').trim();
+  if (codeText && descriptionText) return `${codeText} - ${descriptionText}`;
+  return codeText || descriptionText;
+};
+
+const getValidatorDisplayPair = (columns = []) => {
+  const descriptionColumn = (columns || []).find((column) => isValidatorDescriptionColumn(column?.name));
+  if (!descriptionColumn) return null;
+
+  const codeColumn =
+    (columns || []).find((column) => column !== descriptionColumn && column?.is_validator && !isValidatorDescriptionColumn(column?.name)) ||
+    (columns || []).find((column) => column !== descriptionColumn && isValidatorCodeColumn(column?.name)) ||
+    (columns || []).find((column) => column !== descriptionColumn && !isValidatorDescriptionColumn(column?.name));
+
+  if (!codeColumn) return null;
+  return { codeColumn, descriptionColumn };
+};
+
+const getValidatorDisplayValuesForColumn = (columns = [], column = {}) => {
+  const pair = getValidatorDisplayPair(columns);
+  if (!pair) return (column.values || []).map(validatorValueToPlain);
+
+  const columnName = normalizeValidatorText(column?.name);
+  const isDisplayColumn = [pair.codeColumn?.name, pair.descriptionColumn?.name]
+    .some((name) => normalizeValidatorText(name) === columnName);
+  if (!isDisplayColumn) return (column.values || []).map(validatorValueToPlain);
+
+  const maxLength = Math.max(
+    pair.codeColumn?.values?.length || 0,
+    pair.descriptionColumn?.values?.length || 0
+  );
+
+  return Array.from({ length: maxLength }, (_, index) => (
+    formatValidatorDisplayOption(
+      pair.codeColumn?.values?.[index],
+      pair.descriptionColumn?.values?.[index]
+    )
+  ));
+};
+
+const validatorRowsFromColumns = (columns = []) => (
+  (columns || []).reduce((acc, col) => {
+    const displayValues = getValidatorDisplayValuesForColumn(columns, col);
+    const maxLength = Math.max(col.values?.length || 0, displayValues.length);
+    for (let index = 0; index < maxLength; index += 1) {
+      if (!acc[index]) acc[index] = {};
+      const displayValue = displayValues[index];
+      const rawValue = col.values?.[index];
+      acc[index][col.name] = displayValue !== undefined && displayValue !== ''
+        ? displayValue
+        : validatorValueToPlain(rawValue);
+    }
+    return acc;
+  }, [])
+);
+
+const splitValidateWithReference = (validateWith) => {
+  const text = validateWithToText(validateWith);
+  const parts = text.split(' - ');
+  return {
+    text,
+    validatorName: (parts[0] || '').trim(),
+    columnName: parts.slice(1).join(' - ').trim(),
+  };
 };
 
 const addValidatorToResponseMap = (validatorsMap, validator) => {
@@ -136,7 +190,8 @@ const enrichFieldWithCurrentValidator = async (field, periodId, validatorsMap) =
       id: String(validator._id || validator.name),
       name: optName,
     },
-    validator_values: (column.values || []).map(validatorValueToPlain),
+    validator_values: getValidatorDisplayValuesForColumn(validator.columns || [], column),
+    validator_raw_values: (column.values || []).map(validatorValueToPlain),
     validator_type: column.type,
   };
 };
@@ -681,6 +736,20 @@ const convertHyperlinkToText = (value) => {
   // Manejar valores null, undefined o proxy revocados
   if (value === null || value === undefined) {
     return '';
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (
+      (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+      /"?(richText|hyperlink|text|result|formula|value)"?\s*:/.test(trimmed)
+    ) {
+      try {
+        return convertHyperlinkToText(JSON.parse(trimmed));
+      } catch (_) {
+        // No es JSON vÃ¡lido; continuar con el texto original.
+      }
+    }
   }
   
   // Detectar proxy revocado

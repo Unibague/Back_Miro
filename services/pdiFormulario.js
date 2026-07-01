@@ -165,6 +165,9 @@ const getRefId = (value) => {
     return String(value);
 };
 
+const normalizeEmail = (value = '') => String(value || '').toLowerCase().trim();
+const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const buildEvaluacionUrl = ({ indicadorId, formularioId, respuestaId, modo }) => {
     const params = new URLSearchParams();
     if (indicadorId) params.set('indicador_id', indicadorId);
@@ -261,9 +264,10 @@ const rollbackDocumentosSubidos = async (respuestaId, uploadedFiles = []) => {
 };
 
 const getLiderEmailForIndicador = async (indicador_id) => {
-    if (!indicador_id) return '';
+    const indicadorId = getRefId(indicador_id);
+    if (!indicadorId) return '';
     try {
-        const ind = await Indicador.findById(indicador_id).select('accion_id');
+        const ind = await Indicador.findById(indicadorId).select('accion_id');
         if (!ind?.accion_id) return '';
         const acc = await Accion.findById(ind.accion_id).select('proyecto_id');
         if (!acc?.proyecto_id) return '';
@@ -273,20 +277,21 @@ const getLiderEmailForIndicador = async (indicador_id) => {
         
         // Soporte para múltiples líderes
         if (macro?.lideres && Array.isArray(macro.lideres) && macro.lideres.length > 0) {
-            return (macro.lideres[0].email ?? '').toLowerCase().trim();
+            return normalizeEmail(macro.lideres[0].email);
         }
         // Fallback a lider_email antiguo
-        return (macro?.lider_email ?? '').toLowerCase().trim();
+        return normalizeEmail(macro?.lider_email);
     } catch {
         return '';
     }
 }
 
 // Nueva función para obtener todos los líderes de un indicador
-getLideresEmailsForIndicador = async (indicador_id) => {
-    if (!indicador_id) return [];
+const getLideresEmailsForIndicador = async (indicador_id) => {
+    const indicadorId = getRefId(indicador_id);
+    if (!indicadorId) return [];
     try {
-        const ind = await Indicador.findById(indicador_id).select('accion_id');
+        const ind = await Indicador.findById(indicadorId).select('accion_id');
         if (!ind?.accion_id) return [];
         const acc = await Accion.findById(ind.accion_id).select('proyecto_id');
         if (!acc?.proyecto_id) return [];
@@ -297,11 +302,11 @@ getLideresEmailsForIndicador = async (indicador_id) => {
         // Soporte para múltiples líderes
         if (macro?.lideres && Array.isArray(macro.lideres) && macro.lideres.length > 0) {
             return macro.lideres
-                .map(l => (l.email ?? '').toLowerCase().trim())
+                .map(l => normalizeEmail(l.email))
                 .filter(email => email.length > 0);
         }
         // Fallback a lider_email antiguo
-        const singleEmail = (macro?.lider_email ?? '').toLowerCase().trim();
+        const singleEmail = normalizeEmail(macro?.lider_email);
         return singleEmail ? [singleEmail] : [];
     } catch {
         return [];
@@ -367,6 +372,7 @@ const getRespuestas = async ({ formulario_id, indicador_id, respondido_por, cort
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre')
         .sort({ createdAt: -1 });
+    await autoApproveLeaderSubmittedResponses(docs);
     return hydrateWordDocuments(docs);
 };
 
@@ -374,10 +380,38 @@ const getRespuestaById = async (id) => {
     const doc = await Respuesta.findById(id)
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre');
+    await autoApproveLeaderSubmittedResponses(doc);
     return hydrateWordDocuments(doc);
 };
 
 const normalizePeriodo = (value) => String(value ?? '').trim().toUpperCase();
+
+const PLANEACION_EVALUATED_STATES = ['Validado', 'Devuelto'];
+
+const buildIndicadorCorteKey = (indicadorId, corte) =>
+    `${String(indicadorId || '')}::${normalizePeriodo(corte)}`;
+
+const getRespuestaIndicadorId = (doc) => getRefId(doc?.indicador_id);
+
+const filterOutPlaneacionEvaluatedReports = async (docs = []) => {
+    if (!docs.length) return docs;
+
+    const indicadorIds = [...new Set(docs.map(getRespuestaIndicadorId).filter(Boolean))];
+    if (!indicadorIds.length) return docs;
+
+    const evaluatedDocs = await Respuesta.find({
+        indicador_id: { $in: indicadorIds },
+        aval_planeacion: { $in: PLANEACION_EVALUATED_STATES },
+    }).select('indicador_id corte aval_planeacion').lean();
+
+    const evaluatedKeys = new Set(
+        evaluatedDocs.map((doc) => buildIndicadorCorteKey(doc.indicador_id, doc.corte))
+    );
+
+    return docs.filter((doc) => (
+        !evaluatedKeys.has(buildIndicadorCorteKey(getRespuestaIndicadorId(doc), doc.corte))
+    ));
+};
 
 const syncPeriodoReporte = async ({
     indicador_id,
@@ -408,6 +442,63 @@ const syncPeriodoReporte = async ({
     await indicador.save();
 };
 
+const isResponderLeaderForIndicador = async (indicadorId, email) => {
+    const responderEmail = normalizeEmail(email);
+    if (!indicadorId || !responderEmail) return false;
+
+    const lideresEmails = await getLideresEmailsForIndicador(indicadorId);
+    return lideresEmails.includes(responderEmail);
+};
+
+const autoApproveIfResponderIsLeader = async (doc) => {
+    if (!doc || doc.estado !== 'Enviado') return false;
+    if (doc.estado_aval !== 'Pendiente' && doc.estado_aval != null) return false;
+    if (PLANEACION_EVALUATED_STATES.includes(doc.aval_planeacion)) return false;
+
+    const responderEmail = normalizeEmail(doc.respondido_por);
+    const indicadorId = getRefId(doc.indicador_id);
+    const isLeader = await isResponderLeaderForIndicador(indicadorId, responderEmail);
+    if (!isLeader) return false;
+
+    doc.lider_email_aval = responderEmail;
+    doc.estado_aval = 'Aprobado';
+    doc.aval_por = doc.aval_por || doc.respondido_por || responderEmail;
+    doc.aval_comentario = '';
+    doc.aval_fecha = doc.aval_fecha || new Date();
+    doc.aval_planeacion = doc.aval_planeacion || 'Pendiente';
+    doc.aval_planeacion_por = '';
+    doc.aval_planeacion_comentario = '';
+    doc.aval_planeacion_fecha = null;
+    await doc.save();
+
+    await syncPeriodoReporte({
+        indicador_id: indicadorId,
+        corte: doc.corte,
+        estado_reporte: 'Aprobado',
+        reportado_por: doc.respondido_por,
+        fecha_envio: doc.fecha_envio ?? new Date(),
+    });
+
+    return true;
+};
+
+const autoApproveLeaderSubmittedResponses = async (docs = []) => {
+    const list = Array.isArray(docs) ? docs : [docs].filter(Boolean);
+    for (const doc of list) {
+        await autoApproveIfResponderIsLeader(doc);
+    }
+    return docs;
+};
+
+const autoApproveAllPendingLeaderSubmittedResponses = async () => {
+    const docs = await Respuesta.find({
+        estado: 'Enviado',
+        $or: [{ estado_aval: 'Pendiente' }, { estado_aval: null }],
+        aval_planeacion: { $nin: PLANEACION_EVALUATED_STATES },
+    });
+    return autoApproveLeaderSubmittedResponses(docs);
+};
+
 // Crea o actualiza la respuesta de un responsable para un formulario+corte
 const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, corte, respuestas, estado }) => {
     const existing = await Respuesta.findOne({ formulario_id, indicador_id: indicador_id || null, respondido_por, corte });
@@ -427,16 +518,19 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     }
 
     if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
-        const liderEmail = (
-            await getLiderEmailForIndicador(indicador_id)
-            || existing?.lider_email_aval
-            || ''
-        ).toLowerCase().trim();
+        const lideresEmails = [
+            ...new Set([
+                ...(await getLideresEmailsForIndicador(indicador_id)),
+                normalizeEmail(existing?.lider_email_aval),
+            ].filter(Boolean)),
+        ];
+        const responderEmail = normalizeEmail(respondido_por);
+        const liderEmail = lideresEmails[0] || normalizeEmail(existing?.lider_email_aval);
         if (liderEmail) {
-            const respondeElMismoLider = liderEmail === String(respondido_por ?? '').toLowerCase().trim();
+            const respondeElMismoLider = lideresEmails.includes(responderEmail);
             avalData = respondeElMismoLider
                 ? {
-                    lider_email_aval: liderEmail,
+                    lider_email_aval: responderEmail || liderEmail,
                     estado_aval: 'Aprobado',
                     aval_por: respondido_por,
                     aval_comentario: '',
@@ -768,7 +862,11 @@ const marcarComentarioCampoResuelto = async (respuestaId, campoId, resuelto = fa
 const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
     const doc = await Respuesta.findById(respuestaId);
     if (!doc) throw new Error('Respuesta no encontrada');
-    if (doc.estado_aval !== 'Aprobado') throw new Error('Solo se pueden evaluar respuestas aprobadas por el líder');
+    // Auto-aprobación si el responsable es el líder y aún no fue aprobado
+    if (doc.estado_aval !== 'Aprobado') {
+        const autoApproved = await autoApproveIfResponderIsLeader(doc);
+        if (!autoApproved) throw new Error('Solo se pueden evaluar respuestas aprobadas por el líder');
+    }
     if (!['Validado', 'Devuelto'].includes(estado)) throw new Error('estado debe ser Validado o Devuelto');
     doc.aval_planeacion            = estado;
     doc.aval_planeacion_por        = por ?? '';
@@ -801,14 +899,15 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
 
 // Retorna todas las respuestas pendientes de aval para un lider (en CUALQUIER posición del array)
 const getRespuestasPendientesAval = async (lider_email) => {
-    const email = lider_email.toLowerCase().trim();
+    const email = normalizeEmail(lider_email);
+    const emailRegex = new RegExp(`^${escapeRegExp(email)}$`, 'i');
     
     // CORRECCIÓN: Buscar respuestas donde el usuario es líder del macroproyecto
     // Ya sea en lider_email_aval (legacy) o si está en el array lideres del macro
     const macrosDelLider = await Macroproyecto.find({
         $or: [
-            { lider_email: email },
-            { 'lideres.email': email }
+            { lider_email: emailRegex },
+            { 'lideres.email': emailRegex }
         ]
     }).select('_id');
     
@@ -828,12 +927,15 @@ const getRespuestasPendientesAval = async (lider_email) => {
     const docs = await Respuesta.find({ 
         indicador_id: { $in: indicadorIds },
         estado_aval: 'Pendiente',
-        lider_email_aval: email  // El usuario es el líder asignado
+        aval_planeacion: { $nin: PLANEACION_EVALUATED_STATES },
     })
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre')
         .sort({ createdAt: -1 });
-    return docs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
+    await autoApproveLeaderSubmittedResponses(docs);
+    const pendingDocs = (await filterOutPlaneacionEvaluatedReports(docs))
+        .filter((doc) => doc.estado_aval === 'Pendiente');
+    return pendingDocs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
 };
 
 // Retorna respuestas enviadas que aun esperan evaluacion del lider de macroproyecto
@@ -841,16 +943,22 @@ const getRespuestasPendientesLider = async () => {
     const docs = await Respuesta.find({
         estado: 'Enviado',
         estado_aval: 'Pendiente',
+        aval_planeacion: { $nin: PLANEACION_EVALUATED_STATES },
     })
         .populate('formulario_id', 'nombre campos')
         .populate('indicador_id', 'codigo nombre responsable responsable_email')
         .sort({ fecha_envio: -1, createdAt: -1 });
 
-    return docs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
+    await autoApproveLeaderSubmittedResponses(docs);
+    const pendingDocs = (await filterOutPlaneacionEvaluatedReports(docs))
+        .filter((doc) => doc.estado_aval === 'Pendiente');
+    return pendingDocs.map((doc) => withEvaluacionNavigation(doc, 'lider'));
 };
 
 // Retorna respuestas aprobadas por lider que aun debe evaluar Planeacion
 const getRespuestasPendientesPlaneacion = async () => {
+    await autoApproveAllPendingLeaderSubmittedResponses();
+
     const docs = await Respuesta.find({
         estado: 'Enviado',
         estado_aval: 'Aprobado',
@@ -864,7 +972,8 @@ const getRespuestasPendientesPlaneacion = async () => {
         .populate('indicador_id', 'codigo nombre responsable responsable_email')
         .sort({ aval_fecha: -1, fecha_envio: -1, createdAt: -1 });
 
-    return docs.map((doc) => withEvaluacionNavigation(doc, 'planeacion'));
+    const pendingDocs = await filterOutPlaneacionEvaluatedReports(docs);
+    return pendingDocs.map((doc) => withEvaluacionNavigation(doc, 'planeacion'));
 };
 
 module.exports = {
@@ -873,4 +982,5 @@ module.exports = {
     avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
     getRespuestasPendientesAval, getRespuestasPendientesLider, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
     getLideresEmailsForIndicador,
+    autoApproveAllPendingLeaderSubmittedResponses,
 };

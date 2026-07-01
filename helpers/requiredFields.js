@@ -32,9 +32,18 @@ const isRequiredComment = (comment) => {
 };
 
 const getEffectiveRequired = (field = {}) => {
-  if (Boolean(field?.required)) return true;
   const comment = field?.comment;
-  if (typeof comment !== 'string' || !comment.trim()) return false;
+  const hasComment = typeof comment === 'string' && comment.trim();
+  const isWorkbookField = Boolean(field?.locked)
+    || field?.field_origin === 'snies_original'
+    || field?.header_row !== undefined
+    || field?.column !== undefined;
+
+  // Imported workbook headers historically defaulted required=true. For those
+  // fields, the Excel cell note/comment is the reliable source of truth.
+  if (isWorkbookField && hasComment) return isRequiredComment(comment);
+  if (Boolean(field?.required)) return true;
+  if (!hasComment) return false;
   // Simple direct check for standard Spanish text
   const lower = comment.toLowerCase();
   for (const w of ['obligatorio', 'obligatario']) {

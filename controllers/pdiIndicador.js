@@ -1,4 +1,5 @@
 const Indicador = require('../models/pdiIndicador');
+const RespuestaFormulario = require('../models/pdiFormularioRespuesta');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
@@ -7,6 +8,97 @@ const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('..
 const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
 const Historial = require('../models/pdiIndicadorHistorial');
 const User = require('../models/users');
+const {
+    autoApproveAllPendingLeaderSubmittedResponses,
+} = require('../services/pdiFormulario');
+
+const normalizePeriodoKey = (value) => String(value ?? '').trim().toUpperCase();
+
+const getEstadoReporteFromRespuesta = (respuesta = {}) => {
+    if (respuesta.aval_planeacion === 'Validado') return 'Validado';
+    if (respuesta.estado_aval === 'Aprobado') return 'Aprobado';
+    if (respuesta.estado_aval === 'Rechazado') return 'Rechazado';
+    if (respuesta.estado === 'Enviado') return 'Enviado';
+    return null;
+};
+
+const ESTADO_REPORTE_PRIORITY = {
+    Enviado: 1,
+    Rechazado: 1,
+    Aprobado: 2,
+    Validado: 3,
+};
+
+async function applyRespuestaStateToIndicadores(input) {
+    const docs = Array.isArray(input) ? input : [input].filter(Boolean);
+    if (!docs.length) return input;
+
+    const ids = docs.map((doc) => String(doc?._id || '')).filter(Boolean);
+    if (!ids.length) return input;
+
+    const respuestas = await RespuestaFormulario.find({
+        indicador_id: { $in: ids },
+        estado: 'Enviado',
+    }).select('indicador_id corte estado estado_aval aval_planeacion fecha_envio respondido_por').lean();
+
+    if (!respuestas.length) return input;
+
+    const estadosPorIndicadorCorte = new Map();
+    respuestas.forEach((respuesta) => {
+        const indicadorId = String(respuesta.indicador_id || '');
+        const corte = normalizePeriodoKey(respuesta.corte);
+        const estadoReporte = getEstadoReporteFromRespuesta(respuesta);
+        if (!indicadorId || !corte || !estadoReporte) return;
+
+        const key = `${indicadorId}::${corte}`;
+        const current = estadosPorIndicadorCorte.get(key);
+        if (
+            current &&
+            (ESTADO_REPORTE_PRIORITY[current.estado_reporte] || 0) >= (ESTADO_REPORTE_PRIORITY[estadoReporte] || 0)
+        ) {
+            return;
+        }
+        estadosPorIndicadorCorte.set(key, {
+            estado_reporte: estadoReporte,
+            fecha_envio: respuesta.fecha_envio,
+            reportado_por: respuesta.respondido_por,
+        });
+    });
+
+    for (const doc of docs) {
+        if (!Array.isArray(doc.periodos)) continue;
+
+        let changed = false;
+        doc.periodos.forEach((periodo) => {
+            const estado = estadosPorIndicadorCorte.get(`${String(doc?._id || '')}::${normalizePeriodoKey(periodo.periodo)}`);
+            if (!estado) return;
+
+            if (periodo.estado_reporte !== estado.estado_reporte) {
+                periodo.estado_reporte = estado.estado_reporte;
+                changed = true;
+            }
+            if (estado.fecha_envio && !periodo.fecha_envio) {
+                periodo.fecha_envio = estado.fecha_envio;
+                changed = true;
+            }
+            if (estado.reportado_por && !periodo.reportado_por) {
+                periodo.reportado_por = estado.reportado_por;
+                changed = true;
+            }
+        });
+
+        if (changed && typeof doc.save === 'function') {
+            doc.markModified('periodos');
+            await doc.save();
+        }
+    }
+
+    return input;
+}
+
+async function applyPlaneacionStateToIndicadores(input) {
+    return applyRespuestaStateToIndicadores(input);
+}
 
 function withCalculatedFields(doc) {
     const base = typeof doc.toObject === 'function' ? doc.toObject() : doc;
@@ -145,13 +237,15 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
             ? Math.round(Math.min(avanceActual / metaFinal, 1) * 100 * 100) / 100
             : 0);
 
-    const avance_total_real = tipo_calculo === 'ultimo_valor'
+    const avanceTotalRealRaw = tipo_calculo === 'ultimo_valor'
         ? avance
         : (metaFinal > 0
             ? Math.round((avanceActual / metaFinal) * 100 * 100) / 100
             : null);
+    const avance_total_real = avanceTotalRealRaw === null ? null : clampPercentage(avanceTotalRealRaw);
+    const avance_actual = clampPercentage(avance_total_real ?? avance);
 
-    return { avances_por_anio, avance, avance_total_real };
+    return { avances_por_anio, avance, avance_total_real, avance_actual };
 }
 
 async function recalcularAccion(accion_id) {
@@ -176,7 +270,7 @@ const ctrl = {};
 
 async function guardarHistorial(antes, despues, modificado_por = '') {
     try {
-        const camposIgnorar = ['updatedAt', 'createdAt', '__v', 'avances_por_anio', 'avance', 'avance_total_real'];
+        const camposIgnorar = ['updatedAt', 'createdAt', '__v', 'avances_por_anio', 'avance', 'avance_total_real', 'avance_actual'];
         const campos_cambiados = [];
 
         const comparar = (a, b, prefix = '') => {
@@ -218,6 +312,8 @@ ctrl.getAll = async (req, res) => {
         const query = {};
         if (req.query.accion_id) query.accion_id = req.query.accion_id;
         const docs = await Indicador.find(query).populate('accion_id', 'codigo nombre responsable responsable_email').sort({ codigo: 1 });
+        await autoApproveAllPendingLeaderSubmittedResponses();
+        await applyPlaneacionStateToIndicadores(docs);
         res.json(docs.map((doc) => withSemaforo(withCalculatedFields(doc))));
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });
@@ -228,6 +324,8 @@ ctrl.getById = async (req, res) => {
     try {
         const doc = await Indicador.findById(req.params.id).populate('accion_id', 'codigo nombre responsable responsable_email');
         if (!doc) return res.status(404).json({ error: 'No encontrado' });
+        await autoApproveAllPendingLeaderSubmittedResponses();
+        await applyPlaneacionStateToIndicadores(doc);
         res.json(withSemaforo(withCalculatedFields(doc)));
     } catch (e) {
         res.status(500).json({ error: 'Error interno' });

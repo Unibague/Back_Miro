@@ -55,14 +55,25 @@ const toPlainValidator = (validator) => {
 
 const getPeriodValidators = (period) => (period?.screenshot?.validators || []).map(toPlainValidator);
 
-const sameValidatorName = (a = '', b = '') => String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
-
 const normalizeValidatorLookup = (value = '') => String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+
+const normalizeValidatorNameKey = (value = '') => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+
+const sameValidatorName = (a = '', b = '') => (
+    String(a).trim().toLowerCase() === String(b).trim().toLowerCase() ||
+    normalizeValidatorNameKey(a) === normalizeValidatorNameKey(b)
+);
 
 const validateWithToText = (validateWith) => {
     if (!validateWith) return '';
@@ -96,6 +107,59 @@ const findValidatorColumn = (validator, columnName = '') => {
     return columns.find((column) => column?.is_validator) || columns[0];
 };
 
+const validatorValueToPlain = (value) => {
+    if (value && typeof value === 'object' && value.$numberInt !== undefined) return value.$numberInt;
+    if (value && typeof value === 'object' && value.$numberDouble !== undefined) return value.$numberDouble;
+    if (value && typeof value === 'object' && value.value !== undefined) return value.value;
+    return value;
+};
+
+const isValidatorCodeColumn = (columnName = '') => {
+    const normalized = normalizeValidatorLookup(columnName).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    return normalized === 'ID' || normalized.startsWith('ID_') || normalized.includes('CODIGO') || normalized === 'CODIGO';
+};
+
+const formatValidatorDisplayOption = (code, description) => {
+    const codeText = String(validatorValueToPlain(code) ?? '').trim();
+    const descriptionText = String(validatorValueToPlain(description) ?? '').trim();
+    if (codeText && descriptionText) return `${codeText} - ${descriptionText}`;
+    return codeText || descriptionText;
+};
+
+const getValidatorDisplayPair = (columns = []) => {
+    const descriptionColumn = (columns || []).find((column) => isDescriptionColumn(column?.name));
+    if (!descriptionColumn) return null;
+
+    const codeColumn =
+        (columns || []).find((column) => column !== descriptionColumn && column?.is_validator && !isDescriptionColumn(column?.name)) ||
+        (columns || []).find((column) => column !== descriptionColumn && isValidatorCodeColumn(column?.name)) ||
+        (columns || []).find((column) => column !== descriptionColumn && !isDescriptionColumn(column?.name));
+
+    if (!codeColumn) return null;
+    return { codeColumn, descriptionColumn };
+};
+
+const getValidatorDisplayValuesForColumn = (columns = [], column = {}) => {
+    const pair = getValidatorDisplayPair(columns);
+    if (!pair) return (column.values || []).map(validatorValueToPlain);
+
+    const isDisplayColumn = [pair.codeColumn?.name, pair.descriptionColumn?.name]
+        .some((name) => normalizeValidatorLookup(name) === normalizeValidatorLookup(column?.name));
+    if (!isDisplayColumn) return (column.values || []).map(validatorValueToPlain);
+
+    const maxLength = Math.max(
+        pair.codeColumn?.values?.length || 0,
+        pair.descriptionColumn?.values?.length || 0
+    );
+
+    return Array.from({ length: maxLength }, (_, index) => (
+        formatValidatorDisplayOption(
+            pair.codeColumn?.values?.[index],
+            pair.descriptionColumn?.values?.[index]
+        )
+    ));
+};
+
 const findValidatorInPeriod = (period, idOrName) => {
     const lookup = String(idOrName || '').trim();
     if (!lookup) return null;
@@ -126,6 +190,21 @@ const filterValidators = (validators, search = '') => {
     });
 };
 
+const findGlobalValidatorByName = async (validatorName = '') => {
+    const lookup = String(validatorName || '').trim();
+    if (!lookup) return null;
+
+    const escaped = lookup.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const exact = await Validator.findOne({ name: new RegExp(`^${escaped}$`, 'i') });
+    if (exact) return exact;
+
+    const normalizedLookup = normalizeValidatorNameKey(lookup);
+    if (!normalizedLookup) return null;
+
+    const validators = await Validator.find({});
+    return validators.find((validator) => normalizeValidatorNameKey(validator?.name) === normalizedLookup) || null;
+};
+
 validatorController.findValidatorByName = async (name, periodId = null) => {
     const validatorName = String(name || '').trim();
     if (!validatorName) return null;
@@ -137,7 +216,7 @@ validatorController.findValidatorByName = async (name, periodId = null) => {
         if (periodValidator) return periodValidator;
     }
 
-    return Validator.findOne({ name: new RegExp(`^${validatorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    return findGlobalValidatorByName(validatorName);
 };
 
 validatorController.listValidatorsByPeriod = async (periodId = null) => {
@@ -493,7 +572,7 @@ validatorController.getValidators = async (req, res) => {
 
 validatorController.getValidatorOptions = async (req, res) => {
     try {
-        const { periodId } = req.query;
+        let { periodId } = req.query;
         const options = [
           { name: 'Funcionarios - Identificación', type: 'Entero' },
           { name: 'Estudiantes - Código', type: 'Texto Corto' },
@@ -503,38 +582,8 @@ validatorController.getValidatorOptions = async (req, res) => {
 
         const seenNames = new Set(options.map(o => o.name.split(' - ')[0].trim().toLowerCase()));
 
-        // Validadores del periodo (tienen prioridad)
-        if (hasPeriodId(periodId) && mongoose.Types.ObjectId.isValid(String(periodId))) {
-            const period = await Period.findById(periodId).select('screenshot.validators');
-            const periodValidators = getPeriodValidators(period);
-            periodValidators.forEach(validator => {
-                const validatorColumns = (validator.columns || []).filter(c => c.is_validator);
-                if (validatorColumns.length === 0 && (validator.columns || []).length > 0) {
-                    // Si ninguna columna está marcada como validadora, usar la primera
-                    const firstCol = validator.columns[0];
-                    const optName = `${validator.name} - ${firstCol.name}`;
-                    const key = validator.name.toLowerCase();
-                    if (!seenNames.has(key)) {
-                        seenNames.add(key);
-                        options.push({ name: optName, type: firstCol.type || 'Texto' });
-                    }
-                } else {
-                    validatorColumns.forEach(column => {
-                        const optName = `${validator.name} - ${column.name}`;
-                        const key = validator.name.toLowerCase();
-                        if (!seenNames.has(key)) {
-                            seenNames.add(key);
-                            options.push({ name: optName, type: column.type });
-                        }
-                    });
-                }
-            });
-        }
-
-        // Validadores globales (fallback / complemento)
-        const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
-        globalValidators.forEach(validator => {
-            const key = validator.name.toLowerCase();
+        const addValidatorToOptions = (validator) => {
+            const key = String(validator.name || '').toLowerCase();
             const validatorColumns = (validator.columns || []).filter(c => c.is_validator);
             if (validatorColumns.length === 0 && (validator.columns || []).length > 0) {
                 const firstCol = validator.columns[0];
@@ -552,7 +601,35 @@ validatorController.getValidatorOptions = async (req, res) => {
                     }
                 });
             }
-        });
+        };
+
+        // Si no se provee periodId, usar el periodo activo
+        if (!hasPeriodId(periodId)) {
+            const activePeriod = await Period.findOne({ is_active: true })
+                .sort({ end_date: -1 })
+                .select('_id');
+            if (activePeriod) {
+                periodId = String(activePeriod._id);
+            }
+        }
+
+        if (hasPeriodId(periodId) && mongoose.Types.ObjectId.isValid(String(periodId))) {
+            const period = await Period.findById(periodId).select('screenshot.validators');
+            const periodValidators = getPeriodValidators(period);
+
+            if (periodValidators.length > 0) {
+                // Mostrar solo validadores del periodo activo
+                periodValidators.forEach(addValidatorToOptions);
+            } else {
+                // El periodo no tiene validadores en snapshot → fallback a globales
+                const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
+                globalValidators.forEach(addValidatorToOptions);
+            }
+        } else {
+            // Sin periodo → validadores globales
+            const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
+            globalValidators.forEach(addValidatorToOptions);
+        }
 
         res.status(200).json({ options });
     } catch (error) {
@@ -946,7 +1023,12 @@ if (columnToValidate && validValuesSet) {
       
       if (validatorHasNumbers) {
         const num = Number(valueToNormalize);
-        normalizedVal = isNaN(num) ? valueToNormalize : num;
+        if (!Number.isNaN(num)) {
+          normalizedVal = num;
+        } else {
+          const numericPrefix = String(valueToNormalize || '').trim().match(/^-?\d+(?=\s*(?:[-).:]|\s))/);
+          normalizedVal = numericPrefix ? Number(numericPrefix[0]) : valueToNormalize;
+        }
       } else {
         normalizedVal = normalizeComparableText(valueToNormalize);
       }
@@ -1003,7 +1085,12 @@ if (columnToValidate && validValuesSet) {
       
       if (validatorHasNumbers) {
         const num = Number(valueToNormalize);
-        normalizedVal = isNaN(num) ? valueToNormalize : num;
+        if (!Number.isNaN(num)) {
+          normalizedVal = num;
+        } else {
+          const numericPrefix = String(valueToNormalize || '').trim().match(/^-?\d+(?=\s*(?:[-).:]|\s))/);
+          normalizedVal = numericPrefix ? Number(numericPrefix[0]) : valueToNormalize;
+        }
       } else {
         normalizedVal = normalizeComparableText(valueToNormalize);
       }
@@ -1558,9 +1645,8 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
 
         const findBestValidator = async (lookupName) => {
             if (!lookupName) return null;
-            const escaped = lookupName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const [globalValidator, periodValidator] = await Promise.all([
-                Validator.findOne({ name: new RegExp(`^${escaped}$`, 'i') }),
+                findGlobalValidatorByName(lookupName),
                 hasPeriodId(periodId)
                     ? validatorController.findValidatorByName(lookupName, periodId)
                     : Promise.resolve(null),
@@ -1597,13 +1683,19 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
         }));
         
         validatorFilled['values'] = validator.columns.reduce((acc, item) => {
-            item.values.forEach((value, index) => {
+            const displayValues = getValidatorDisplayValuesForColumn(validator.columns || [], item);
+            const maxLength = Math.max(item.values?.length || 0, displayValues.length);
+            for (let index = 0; index < maxLength; index += 1) {
                 // Inicializar el objeto si no existe
                 if (!acc[index]) {
                     acc[index] = {};
                 }
-                acc[index][item.name] = value.$numberInt || value;
-            });
+                const displayValue = displayValues[index];
+                const rawValue = item.values?.[index];
+                acc[index][item.name] = displayValue !== undefined && displayValue !== ''
+                    ? displayValue
+                    : validatorValueToPlain(rawValue);
+            }
             return acc;
         }, []);
 

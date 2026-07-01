@@ -57,6 +57,7 @@ const pdiIndicadorSchema = new mongoose.Schema({
     observaciones:       { type: String, default: '' },
     periodos:            { type: [metaPeriodoSchema], default: [] },
     avances_por_anio:    { type: mongoose.Schema.Types.Mixed, default: {} },
+    avance_actual:       { type: mongoose.Schema.Types.Mixed, default: null },
     avance_total_real:   { type: mongoose.Schema.Types.Mixed, default: null }, // (avance / meta_final_2029) * 100
     evidencias:          { type: [evidenciaSchema], default: [] },
     accion_id: {

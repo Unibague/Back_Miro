@@ -2,9 +2,13 @@ const Macroproyecto   = require('../models/pdiMacroproyecto');
 const Proyecto        = require('../models/pdiProyecto');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const Indicador       = require('../models/pdiIndicador');
+const RespuestaFormulario = require('../models/pdiFormularioRespuesta');
 const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
 const pdiNodeNetwork  = require('../services/pdiNodeNetwork');
+const {
+    autoApproveAllPendingLeaderSubmittedResponses,
+} = require('../services/pdiFormulario');
 
 // Calcula el semáforo a partir del avance efectivo de un documento
 function semaforoDoc(doc) {
@@ -32,6 +36,90 @@ function promedioAvance(docs) {
     );
 }
 
+const normalizePeriodoKey = (value) => String(value ?? '').trim().toUpperCase();
+
+const getEstadoReporteFromRespuesta = (respuesta = {}) => {
+    if (respuesta.aval_planeacion === 'Validado') return 'Validado';
+    if (respuesta.estado_aval === 'Aprobado') return 'Aprobado';
+    if (respuesta.estado_aval === 'Rechazado') return 'Rechazado';
+    if (respuesta.estado === 'Enviado') return 'Enviado';
+    return null;
+};
+
+const ESTADO_REPORTE_PRIORITY = {
+    Enviado: 1,
+    Rechazado: 1,
+    Aprobado: 2,
+    Validado: 3,
+};
+
+async function applyPlaneacionStateToIndicadores(indicadores = []) {
+    if (!indicadores.length) return indicadores;
+
+    const ids = indicadores.map((indicador) => String(indicador?._id || '')).filter(Boolean);
+    if (!ids.length) return indicadores;
+
+    const respuestas = await RespuestaFormulario.find({
+        indicador_id: { $in: ids },
+        estado: 'Enviado',
+    }).select('indicador_id corte estado estado_aval aval_planeacion fecha_envio respondido_por').lean();
+
+    if (!respuestas.length) return indicadores;
+
+    const estadosPorIndicadorCorte = new Map();
+    respuestas.forEach((respuesta) => {
+        const indicadorId = String(respuesta.indicador_id || '');
+        const corte = normalizePeriodoKey(respuesta.corte);
+        const estadoReporte = getEstadoReporteFromRespuesta(respuesta);
+        if (!indicadorId || !corte || !estadoReporte) return;
+
+        const key = `${indicadorId}::${corte}`;
+        const current = estadosPorIndicadorCorte.get(key);
+        if (
+            current &&
+            (ESTADO_REPORTE_PRIORITY[current.estado_reporte] || 0) >= (ESTADO_REPORTE_PRIORITY[estadoReporte] || 0)
+        ) {
+            return;
+        }
+
+        estadosPorIndicadorCorte.set(key, {
+            estado_reporte: estadoReporte,
+            fecha_envio: respuesta.fecha_envio,
+            reportado_por: respuesta.respondido_por,
+        });
+    });
+
+    for (const indicador of indicadores) {
+        if (!Array.isArray(indicador.periodos)) continue;
+
+        let changed = false;
+        indicador.periodos.forEach((periodo) => {
+            const estado = estadosPorIndicadorCorte.get(`${String(indicador?._id || '')}::${normalizePeriodoKey(periodo.periodo)}`);
+            if (!estado) return;
+
+            if (periodo.estado_reporte !== estado.estado_reporte) {
+                periodo.estado_reporte = estado.estado_reporte;
+                changed = true;
+            }
+            if (estado.fecha_envio && !periodo.fecha_envio) {
+                periodo.fecha_envio = estado.fecha_envio;
+                changed = true;
+            }
+            if (estado.reportado_por && !periodo.reportado_por) {
+                periodo.reportado_por = estado.reportado_por;
+                changed = true;
+            }
+        });
+
+        if (changed && typeof indicador.save === 'function') {
+            indicador.markModified('periodos');
+            await indicador.save();
+        }
+    }
+
+    return indicadores;
+}
+
 const ctrl = {};
 
 /*
@@ -50,6 +138,8 @@ ctrl.resumen = async (req, res) => {
             AccionEstrategica.find({}),
             Indicador.find({}).populate('accion_id', 'proyecto_id'),
         ]);
+        await autoApproveAllPendingLeaderSubmittedResponses();
+        await applyPlaneacionStateToIndicadores(indicadores);
 
         // Avance ponderado global (promedio ponderado de macroproyectos)
         const totalPesoMacro = macros.reduce((a, m) => a + m.peso, 0);
@@ -136,6 +226,8 @@ ctrl.macroproyecto = async (req, res) => {
         const accionIds = acciones.map(a => a._id);
 
         const indicadores = await Indicador.find({ accion_id: { $in: accionIds } });
+        await autoApproveAllPendingLeaderSubmittedResponses();
+        await applyPlaneacionStateToIndicadores(indicadores);
 
         // Avances por año agregados (union de todos los años presentes en los indicadores)
         const avancesPorAnio = {};
@@ -210,6 +302,8 @@ ctrl.corte = async (req, res) => {
 
         const indicadores = await Indicador.find({})
             .populate('accion_id', 'codigo nombre proyecto_id');
+        await autoApproveAllPendingLeaderSubmittedResponses();
+        await applyPlaneacionStateToIndicadores(indicadores);
 
         const conPeriodo = [];
         const sinPeriodo = [];
