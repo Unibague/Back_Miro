@@ -573,37 +573,8 @@ validatorController.getValidators = async (req, res) => {
 validatorController.getValidatorOptions = async (req, res) => {
     try {
         let { periodId } = req.query;
-        const options = [
-          { name: 'Funcionarios - Identificación', type: 'Entero' },
-          { name: 'Estudiantes - Código', type: 'Texto Corto' },
-          { name: 'Estudiantes - Identificación', type: 'Texto Corto' },
-          { name: 'Participantes - Identificación', type: 'Texto Corto' }
-        ];
 
-        const seenNames = new Set(options.map(o => o.name.split(' - ')[0].trim().toLowerCase()));
-
-        const addValidatorToOptions = (validator) => {
-            const key = String(validator.name || '').toLowerCase();
-            const validatorColumns = (validator.columns || []).filter(c => c.is_validator);
-            if (validatorColumns.length === 0 && (validator.columns || []).length > 0) {
-                const firstCol = validator.columns[0];
-                const optName = `${validator.name} - ${firstCol.name}`;
-                if (!seenNames.has(key)) {
-                    seenNames.add(key);
-                    options.push({ name: optName, type: firstCol.type || 'Texto' });
-                }
-            } else {
-                validatorColumns.forEach(column => {
-                    const optName = `${validator.name} - ${column.name}`;
-                    if (!seenNames.has(key)) {
-                        seenNames.add(key);
-                        options.push({ name: optName, type: column.type });
-                    }
-                });
-            }
-        };
-
-        // Si no se provee periodId, usar el periodo activo
+        // Si no se provee periodId, usar el periodo activo más reciente
         if (!hasPeriodId(periodId)) {
             const activePeriod = await Period.findOne({ is_active: true })
                 .sort({ end_date: -1 })
@@ -613,22 +584,25 @@ validatorController.getValidatorOptions = async (req, res) => {
             }
         }
 
+        const options = [
+          { name: 'Funcionarios', type: 'Entero' },
+          { name: 'Estudiantes', type: 'Texto Corto' },
+          { name: 'Participantes', type: 'Texto Corto' },
+        ];
+        const seenNames = new Set(options.map(o => o.name.trim().toLowerCase()));
+
         if (hasPeriodId(periodId) && mongoose.Types.ObjectId.isValid(String(periodId))) {
             const period = await Period.findById(periodId).select('screenshot.validators');
             const periodValidators = getPeriodValidators(period);
 
-            if (periodValidators.length > 0) {
-                // Mostrar solo validadores del periodo activo
-                periodValidators.forEach(addValidatorToOptions);
-            } else {
-                // El periodo no tiene validadores en snapshot → fallback a globales
-                const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
-                globalValidators.forEach(addValidatorToOptions);
-            }
-        } else {
-            // Sin periodo → validadores globales
-            const globalValidators = await Validator.find({}, { name: 1, columns: 1 });
-            globalValidators.forEach(addValidatorToOptions);
+            // Mostrar solo el nombre del validador del periodo activo (sin columnas)
+            periodValidators.forEach(validator => {
+                const key = String(validator.name || '').toLowerCase();
+                if (seenNames.has(key)) return;
+                seenNames.add(key);
+                const primaryCol = (validator.columns || []).find(c => c.is_validator) || (validator.columns || [])[0];
+                options.push({ name: validator.name, type: primaryCol?.type || 'Texto' });
+            });
         }
 
         res.status(200).json({ options });
