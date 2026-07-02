@@ -1,10 +1,28 @@
 const normalizeOptionKey = (value) =>
-  String(value || '')
+  String(value ?? '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+
+const collapseRepeatedCompositeOption = (value) => {
+  const option = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!option) return '';
+
+  const dashParts = option.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+  if (dashParts.length >= 4 && dashParts.length % 2 === 0) {
+    const midpoint = dashParts.length / 2;
+    const left = dashParts.slice(0, midpoint).join(' - ');
+    const right = dashParts.slice(midpoint).join(' - ');
+
+    if (normalizeOptionKey(left) === normalizeOptionKey(right)) {
+      return left;
+    }
+  }
+
+  return option;
+};
 
 const toOptionText = (value) => {
   if (value === null || value === undefined) return '';
@@ -21,9 +39,14 @@ const toOptionText = (value) => {
 };
 
 const cleanOptionCandidate = (value, { preserveLeadingCodes = false } = {}) => {
-  let option = String(value || '')
+  let option = String(value ?? '')
     .replace(/^\s*(?:[-*]|\u2022)\s*/, '')
     .trim();
+
+  option = collapseRepeatedCompositeOption(option
+    .replace(/^"+|"+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim());
 
   if (!preserveLeadingCodes) {
     option = option
@@ -33,7 +56,6 @@ const cleanOptionCandidate = (value, { preserveLeadingCodes = false } = {}) => {
   }
 
   return option
-    .replace(/^"+|"+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 };
@@ -132,7 +154,7 @@ const getFieldDropdownOptions = (field = {}) => uniqueOptionTexts([
 ]);
 
 const getOptionAliases = (option) => {
-  const text = toOptionText(option);
+  const text = collapseRepeatedCompositeOption(toOptionText(option));
   const aliases = [text];
 
   // Match "CODE - description" (separator: dash, colon, equals, etc.)
@@ -168,6 +190,7 @@ const buildAcceptedDropdownOptionSet = (options = []) => {
 
 module.exports = {
   buildAcceptedDropdownOptionSet,
+  collapseRepeatedCompositeOption,
   extractDropdownOptionsFromComment,
   getFieldDropdownOptions,
   normalizeOptionKey,

@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const UserService = require("../services/users");
 const Dependency = require('../models/dependencies');
 const AuditLogger = require('../services/auditLogger');
+const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
 
 const { ObjectId } = mongoose.Types;
 
@@ -95,7 +96,7 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        template = template.toObject();
+        template = await sanitizeTemplateDropdownPayload(template);
         if (periodId) {
           const publishedTemplate = await PubTemplate.findOne({
             "template._id": template._id,
@@ -171,7 +172,7 @@ templateController.getPlantillas = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        template = template.toObject();
+        template = await sanitizeTemplateDropdownPayload(template);
         if (periodId) {
           const publishedTemplate = await PubTemplate.findOne({
             'template._id': template._id,
@@ -252,7 +253,7 @@ templateController.getPlantillasByCreator = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        template = template.toObject();
+        template = await sanitizeTemplateDropdownPayload(template);
         template.validators = await collectValidatorsForTemplate(template, periodId);
         return template;
       })
@@ -278,7 +279,7 @@ templateController.getPlantilla = async (req, res) => {
     if (!plantilla) {
       return res.status(404).json({ mensaje: "Plantilla no encontrada" });
     }
-    const result = plantilla.toObject();
+    const result = await sanitizeTemplateDropdownPayload(plantilla);
     if (withValidators === 'true' || withValidators === '1') {
       result.validators = await collectValidatorsForTemplate(result, periodId || null);
     }
@@ -290,8 +291,9 @@ templateController.getPlantilla = async (req, res) => {
 
 templateController.createPlantilla = async (req, res) => {
   try {
-    const autoRename = req.body.auto_rename === true || req.body.auto_rename === "true";
-    const requestedName = String(req.body.name || "").trim();
+    const sanitizedBody = await sanitizeTemplateDropdownPayload(req.body);
+    const autoRename = sanitizedBody.auto_rename === true || sanitizedBody.auto_rename === "true";
+    const requestedName = String(sanitizedBody.name || "").trim();
     let templateName = requestedName;
     let existingTemplate = await Template.findOne({
       name: new RegExp(`^${escapeRegExp(templateName)}$`, "i"),
@@ -308,7 +310,7 @@ templateController.createPlantilla = async (req, res) => {
         counter += 1;
       } while (existingTemplate);
 
-      req.body.name = templateName;
+      sanitizedBody.name = templateName;
     }
 
     if (existingTemplate) {
@@ -321,15 +323,15 @@ templateController.createPlantilla = async (req, res) => {
     }
 
     const invalidFileNameChars = /[<>:"/\\|?*]/;
-  if (req.body.file_name && invalidFileNameChars.test(req.body.file_name)) {
+  if (sanitizedBody.file_name && invalidFileNameChars.test(sanitizedBody.file_name)) {
     return res.status(400).json({
       error: "El nombre del archivo contiene caracteres no permitidos: <>:\"/\\|?*"
     });
   }
     
-    console.log('Body ', req.body);
-    const user = await UserService.findUserByEmailAndRole(req.body.email, "Administrador");
-    const plantilla = new Template({ ...req.body, created_by: user });
+    console.log('Body ', sanitizedBody);
+    const user = await UserService.findUserByEmailAndRole(sanitizedBody.email, "Administrador");
+    const plantilla = new Template({ ...sanitizedBody, created_by: user });
     await plantilla.save();
 
     // Registrar en auditoría (non-blocking)
@@ -345,7 +347,7 @@ templateController.createPlantilla = async (req, res) => {
 
     // Crear validadores automáticamente para campos con opciones desplegables
     try {
-      await Validator.createValidatorsFromDropdownOptions(req.body.fields, req.body.period);
+      await Validator.createValidatorsFromDropdownOptions(sanitizedBody.fields, sanitizedBody.period);
     } catch (autoValidatorError) {
       console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
     }
@@ -372,7 +374,7 @@ templateController.createPlantilla = async (req, res) => {
 
 templateController.updatePlantilla = async (req, res) => {
   const { id } = req.params;
-  const updatedFields = req.body;
+  const updatedFields = await sanitizeTemplateDropdownPayload(req.body);
 
   const invalidFileNameChars = /[<>:"/\\|?*]/;
   if (updatedFields.file_name && invalidFileNameChars.test(updatedFields.file_name)) {
@@ -527,7 +529,7 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
       const templateId = new mongoose.Types.ObjectId(template._id);
 
       // Construir snapshot completo
-      const templateSnapshot = {
+      const templateSnapshot = await sanitizeTemplateDropdownPayload({
         _id: template._id,
         name: template.name,
         file_name: template.file_name,
@@ -539,7 +541,7 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
         dimensions: template.dimensions,
         active: template.active,
         notify_producers: template.notify_producers ?? false,
-      };
+      });
 
       const result = await PublishedTemplate.updateMany(
         { "template._id": templateId },

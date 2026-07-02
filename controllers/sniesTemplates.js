@@ -17,7 +17,10 @@ const {
   deleteDriveFile,
   downloadDriveFileBuffer,
 } = require("../config/googleDrive");
-const { extractDropdownOptionsFromComment } = require("../helpers/dropdownOptions");
+const {
+  collapseRepeatedCompositeOption,
+  extractDropdownOptionsFromComment,
+} = require("../helpers/dropdownOptions");
 
 const axios = require("axios");
 
@@ -50,6 +53,18 @@ const normalizeBoolean = (value, fallback = false) => {
   }
   return fallback;
 };
+
+const normalizeDropdownOptionArray = (value) => (
+  Array.isArray(value)
+    ? value
+        .map((option) => (
+          typeof option === "string"
+            ? collapseRepeatedCompositeOption(option)
+            : option
+        ))
+        .filter((option) => typeof option !== "string" || option.trim())
+    : []
+);
 
 const parseIdArray = (value) =>
   normalizeArrayInput(value)
@@ -89,9 +104,9 @@ const parseFieldsInput = (value) => {
       required: normalizeBoolean(field?.required, true),
       validate_with: String(field?.validate_with || "").trim(),
       comment: String(field?.comment || "").trim(),
-      dropdown_options: Array.isArray(field?.dropdown_options) ? field.dropdown_options : [],
-      excel_validation_options: Array.isArray(field?.excel_validation_options) ? field.excel_validation_options : [],
-      validator_options: Array.isArray(field?.validator_options) ? field.validator_options : [],
+      dropdown_options: normalizeDropdownOptionArray(field?.dropdown_options),
+      excel_validation_options: normalizeDropdownOptionArray(field?.excel_validation_options),
+      validator_options: normalizeDropdownOptionArray(field?.validator_options),
       field_origin: String(field?.field_origin || "snies_extra").trim() === "snies_original"
         ? "snies_original"
         : "snies_extra",
@@ -1643,6 +1658,37 @@ const sanitizeWorkbookZipArtifacts = (buffer) => {
       compression: "DEFLATE",
     })
   );
+};
+
+const cleanRepeatedDropdownOptionsInWorkbook = async (workbookInput) => {
+  const sourceBuffer = Buffer.isBuffer(workbookInput)
+    ? Buffer.from(workbookInput)
+    : fs.readFileSync(workbookInput);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(sourceBuffer);
+
+  let changed = false;
+  workbook.worksheets
+    .filter((worksheet) => normalizeComparableName(worksheet.name) === "LISTAS")
+    .forEach((worksheet) => {
+      worksheet.eachRow({ includeEmpty: true }, (row) => {
+        row.eachCell({ includeEmpty: true }, (cell) => {
+          if (typeof cell.value !== "string") return;
+
+          const cleanedValue = collapseRepeatedCompositeOption(cell.value);
+          if (!cleanedValue || cleanedValue === cell.value) return;
+
+          cell.value = cleanedValue;
+          changed = true;
+        });
+      });
+    });
+
+  if (!changed) {
+    return sourceBuffer;
+  }
+
+  return Buffer.from(await workbook.xlsx.writeBuffer());
 };
 
 const extractWorksheetHeaders = (worksheet) => {
@@ -3258,7 +3304,7 @@ controller.downloadTemplateFile = async (req, res) => {
     const shouldRebuildWorkbook =
       (template.fields || []).some(fieldHasDropdownSource) ||
       await workbookHasHeaderCommentDropdowns(fileBuffer);
-    const downloadableBuffer = shouldRebuildWorkbook
+    const rebuiltBuffer = shouldRebuildWorkbook
       ? await buildWorkbookWithConfiguredFields(
           fileBuffer,
           template.fields || [],
@@ -3266,6 +3312,7 @@ controller.downloadTemplateFile = async (req, res) => {
           template.period || null
         )
       : fileBuffer;
+    const downloadableBuffer = await cleanRepeatedDropdownOptionsInWorkbook(rebuiltBuffer);
     const downloadFileName = buildDownloadFileName(template);
 
     res.setHeader(
@@ -3315,9 +3362,9 @@ controller.getTemplateById = async (req, res) => {
         required: field.required ?? true,
         validate_with: field.validate_with || "",
         comment: field.comment || "",
-        dropdown_options: field.dropdown_options || [],
-        excel_validation_options: field.excel_validation_options || [],
-        validator_options: field.validator_options || [],
+        dropdown_options: normalizeDropdownOptionArray(field.dropdown_options),
+        excel_validation_options: normalizeDropdownOptionArray(field.excel_validation_options),
+        validator_options: normalizeDropdownOptionArray(field.validator_options),
         field_origin: field.field_origin || "snies_extra",
         visible_for_producer: field.visible_for_producer ?? true,
         export_to_snies: field.export_to_snies ?? false,

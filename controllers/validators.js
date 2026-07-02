@@ -8,6 +8,7 @@ const auditLogger = require('../services/auditLogger');
 const mongoose = require('mongoose');
 const {
     buildAcceptedDropdownOptionSet,
+    collapseRepeatedCompositeOption,
     getFieldDropdownOptions,
     normalizeOptionKey: normalizeDropdownOptionKey,
 } = require('../helpers/dropdownOptions');
@@ -114,15 +115,37 @@ const validatorValueToPlain = (value) => {
     return value;
 };
 
+const cleanValidatorValue = (value) => {
+    const plainValue = validatorValueToPlain(value);
+    if (typeof plainValue !== 'string') return plainValue;
+    return collapseRepeatedCompositeOption(plainValue);
+};
+
+const cleanValidatorDisplayText = (value) => {
+    const cleanValue = cleanValidatorValue(value);
+    if (cleanValue === null || cleanValue === undefined) return '';
+    return String(cleanValue).trim();
+};
+
 const isValidatorCodeColumn = (columnName = '') => {
     const normalized = normalizeValidatorLookup(columnName).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
     return normalized === 'ID' || normalized.startsWith('ID_') || normalized.includes('CODIGO') || normalized === 'CODIGO';
 };
 
 const formatValidatorDisplayOption = (code, description) => {
-    const codeText = String(validatorValueToPlain(code) ?? '').trim();
-    const descriptionText = String(validatorValueToPlain(description) ?? '').trim();
-    if (codeText && descriptionText) return `${codeText} - ${descriptionText}`;
+    const codeText = cleanValidatorDisplayText(code);
+    const descriptionText = cleanValidatorDisplayText(description);
+    if (codeText && descriptionText) {
+        if (normalizeValidatorLookup(codeText) === normalizeValidatorLookup(descriptionText)) {
+            return codeText;
+        }
+
+        if (descriptionText.startsWith(`${codeText} - `)) {
+            return descriptionText;
+        }
+
+        return collapseRepeatedCompositeOption(`${codeText} - ${descriptionText}`);
+    }
     return codeText || descriptionText;
 };
 
@@ -141,11 +164,11 @@ const getValidatorDisplayPair = (columns = []) => {
 
 const getValidatorDisplayValuesForColumn = (columns = [], column = {}) => {
     const pair = getValidatorDisplayPair(columns);
-    if (!pair) return (column.values || []).map(validatorValueToPlain);
+    if (!pair) return (column.values || []).map(cleanValidatorValue);
 
     const isDisplayColumn = [pair.codeColumn?.name, pair.descriptionColumn?.name]
         .some((name) => normalizeValidatorLookup(name) === normalizeValidatorLookup(column?.name));
-    if (!isDisplayColumn) return (column.values || []).map(validatorValueToPlain);
+    if (!isDisplayColumn) return (column.values || []).map(cleanValidatorValue);
 
     const maxLength = Math.max(
         pair.codeColumn?.values?.length || 0,
@@ -267,15 +290,24 @@ const buildAcceptedValidatorStringSet = (validator, columnToValidate) => {
         return acceptedValues;
     }
 
-    columnToValidate.values.forEach((value) => {
-        const rawText = normalizeComparableText(value).replace(/^\d+[).:\-\s]+\s*/, '').trim();
+    const addAcceptedValue = (value) => {
+        const normalizedText = normalizeComparableText(cleanValidatorDisplayText(value));
+        if (!normalizedText) return;
+
+        acceptedValues.add(normalizedText);
+
+        const rawText = normalizedText.replace(/^\d+[).:\-\s]+\s*/, '').trim();
         if (!rawText) return;
 
         // "CC Cédula de ciudadanía" or "1 Posdoctorado" → accept only "CC" / "1"
         // Plain text like "Término indefinido" → accept as-is
         const codeMatch = /^([A-Z0-9]{1,6})\s+.+$/.exec(rawText);
         acceptedValues.add(codeMatch ? codeMatch[1] : rawText);
-    });
+    };
+
+    columnToValidate.values.forEach(addAcceptedValue);
+    getValidatorDisplayValuesForColumn(validator?.columns || [], columnToValidate)
+        .forEach(addAcceptedValue);
 
     return acceptedValues;
 };
@@ -1266,14 +1298,18 @@ const extractStructuredRowsFromListValues = (values = []) => {
         if (item && typeof item === 'object' && !Array.isArray(item)) {
             const code = item.code ?? item.id ?? item.value ?? item.key;
             const description = item.description ?? item.label ?? item.name ?? item.text;
-            if (code !== undefined && description !== undefined && String(code).trim() !== String(description).trim()) {
+            const cleanCode = collapseRepeatedCompositeOption(String(code ?? '').trim());
+            const cleanDescription = collapseRepeatedCompositeOption(String(description ?? '').trim());
+            if (code !== undefined && description !== undefined && cleanCode !== cleanDescription) {
                 parsed = {
-                    code: String(code).trim(),
-                    description: normalizeReadableLine(description),
+                    code: cleanCode,
+                    description: normalizeReadableLine(cleanDescription),
                 };
+            } else if (cleanCode || cleanDescription) {
+                parsed = parseStructuredOptionLine(cleanCode || cleanDescription);
             }
         } else {
-            parsed = parseStructuredOptionLine(item);
+            parsed = parseStructuredOptionLine(collapseRepeatedCompositeOption(item));
         }
 
         if (!parsed?.code || !parsed?.description) return;
@@ -1527,7 +1563,7 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 
         const seenOptions = new Set();
         const cleanOptions = options
-            .map((o) => String(o).trim())
+            .map((o) => collapseRepeatedCompositeOption(String(o).trim()))
             .filter((option) => {
                 const key = normalizeDropdownOptionKey(option);
                 if (!key || seenOptions.has(key)) return false;
@@ -1558,6 +1594,11 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
             }
 
             if (!Array.isArray(validatorColumn.values)) validatorColumn.values = [];
+            const cleanedCurrentValues = validatorColumn.values.map(cleanValidatorValue);
+            if (JSON.stringify(cleanedCurrentValues) !== JSON.stringify(validatorColumn.values)) {
+                validatorColumn.values = cleanedCurrentValues;
+                periodModified = true;
+            }
             // Comparar también por clave sin prefijo numérico para evitar "Presencial" y "1 Presencial" coexistiendo
             const stripNumericPrefix = (k) => k.replace(/^\d+\s+/, '');
             const currentOptionKeys = new Set(validatorColumn.values.map(normalizeDropdownOptionKey));

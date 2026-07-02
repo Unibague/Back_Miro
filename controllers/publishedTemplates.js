@@ -17,6 +17,8 @@ const ExcelJS = require("exceljs");
 const auditLogger = require('../services/auditLogger');
 const RemindersService = require('../services/reminders');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
+const { collapseRepeatedCompositeOption } = require('../helpers/dropdownOptions');
+const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
 const HistoricoDocentes = require('../models/historicoDocentes');
 
 const axios = require('axios');
@@ -60,6 +62,18 @@ const validatorValueToPlain = (value) => {
   return value;
 };
 
+const cleanValidatorValue = (value) => {
+  const plainValue = validatorValueToPlain(value);
+  if (typeof plainValue !== 'string') return plainValue;
+  return collapseRepeatedCompositeOption(plainValue);
+};
+
+const cleanValidatorDisplayText = (value) => {
+  const cleanValue = cleanValidatorValue(value);
+  if (cleanValue === null || cleanValue === undefined) return '';
+  return String(cleanValue).trim();
+};
+
 const normalizeValidatorText = (value = '') =>
   String(value || '')
     .normalize('NFD')
@@ -78,9 +92,19 @@ const isValidatorCodeColumn = (columnName = '') => {
 };
 
 const formatValidatorDisplayOption = (code, description) => {
-  const codeText = String(validatorValueToPlain(code) ?? '').trim();
-  const descriptionText = String(validatorValueToPlain(description) ?? '').trim();
-  if (codeText && descriptionText) return `${codeText} - ${descriptionText}`;
+  const codeText = cleanValidatorDisplayText(code);
+  const descriptionText = cleanValidatorDisplayText(description);
+  if (codeText && descriptionText) {
+    if (normalizeValidatorText(codeText) === normalizeValidatorText(descriptionText)) {
+      return codeText;
+    }
+
+    if (descriptionText.startsWith(`${codeText} - `)) {
+      return descriptionText;
+    }
+
+    return collapseRepeatedCompositeOption(`${codeText} - ${descriptionText}`);
+  }
   return codeText || descriptionText;
 };
 
@@ -99,12 +123,12 @@ const getValidatorDisplayPair = (columns = []) => {
 
 const getValidatorDisplayValuesForColumn = (columns = [], column = {}) => {
   const pair = getValidatorDisplayPair(columns);
-  if (!pair) return (column.values || []).map(validatorValueToPlain);
+  if (!pair) return (column.values || []).map(cleanValidatorValue);
 
   const columnName = normalizeValidatorText(column?.name);
   const isDisplayColumn = [pair.codeColumn?.name, pair.descriptionColumn?.name]
     .some((name) => normalizeValidatorText(name) === columnName);
-  if (!isDisplayColumn) return (column.values || []).map(validatorValueToPlain);
+  if (!isDisplayColumn) return (column.values || []).map(cleanValidatorValue);
 
   const maxLength = Math.max(
     pair.codeColumn?.values?.length || 0,
@@ -276,19 +300,24 @@ const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
         })
         .lean()
     : null;
+  const currentTemplate = await sanitizeTemplateDropdownPayload(publishedTemplate.template || {});
+  const liveTemplate = originalTemplate
+    ? await sanitizeTemplateDropdownPayload(originalTemplate)
+    : null;
 
   return {
     ...publishedTemplate,
     template: {
-      ...publishedTemplate.template,
-      fields: originalTemplate?.fields || publishedTemplate.template?.fields || [],
-      workbook_sheets: originalTemplate?.workbook_sheets || publishedTemplate.template?.workbook_sheets || [],
-      allows_qr: originalTemplate?.allows_qr ?? publishedTemplate.template?.allows_qr ?? false,
-      notify_producers: originalTemplate?.notify_producers ?? publishedTemplate.template?.notify_producers ?? false,
-      shared: originalTemplate?.shared ?? publishedTemplate.template?.shared ?? false,
-      responsible_producers: originalTemplate?.responsible_producers || publishedTemplate.template?.responsible_producers || [],
+      ...currentTemplate,
+      fields: liveTemplate?.fields || currentTemplate?.fields || [],
+      workbook_sheets: liveTemplate?.workbook_sheets || currentTemplate?.workbook_sheets || [],
+      original_workbook_base64: liveTemplate?.original_workbook_base64 ?? currentTemplate?.original_workbook_base64,
+      allows_qr: liveTemplate?.allows_qr ?? currentTemplate?.allows_qr ?? false,
+      notify_producers: liveTemplate?.notify_producers ?? currentTemplate?.notify_producers ?? false,
+      shared: liveTemplate?.shared ?? currentTemplate?.shared ?? false,
+      responsible_producers: liveTemplate?.responsible_producers || currentTemplate?.responsible_producers || [],
       category: normalizeCategoryForResponse(
-        originalTemplate?.category || publishedTemplate.template?.category || publishedTemplate.category
+        liveTemplate?.category || currentTemplate?.category || publishedTemplate.category
       ),
     },
   };
@@ -352,7 +381,7 @@ const resolveLatestTemplateSnapshot = async (templateSnapshot) => {
     await SniesTemplate.findById(templateId).lean() ||
     await CnaTemplate.findById(templateId).lean();
 
-  return latestTemplate || null;
+  return latestTemplate ? await sanitizeTemplateDropdownPayload(latestTemplate) : null;
 };
 
 const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
@@ -930,21 +959,22 @@ publTempController.publishTemplate = async (req, res) => {
       identification: user.identification || 0
     };
 
+    const sanitizedTemplate = await sanitizeTemplateDropdownPayload(template);
     const category = template.category;  
 
     const fechaFinal = req.body.fecha_final || req.body.deadline || template.fecha_final || null;
     const newPublTemp = new PublishedTemplate({
-      name: req.body.name || template.name,
+      name: req.body.name || sanitizedTemplate.name,
       published_by: userForPublish,
-      template: template,
+      template: sanitizedTemplate,
       period: req.body.period_id,
       deadline: fechaFinal,
-      fecha_inicio: req.body.fecha_inicio || template.fecha_inicio || null,
-      fecha_final_productores: req.body.fecha_final_productores || template.fecha_final_productores || null,
-      fecha_final_responsables: req.body.fecha_final_responsables || template.fecha_final_responsables || null,
+      fecha_inicio: req.body.fecha_inicio || sanitizedTemplate.fecha_inicio || null,
+      fecha_final_productores: req.body.fecha_final_productores || sanitizedTemplate.fecha_final_productores || null,
+      fecha_final_responsables: req.body.fecha_final_responsables || sanitizedTemplate.fecha_final_responsables || null,
       fecha_final: fechaFinal,
-      responsible_producers: template.responsible_producers || [],
-      notify_producers: template.notify_producers || false,
+      responsible_producers: sanitizedTemplate.responsible_producers || [],
+      notify_producers: sanitizedTemplate.notify_producers || false,
       published_date: datetime_now(),
       category: category
     })
@@ -1102,6 +1132,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     
     const updated_templates = await Promise.all(published_templates.map(async template => {
       template = template.toObject();
+      template.template = await sanitizeTemplateDropdownPayload(template.template || {});
       template.validators = await collectValidatorsForTemplate(
         template.template,
         template.period?._id || template.period
@@ -1209,6 +1240,7 @@ publTempController.getAssignedTemplatesToProductor = async (req, res) => {
 
     const updatedTemplatesPromises = templates.map(async t => {
       t = t.toObject();
+      t.template = await sanitizeTemplateDropdownPayload(t.template || {});
       t.validators = await collectValidatorsForTemplate(
         t.template,
         t.period?._id || t.period
@@ -1701,7 +1733,7 @@ publTempController.loadProducerData = async (req, res) => {
               || validator.columns.find(c => c.is_validator)
               || validator.columns[0];
             if (validatorColumn) {
-              templateField.validator_values = validatorColumn.values;
+              templateField.validator_values = getValidatorDisplayValuesForColumn(validator.columns || [], validatorColumn);
               templateField.validator_type = validatorColumn.type;
             }
           }
@@ -1939,7 +1971,7 @@ if (field.multiple) {
             || validator.columns.find(c => c.is_validator)
             || validator.columns[0];
           if (validatorColumn) {
-            templateField.validator_values = validatorColumn.values;
+            templateField.validator_values = getValidatorDisplayValuesForColumn(validator.columns || [], validatorColumn);
             templateField.validator_type = validatorColumn.type;
           }
         }
@@ -2853,32 +2885,39 @@ publTempController.getTemplateById = async (req, res) => {
       };
     }));
 
+    const responseTemplate = await sanitizeTemplateDropdownPayload({
+      ...(publishedTemplate.template?.toObject?.() || publishedTemplate.template?._doc || publishedTemplate.template || {}),
+      skip_comment_validation: Boolean(liveTemplate?.skip_comment_validation ?? publishedTemplate.template?.skip_comment_validation) ||
+        (liveTemplate?.name === 'Docentes_IES') ||
+        (publishedTemplate.template?.name === 'Docentes_IES'),
+      workbook_sheets: enrichedSheets,
+      fields: fieldsWithValidatorIds,
+      validators: Array.from(validatorsMap.values()),
+      shared: templateShared,
+      producers: publishedTemplate.template?.producers && publishedTemplate.template.producers.length > 0
+        ? await Promise.all((publishedTemplate.template.producers || []).map(async (producerId) => {
+            const producer = await Dependency.findById(producerId).lean();
+            return {
+              _id: producer?._id,
+              dep_code: producer?.dep_code,
+              name: producer?.name,
+              responsible: producer?.responsible,
+              visualizers: producer?.visualizers || []
+            };
+          }))
+        : [],
+    });
+
+    const sanitizedPublishedTemplate = {
+      ...toPlainObject(publishedTemplate),
+      template: responseTemplate,
+    };
+
     const response = {
       name: publishedTemplate.name,
-      template: {
-        ...(publishedTemplate.template?.toObject?.() || publishedTemplate.template?._doc || publishedTemplate.template || {}),
-        skip_comment_validation: Boolean(liveTemplate?.skip_comment_validation ?? publishedTemplate.template?.skip_comment_validation) ||
-          (liveTemplate?.name === 'Docentes_IES') ||
-          (publishedTemplate.template?.name === 'Docentes_IES'),
-        workbook_sheets: enrichedSheets,
-        fields: fieldsWithValidatorIds,
-        validators: Array.from(validatorsMap.values()),
-        shared: templateShared,
-        producers: publishedTemplate.template?.producers && publishedTemplate.template.producers.length > 0
-          ? await Promise.all((publishedTemplate.template.producers || []).map(async (producerId) => {
-              const producer = await Dependency.findById(producerId).lean();
-              return {
-                _id: producer?._id,
-                dep_code: producer?.dep_code,
-                name: producer?.name,
-                responsible: producer?.responsible,
-                visualizers: producer?.visualizers || []
-              };
-            }))
-          : [],
-      },
+      template: responseTemplate,
       publishedTemplate: {
-        ...toPlainObject(publishedTemplate),
+        ...sanitizedPublishedTemplate,
         loaded_data: enrichedLoadedData,
       },
       qr_draft_data: qrDraftData,
