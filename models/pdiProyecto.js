@@ -8,6 +8,11 @@ const pdiProyectoSchema = new mongoose.Schema({
     peso:                { type: Number, required: true, min: 0, max: 100 },
     avance:              { type: Number, default: 0, min: 0, max: 100 },
     formulador:          { type: String, required: true },
+    responsables: [{
+        nombre: { type: String, default: '' },
+        email: { type: String, default: '' }
+    }],
+    // Deprecated - mantener para compatibilidad backwards
     responsable:         { type: String, default: '' },
     responsable_email:   { type: String, default: '' },
     fecha_inicio:        { type: String, default: null },

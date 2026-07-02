@@ -71,8 +71,10 @@ const pdiFormularioRespuestaSchema = new mongoose.Schema({
     timestamps: true,
 });
 
+// Un solo borrador/reporte compartido por indicador+corte, sin importar quien lo edite o envie:
+// varios responsables asignados al mismo proyecto ven y continuan el mismo documento.
 pdiFormularioRespuestaSchema.index(
-    { formulario_id: 1, indicador_id: 1, respondido_por: 1, corte: 1 },
+    { formulario_id: 1, indicador_id: 1, corte: 1 },
     { unique: true }
 );
 

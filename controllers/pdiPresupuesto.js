@@ -599,9 +599,12 @@ controller.getUserMacros = async (req, res) => {
       macrosLider.forEach((m) => { if (m.codigo) codes.add(m.codigo.trim()); });
     }
 
-    // Responsable de proyecto → obtener el macroproyecto del proyecto
+    // Responsable de proyecto → obtener el macroproyecto del proyecto (responsable_email legacy O array responsables)
     const proyectos = await Proyecto.find(
-      { responsable_email: email }, 'macroproyecto_id'
+      { $or: [
+        { responsable_email: email },
+        { 'responsables.email': email }
+      ]}, 'macroproyecto_id'
     ).lean();
     if (proyectos.length > 0) {
       const macroIds = proyectos.map((p) => p.macroproyecto_id).filter(Boolean);

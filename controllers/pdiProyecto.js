@@ -16,6 +16,16 @@ function normalizePeso(peso) {
     return value <= 1 ? value * 100 : value;
 }
 
+// Mantiene sincronizados los campos legacy responsable/responsable_email (primer
+// responsable del array) para que los lectores que aun no soportan el array sigan funcionando.
+function syncResponsablesLegacy(payload) {
+    if (Array.isArray(payload.responsables) && payload.responsables.length > 0) {
+        payload.responsable = payload.responsables[0].nombre || '';
+        payload.responsable_email = payload.responsables[0].email || '';
+    }
+    return payload;
+}
+
 // Recalcula el avance del macroproyecto como suma de contribucion ponderada de sus proyectos
 async function recalcularMacroproyecto(macroproyecto_id) {
     const proyectos = await Proyecto.find({ macroproyecto_id });
@@ -76,7 +86,7 @@ ctrl.getById = async (req, res) => {
 
 ctrl.create = async (req, res) => {
     try {
-        const doc = await Proyecto.create(req.body);
+        const doc = await Proyecto.create(syncResponsablesLegacy(req.body));
         await recalcularMacroproyecto(doc.macroproyecto_id);
         res.status(201).json(withSemaforo(doc));
     } catch (e) {
@@ -88,6 +98,7 @@ ctrl.update = async (req, res) => {
     try {
         const { presupuesto, presupuesto_ejecutado, num_acciones, ...updateData } = req.body;
         if (num_acciones !== undefined) updateData.num_acciones = Number(num_acciones) || 0;
+        syncResponsablesLegacy(updateData);
 
         const doc = await Proyecto.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!doc) return res.status(404).json({ error: 'No encontrado' });

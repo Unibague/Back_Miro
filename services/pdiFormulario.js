@@ -313,6 +313,25 @@ const getLideresEmailsForIndicador = async (indicador_id) => {
     }
 };
 
+// Obtiene los emails de todos los responsables asignados a un proyecto (array nuevo, con fallback legacy)
+const getResponsablesEmailsForProyecto = async (proyecto_id) => {
+    const proyectoId = getRefId(proyecto_id);
+    if (!proyectoId) return [];
+    try {
+        const proy = await Proyecto.findById(proyectoId).select('responsable_email responsables');
+        if (!proy) return [];
+        if (Array.isArray(proy.responsables) && proy.responsables.length > 0) {
+            return proy.responsables
+                .map(r => normalizeEmail(r.email))
+                .filter(email => email.length > 0);
+        }
+        const singleEmail = normalizeEmail(proy.responsable_email);
+        return singleEmail ? [singleEmail] : [];
+    } catch {
+        return [];
+    }
+};
+
 // ── Respuestas ─────────────────────────────────────────────────────────────
 
 const ensureWordDocumentIfSent = async (respuestaDoc) => {
@@ -362,11 +381,12 @@ const hydrateWordDocuments = async (docs) => {
     return Array.isArray(docs) ? hydrated : (hydrated[0] ?? null);
 };
 
-const getRespuestas = async ({ formulario_id, indicador_id, respondido_por, corte } = {}) => {
+// El borrador/reporte es compartido por (formulario_id, indicador_id, corte); respondido_por
+// ya no filtra la busqueda (queda ignorado a proposito para no depender de que el cliente no lo mande).
+const getRespuestas = async ({ formulario_id, indicador_id, corte } = {}) => {
     const query = {};
     if (formulario_id)  query.formulario_id  = formulario_id;
     if (indicador_id)   query.indicador_id   = indicador_id;
-    if (respondido_por) query.respondido_por = respondido_por;
     if (corte)          query.corte          = corte;
     const docs = await Respuesta.find(query)
         .populate('formulario_id', 'nombre campos')
@@ -501,7 +521,9 @@ const autoApproveAllPendingLeaderSubmittedResponses = async () => {
 
 // Crea o actualiza la respuesta de un responsable para un formulario+corte
 const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, corte, respuestas, estado }) => {
-    const existing = await Respuesta.findOne({ formulario_id, indicador_id: indicador_id || null, respondido_por, corte });
+    // Borrador/reporte compartido: no se filtra por respondido_por, asi cualquier responsable
+    // asignado al mismo proyecto encuentra y continua el mismo documento.
+    const existing = await Respuesta.findOne({ formulario_id, indicador_id: indicador_id || null, corte });
 
     const becomingEnviado = estado === 'Enviado';
     const wasAlreadySent  = existing?.estado === 'Enviado';
@@ -580,6 +602,7 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
 
         existing.respuestas    = respuestas ? mergeComentariosLider(respuestas, existing.respuestas) : existing.respuestas;
         existing.indicador_id  = indicador_id || null;
+        existing.respondido_por = respondido_por;
         if (estado) {
             existing.estado = estado;
             if (estado === 'Enviado' && (!existing.fecha_envio || wasRejected)) {
@@ -982,5 +1005,6 @@ module.exports = {
     avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
     getRespuestasPendientesAval, getRespuestasPendientesLider, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
     getLideresEmailsForIndicador,
+    getResponsablesEmailsForProyecto,
     autoApproveAllPendingLeaderSubmittedResponses,
 };

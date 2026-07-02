@@ -175,7 +175,7 @@ const resolveUserRecipient = (usersByName, name, fallbackEmail) => {
 const collectRecipients = async () => {
     const recipients = new Map();
 
-    const proyectos = await Proyecto.find({}, 'codigo nombre responsable responsable_email macroproyecto_id')
+    const proyectos = await Proyecto.find({}, 'codigo nombre responsable responsable_email responsables macroproyecto_id')
         .populate('macroproyecto_id', 'codigo nombre lider lider_email lideres')
         .lean();
     const proyectosVigentes = proyectos.filter((proyecto) => proyecto.macroproyecto_id);
@@ -184,7 +184,11 @@ const collectRecipients = async () => {
 
     for (const proyecto of proyectosVigentes) {
         macrosById.set(String(proyecto.macroproyecto_id._id), proyecto.macroproyecto_id);
-        personNames.push(proyecto.responsable);
+        if (Array.isArray(proyecto.responsables) && proyecto.responsables.length > 0) {
+            proyecto.responsables.forEach((r) => personNames.push(r.nombre));
+        } else {
+            personNames.push(proyecto.responsable);
+        }
     }
 
     for (const macro of macrosById.values()) {
@@ -231,20 +235,23 @@ const collectRecipients = async () => {
     }
 
     for (const proyecto of proyectosVigentes) {
-        const recipient = resolveUserRecipient(usersByName, proyecto.responsable, proyecto.responsable_email);
-        addRecipient(recipients, {
-            email: recipient.email,
-            name: recipient.name,
-            role: 'Responsable de proyecto',
-            item: {
-                tipo: 'Proyecto',
-                codigo: proyecto.codigo,
-                nombre: proyecto.nombre,
-                macro: proyecto.macroproyecto_id
-                    ? `${proyecto.macroproyecto_id.codigo} - ${proyecto.macroproyecto_id.nombre}`
-                    : '',
-            },
-        });
+        const item = {
+            tipo: 'Proyecto',
+            codigo: proyecto.codigo,
+            nombre: proyecto.nombre,
+            macro: proyecto.macroproyecto_id
+                ? `${proyecto.macroproyecto_id.codigo} - ${proyecto.macroproyecto_id.nombre}`
+                : '',
+        };
+        if (Array.isArray(proyecto.responsables) && proyecto.responsables.length > 0) {
+            for (const responsable of proyecto.responsables) {
+                const recipient = resolveUserRecipient(usersByName, responsable.nombre, responsable.email);
+                addRecipient(recipients, { email: recipient.email, name: recipient.name, role: 'Responsable de proyecto', item });
+            }
+        } else {
+            const recipient = resolveUserRecipient(usersByName, proyecto.responsable, proyecto.responsable_email);
+            addRecipient(recipients, { email: recipient.email, name: recipient.name, role: 'Responsable de proyecto', item });
+        }
     }
 
     return [...recipients.values()].map((recipient) => ({
