@@ -66,6 +66,7 @@ jobs:
         run: |
           echo "${{ secrets.VPN_PASSWORD }}" | sudo openconnect \
             --protocol=gp \
+            --os=win \
             --user="${{ secrets.VPN_USER }}" \
             --passwd-on-stdin \
             --servercert pin-sha256:+4XOhCB4GmaXr8/TMWL09EayWRbrz3X8WWAWgu79f9U= \
