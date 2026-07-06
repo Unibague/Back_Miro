@@ -11,6 +11,7 @@ router.get("/", controller.getValidator)
 router.get("/all", controller.getValidators)
 router.get("/pagination", controller.getValidatorsWithPagination)
 router.delete("/delete", requireAdmin, controller.deleteValidator)
+router.post("/duplicate", requireAdmin, controller.duplicateValidator)
 router.get("/id", controller.getValidatorById)
 router.get("/allValidators", controller.getAllValidators)
 

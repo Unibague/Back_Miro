@@ -8,13 +8,16 @@ const studentsSchema = new mongoose.Schema({
   email: {
     type: String,
     required: true,
+    index: true,
   },
   code_student: {
     type: String,
+    index: true,
   },
   identification: {
     type: String,
     required: true,
+    index: true,
   },
   program_code: {
     type: String,

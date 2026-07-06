@@ -769,6 +769,67 @@ validatorController.deleteValidator = async (req, res) => {
     }
 };
 
+validatorController.duplicateValidator = async (req, res) => {
+    try {
+        const { id, targetPeriodId } = req.body;
+        const sourcePeriodId = getRequestPeriodId(req);
+        const email = req.body.email || req.query.email || req.user?.email;
+
+        if (!email) {
+            return res.status(400).json({ status: "Email is required" });
+        }
+        if (!id) {
+            return res.status(400).json({ status: "Validator ID is required" });
+        }
+        if (!hasPeriodId(targetPeriodId)) {
+            return res.status(400).json({ status: "Target period ID is required" });
+        }
+
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ status: "User not found" });
+        }
+
+        const sourcePeriod = await getPeriodOrThrow(sourcePeriodId);
+        const sourceValidator = sourcePeriod ? findValidatorInPeriod(sourcePeriod, id) : await Validator.findById(id);
+        if (!sourceValidator) {
+            return res.status(404).json({ status: "Validator not found" });
+        }
+
+        const targetPeriod = await getPeriodOrThrow(targetPeriodId);
+        if (!targetPeriod) {
+            return res.status(404).json({ status: "Target period not found" });
+        }
+
+        const plainSource = toPlainValidator(sourceValidator);
+        const existsInTarget = (targetPeriod.screenshot.validators || []).some((item) => sameValidatorName(item.name, plainSource.name));
+        if (existsInTarget) {
+            return res.status(400).json({ status: "Validator already exists in the target period" });
+        }
+
+        const duplicated = new Validator({
+            name: plainSource.name,
+            columns: plainSource.columns,
+        });
+        await duplicated.validate();
+        targetPeriod.screenshot.validators.push(duplicated.toObject());
+        targetPeriod.markModified('screenshot.validators');
+        await targetPeriod.save();
+
+        // Audit log
+        await auditLogger.logCreate(req, user, 'validator', {
+            validatorId: duplicated._id,
+            validatorName: plainSource.name,
+            period: targetPeriodId,
+            duplicatedFrom: id,
+        });
+
+        res.status(200).json({ status: "Validator duplicated" });
+    } catch (error) {
+        res.status(error.statusCode || 500).json({ error: error.message });
+    }
+};
+
 validatorController.validateColumn = async (column, periodId = null) => {
   let { values } = column;
   let { name, datatype, validate_with, required, multiple } = column;

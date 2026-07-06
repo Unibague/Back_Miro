@@ -479,8 +479,10 @@ templateController.updatePlantilla = async (req, res) => {
       "template.fecha_final_responsables": updatedTemplate.fecha_final_responsables ?? null,
       "template.fecha_final": updatedTemplate.fecha_final ?? null,
       "template.responsible_producers": updatedTemplate.responsible_producers ?? [],
+      "template.qr_authorized_producers": updatedTemplate.qr_authorized_producers ?? [],
       // Sincronizar también al nivel raíz de publishedTemplate para que el frontend lo lea sin fallback profundo
       responsible_producers: updatedTemplate.responsible_producers ?? [],
+      qr_authorized_producers: updatedTemplate.qr_authorized_producers ?? [],
       notify_producers: updatedTemplate.notify_producers ?? false,
       ...(updatedTemplate.fecha_final_productores != null && { fecha_final_productores: updatedTemplate.fecha_final_productores }),
       ...(updatedTemplate.fecha_final_responsables != null && { fecha_final_responsables: updatedTemplate.fecha_final_responsables }),

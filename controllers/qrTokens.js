@@ -6,6 +6,7 @@ const Dependency = require('../models/dependencies');
 const User = require('../models/users');
 const Validator = require('./validators');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
+const { getFieldDropdownOptions } = require('../helpers/dropdownOptions');
 
 const qrController = {};
 
@@ -158,6 +159,19 @@ qrController.generateToken = async (req, res) => {
       return res.status(403).json({ error: 'Esta plantilla no tiene habilitada la generación de código QR.' });
     }
 
+    // Verificar que el usuario esté autorizado: productor encargado o dependencia
+    // incluida explícitamente en qr_authorized_producers.
+    const responsibleIds = (liveTemplate?.responsible_producers ?? pubTem.template?.responsible_producers ?? [])
+      .map(id => id.toString());
+    const qrAuthorizedIds = (liveTemplate?.qr_authorized_producers ?? pubTem.template?.qr_authorized_producers ?? [])
+      .map(id => id.toString());
+    const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+    const userDepId = userDependency?._id?.toString();
+    const isAuthorized = Boolean(userDepId) && (responsibleIds.includes(userDepId) || qrAuthorizedIds.includes(userDepId));
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'No tienes autorización para generar el código QR de esta plantilla.' });
+    }
+
     // Reusar token activo si ya existe para esta dependencia + plantilla
     const existing = await QrToken.findOne({
       publishedTemplateId: pubTemId,
@@ -187,6 +201,13 @@ const enrichFields = async (fields, periodId) => {
   const editable = fields || [];
   return Promise.all(editable.map(async (field) => {
     const plainField = withEffectiveRequired(field);
+
+    // Si el campo ya trae sus propias opciones (comentario o dropdown_options),
+    // esas tienen prioridad y no deben sobreescribirse con un validador.
+    const ownOptions = getFieldDropdownOptions(plainField);
+    if (ownOptions.length > 0) {
+      return { ...plainField, dropdown_options: ownOptions };
+    }
 
     try {
       let validatorName, columnName;
@@ -396,6 +417,9 @@ qrController.submitFormData = async (req, res) => {
       send_by,
       filled_data,
       loaded_date: datetime_now(),
+      source: 'qr',
+      sender_email: send_by.email || null,
+      sender_name: send_by.full_name || send_by.name || null,
     };
 
     if (!pubTem.qr_draft_data) pubTem.qr_draft_data = [];

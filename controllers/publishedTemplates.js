@@ -20,6 +20,7 @@ const { getEffectiveRequired } = require('../helpers/requiredFields');
 const { collapseRepeatedCompositeOption } = require('../helpers/dropdownOptions');
 const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
 const HistoricoDocentes = require('../models/historicoDocentes');
+const simpleCache = require('../helpers/simpleCache');
 
 const axios = require('axios');
 
@@ -316,6 +317,7 @@ const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
       notify_producers: liveTemplate?.notify_producers ?? currentTemplate?.notify_producers ?? false,
       shared: liveTemplate?.shared ?? currentTemplate?.shared ?? false,
       responsible_producers: liveTemplate?.responsible_producers || currentTemplate?.responsible_producers || [],
+      qr_authorized_producers: liveTemplate?.qr_authorized_producers || currentTemplate?.qr_authorized_producers || [],
       category: normalizeCategoryForResponse(
         liveTemplate?.category || currentTemplate?.category || publishedTemplate.category
       ),
@@ -406,6 +408,7 @@ const refreshPublishedTemplateSnapshot = async (publishedTemplate) => {
     Boolean(publishedTemplate.template.allows_qr) !== Boolean(latestTemplate.allows_qr) ||
     Boolean(publishedTemplate.template.notify_producers) !== Boolean(latestTemplate.notify_producers) ||
     JSON.stringify(publishedTemplate.template.responsible_producers || []) !== JSON.stringify(latestTemplate.responsible_producers || []) ||
+    JSON.stringify(publishedTemplate.template.qr_authorized_producers || []) !== JSON.stringify(latestTemplate.qr_authorized_producers || []) ||
     JSON.stringify(publishedTemplate.template.producers || []) !== JSON.stringify(latestTemplate.producers || []) ||
     JSON.stringify(publishedTemplate.template.dimensions || []) !== JSON.stringify(latestTemplate.dimensions || [])
   ) {
@@ -974,6 +977,7 @@ publTempController.publishTemplate = async (req, res) => {
       fecha_final_responsables: req.body.fecha_final_responsables || sanitizedTemplate.fecha_final_responsables || null,
       fecha_final: fechaFinal,
       responsible_producers: sanitizedTemplate.responsible_producers || [],
+      qr_authorized_producers: sanitizedTemplate.qr_authorized_producers || [],
       notify_producers: sanitizedTemplate.notify_producers || false,
       published_date: datetime_now(),
       category: category
@@ -1005,6 +1009,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
   const periodId = req.query.periodId || null;
   const filterByUserScope = req.query.filterByUserScope;
   const userRole = req.query.userRole;
+  const summaryOnly = req.query.summary === 'true';
   const skip = (page - 1) * limit;
 
   try {
@@ -1023,13 +1028,12 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     // Filtrado específico cuando filterByUserScope=true
     if (filterByUserScope === 'true') {
       if (userRole === 'Productor') {
-        const userDependency = await Dependency.findOne({
-          members: { $elemMatch: { email: email } }
-        });
-        
         const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
-        const dependenciesByCode = await Dependency.find({ dep_code: { $in: allUserDependencies } });
-        
+        const [userDependency, dependenciesByCode] = await Promise.all([
+          Dependency.findOne({ members: { $elemMatch: { email: email } } }),
+          Dependency.find({ dep_code: { $in: allUserDependencies } }),
+        ]);
+
         if (userDependency) {
           query['template.producers'] = userDependency._id;
         } else if (dependenciesByCode.length > 0) {
@@ -1040,20 +1044,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         }
       } else if (userRole === 'Responsable') {
         const orConditions = [];
-        
-        const userDependencies = await Dependency.find({ responsible: email });
+
+        const [userDependencies, allUserDependencies] = await Promise.all([
+          Dependency.find({ responsible: email }),
+          Dependency.find({ $or: [{ responsible: email }, { visualizers: email }] }),
+        ]);
         const userDependencyIds = userDependencies.map(dep => dep._id);
         const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
-        
+
         if (dimensions.length > 0) {
           const dimensionIds = dimensions.map(dim => dim._id);
           orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
         }
-        
-        const allUserDependencies = await Dependency.find({
-          $or: [{ responsible: email }, { visualizers: email }]
-        });
-        
+
         if (allUserDependencies.length > 0) {
           const dependencyIds = allUserDependencies.map(dep => dep._id);
           orConditions.push({ 'template.producers': { $in: dependencyIds } });
@@ -1068,20 +1071,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     }
     else if (activeRole !== 'Administrador') {
       const orConditions = [];
-      
-      const userDependencies = await Dependency.find({ responsible: email });
+
+      const [userDependencies, allUserDependencies] = await Promise.all([
+        Dependency.find({ responsible: email }),
+        Dependency.find({ $or: [{ responsible: email }, { visualizers: email }] }),
+      ]);
       const userDependencyIds = userDependencies.map(dep => dep._id);
-      
+
       const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
       if (dimensions.length > 0) {
         const dimensionIds = dimensions.map(dim => dim._id);
         orConditions.push({ 'template.dimensions': { $in: dimensionIds } });
       }
-      
-      const allUserDependencies = await Dependency.find({
-        $or: [{ responsible: email }, { visualizers: email }]
-      });
-      
+
       if (allUserDependencies.length > 0) {
         const dependencyIds = allUserDependencies.map(dep => dep._id);
         orConditions.push({ 'template.producers': { $in: dependencyIds } });
@@ -1093,25 +1095,54 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     }
 
     // Aplicar filtro de dependencias permitidas por el perfil del usuario
-    const userPosition = (user.position || '').trim() || 'Sin cargo';
-    const profilesWithPos = await AccessProfile.find({ positions: userPosition }).lean();
-    const profilePositionNames = profilesWithPos.flatMap(p => (p.positions || []).map(pos => (pos || '').trim() || 'Sin cargo'));
-    const allPositionNames = Array.from(new Set([userPosition, ...profilePositionNames]));
-    const permDocs = await PositionViewPermission.find({ position: { $in: allPositionNames } });
+    // (Administrador, Responsable y Productor quedan exentos, igual que en middleware/auth.js)
+    if (!['Administrador', 'Responsable', 'Productor'].includes(activeRole)) {
+      const userPosition = (user.position || '').trim() || 'Sin cargo';
+      // Perfiles/permisos por cargo cambian con poca frecuencia: cache corto (60s)
+      // para evitar repetir estas 2 consultas en cada request de este endpoint.
+      const permDocs = await simpleCache.getOrSet(`positionPerms:${userPosition}`, 60000, async () => {
+        const profilesWithPos = await AccessProfile.find({ positions: userPosition }).lean();
+        const profilePositionNames = profilesWithPos.flatMap(p => (p.positions || []).map(pos => (pos || '').trim() || 'Sin cargo'));
+        const allPositionNames = Array.from(new Set([userPosition, ...profilePositionNames]));
+        return PositionViewPermission.find({ position: { $in: allPositionNames } }).lean();
+      });
 
-    // Si todos los docs tienen allowed_dependencies específicas (ninguna vacía), aplicar filtro
-    const hasSpecificDepFilter = permDocs.length > 0 && permDocs.every(doc => (doc.allowed_dependencies || []).length > 0);
-    if (hasSpecificDepFilter) {
-      const allowedDepIds = Array.from(new Set(permDocs.flatMap(doc => (doc.allowed_dependencies || []).map(id => String(id)))));
-      const allowedObjectIds = allowedDepIds.map(id => new mongoose.Types.ObjectId(id));
-      // Combinar con el query existente usando $and para no sobreescribir filtros ya aplicados
-      const baseQuery = { ...query };
-      delete query.$or;
-      Object.keys(baseQuery).forEach(k => delete query[k]);
-      query.$and = [
-        baseQuery,
-        { 'template.producers': { $in: allowedObjectIds } }
-      ];
+      // Si todos los docs tienen allowed_dependencies específicas (ninguna vacía), aplicar filtro
+      const hasSpecificDepFilter = permDocs.length > 0 && permDocs.every(doc => (doc.allowed_dependencies || []).length > 0);
+      if (hasSpecificDepFilter) {
+        const allowedDepIds = Array.from(new Set(permDocs.flatMap(doc => (doc.allowed_dependencies || []).map(id => String(id)))));
+        const allowedObjectIds = allowedDepIds.map(id => new mongoose.Types.ObjectId(id));
+        // Combinar con el query existente usando $and para no sobreescribir filtros ya aplicados
+        const baseQuery = { ...query };
+        delete query.$or;
+        Object.keys(baseQuery).forEach(k => delete query[k]);
+        query.$and = [
+          baseQuery,
+          { 'template.producers': { $in: allowedObjectIds } }
+        ];
+      }
+    }
+
+    if (summaryOnly) {
+      // Modo liviano: solo lo necesario para listados tipo "nombre + estado"
+      // (evita poblar/transformar loaded_data completo, que es costoso en CPU y DB
+      // cuando hay muchas plantillas con muchos registros cargados).
+      const [summary_templates, total] = await Promise.all([
+        PublishedTemplate.find(query)
+          .collation({ locale: 'es', strength: 1 })
+          .skip(skip)
+          .limit(limit)
+          .select('name final_submitted template.name period')
+          .lean(),
+        PublishedTemplate.countDocuments(query),
+      ]);
+
+      return res.status(200).json({
+        templates: summary_templates,
+        total,
+        page,
+        pages: Math.ceil(total / limit),
+      });
     }
 
     const published_templates = await PublishedTemplate.find(query)
@@ -1121,7 +1152,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       .populate('period')
       .populate({
         path: 'template',
-        populate: 
+        populate:
         [
           { path: 'dimensions', model: 'dimensions' },
         ]
@@ -1129,7 +1160,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
 
 
     const total = await PublishedTemplate.countDocuments(query);
-    
+
     const updated_templates = await Promise.all(published_templates.map(async template => {
       template = template.toObject();
       template.template = await sanitizeTemplateDropdownPayload(template.template || {});
@@ -2510,6 +2541,12 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
           : template.template?.responsible_producers;
         const responsibleIds = (rawResponsible || []).map(id => id.toString());
         template.isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
+
+        const rawQrAuthorized = template.qr_authorized_producers?.length > 0
+          ? template.qr_authorized_producers
+          : template.template?.qr_authorized_producers;
+        const qrAuthorizedIds = (rawQrAuthorized || []).map(id => id.toString());
+        template.canGenerateQr = template.isEncargado || (qrAuthorizedIds.length > 0 && userDepIds.some(id => qrAuthorizedIds.includes(id)));
         return template;
       })
     );
@@ -2649,7 +2686,13 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           : template.template?.responsible_producers;
         const responsibleIds = (rawResponsible || []).map(id => id.toString());
         const isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
-        return { ...template, validators, isEncargado };
+
+        const rawQrAuthorized = template.qr_authorized_producers?.length > 0
+          ? template.qr_authorized_producers
+          : template.template?.qr_authorized_producers;
+        const qrAuthorizedIds = (rawQrAuthorized || []).map(id => id.toString());
+        const canGenerateQr = isEncargado || (qrAuthorizedIds.length > 0 && userDepIds.some(id => qrAuthorizedIds.includes(id)));
+        return { ...template, validators, isEncargado, canGenerateQr };
       })
     );
 

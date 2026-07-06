@@ -199,6 +199,11 @@ const templateSchema = new Schema({
       ref: 'dependencies',
       default: []
     },
+    qr_authorized_producers: {
+      type: [Schema.Types.ObjectId],
+      ref: 'dependencies',
+      default: []
+    },
     fecha_final: {
       type: Date,
       required: false

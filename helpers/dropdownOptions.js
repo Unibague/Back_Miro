@@ -146,12 +146,22 @@ const extractDropdownOptionsFromComment = (comment, optionsConfig = {}) => {
   return uniqueOptionTexts(options, optionsConfig);
 };
 
-const getFieldDropdownOptions = (field = {}) => uniqueOptionTexts([
-  ...(Array.isArray(field.excel_validation_options) ? field.excel_validation_options : []),
-  ...(Array.isArray(field.validator_options) ? field.validator_options : []),
-  ...(Array.isArray(field.dropdown_options) ? field.dropdown_options : []),
-  ...extractDropdownOptionsFromComment(field.comment),
-]);
+// preserveLeadingCodes: true porque los códigos iniciales (ej. "1", "CC") son
+// parte del valor semántico del campo (ej. ID_TIPO_MOV_DOC_EXTERIOR), no viñetas.
+// Prioridad (sin combinar): comentario primero; si no trae lista, se usan
+// dropdown_options/excel_validation_options/validator_options ya almacenadas.
+const getFieldDropdownOptions = (field = {}) => {
+  const fromComment = extractDropdownOptionsFromComment(field.comment, { preserveLeadingCodes: true });
+  if (fromComment.length > 0) {
+    return uniqueOptionTexts(fromComment, { preserveLeadingCodes: true });
+  }
+
+  return uniqueOptionTexts([
+    ...(Array.isArray(field.excel_validation_options) ? field.excel_validation_options : []),
+    ...(Array.isArray(field.validator_options) ? field.validator_options : []),
+    ...(Array.isArray(field.dropdown_options) ? field.dropdown_options : []),
+  ], { preserveLeadingCodes: true });
+};
 
 const getOptionAliases = (option) => {
   const text = collapseRepeatedCompositeOption(toOptionText(option));

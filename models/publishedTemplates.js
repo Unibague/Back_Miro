@@ -45,6 +45,14 @@ const producersData = new Schema({
         type: String,
         enum: ['excel', 'qr', 'online', 'manual'],
         default: 'manual'
+    },
+    sender_email: {
+        type: String,
+        required: false
+    },
+    sender_name: {
+        type: String,
+        required: false
     }
 }, {
     _id: false
@@ -97,6 +105,11 @@ const publishedTemplateSchema = new Schema({
     required: false
   },
   responsible_producers: {
+    type: [Schema.Types.ObjectId],
+    ref: 'dependencies',
+    default: []
+  },
+  qr_authorized_producers: {
     type: [Schema.Types.ObjectId],
     ref: 'dependencies',
     default: []
