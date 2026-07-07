@@ -6,7 +6,7 @@ const SINGLETON_ID = 'pdi-config-v1';
 const pdiConfigSchema = new mongoose.Schema({
     _id:          { type: String, default: SINGLETON_ID },
     nombre:       { type: String, default: 'PDI 2026–2029' },
-    descripcion:  { type: String, default: 'Plan de Desarrollo Institucional' },
+    descripcion:  { type: String, default: 'Proyecto de Desarrollo Institucional' },
     anio_inicio:  { type: Number, default: 2026 },
     anio_fin:     { type: Number, default: 2029 },
     // Texto libre para encabezados y reportes

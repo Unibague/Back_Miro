@@ -20,6 +20,42 @@ function toNumber(value) {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function formatExcelDate(value) {
+    if (value == null || value === '') return '';
+    if (value instanceof Date && !Number.isNaN(value.getTime())) {
+        return value.toISOString().slice(0, 10);
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        const parsed = xlsx.SSF.parse_date_code(value);
+        if (parsed) {
+            return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+        }
+    }
+
+    return String(value).trim();
+}
+
+function mergeDateList(...values) {
+    const dates = values
+        .flatMap((value) => String(value || '').split(/[;,]/))
+        .map((value) => value.trim())
+        .filter(Boolean);
+    return [...new Set(dates)].join(', ');
+}
+
+function findColumnByHeader(rows, labels, maxRows = 8) {
+    const normalizedLabels = labels.map(normalizeText);
+    for (let rowIndex = 0; rowIndex < Math.min(rows.length, maxRows); rowIndex += 1) {
+        const row = rows[rowIndex] || [];
+        const colIndex = row.findIndex((cell) => {
+            const normalizedCell = normalizeText(cell);
+            return normalizedLabels.some((label) => normalizedCell.includes(label));
+        });
+        if (colIndex !== -1) return colIndex;
+    }
+    return -1;
+}
+
 function normalizeCode(value) {
     return String(value || '')
         .toUpperCase()
@@ -222,6 +258,7 @@ function parseExecutedWorkbook(filePath, options = {}) {
 
     const aggregatedByProject = new Map();
     const actionsByCode = new Map();
+    const colFechaPago = findColumnByHeader(rows, ['fecha de pago', 'fecha pago', 'fecha pago efectivo', 'pago']);
     let currentActionCode = null;
     let currentProjectCode = null;
     let currentActionName = '';
@@ -230,6 +267,7 @@ function parseExecutedWorkbook(filePath, options = {}) {
         const row = rows[index] || [];
         const rowLabel = String(row[2] || '').trim();
         const actionCode = normalizeCode(row[1]);
+        const fechaPago = colFechaPago !== -1 ? formatExcelDate(row[colFechaPago]) : '';
         const presupuestoEjecutado = EXECUTED_COLUMN_INDEXES.reduce(
             (acc, columnIndex) => acc + toNumber(row[columnIndex]),
             0
@@ -255,6 +293,7 @@ function parseExecutedWorkbook(filePath, options = {}) {
                 codigo_proyecto: currentProjectCode,
                 presupuesto_ejecutado: presupuestoEjecutado,
                 nombre_accion: currentActionName,
+                fecha_pago: fechaPago,
             });
             continue;
         }
@@ -269,6 +308,7 @@ function parseExecutedWorkbook(filePath, options = {}) {
         const action = actionsByCode.get(currentActionCode);
         if (action) {
             action.presupuesto_ejecutado += presupuestoEjecutado;
+            action.fecha_pago = mergeDateList(action.fecha_pago, fechaPago);
         }
     }
 
@@ -348,6 +388,7 @@ function extractSheetTitle(rows) {
 function buildSummaryIndex(rows) {
     const actions = [];
     const byName = new Map();
+    const colFechaPago = findColumnByHeader(rows, ['fecha de pago', 'fecha pago', 'fecha pago efectivo', 'pago']);
     let currentProjectCode = null;
     let currentProjectName = '';
 
@@ -387,6 +428,7 @@ function buildSummaryIndex(rows) {
             gasto_presupuesto: gastoPresupuesto,
             inversion_presupuesto: inversionPresupuesto,
             ejecucion_anio: toNumber(row[6]),
+            fecha_pago: colFechaPago !== -1 ? formatExcelDate(row[colFechaPago]) : '',
             observacion: row[5] || '',
         };
         const key = normalizeText(nombreAccion);
@@ -446,6 +488,7 @@ function parseActivityExecutionBlocks(rows, summary) {
             gasto: tipo === 'gasto' ? presupuestoEjecutado : 0,
             inversion: tipo === 'inversion' ? presupuestoEjecutado : 0,
             presupuesto_ejecutado: presupuestoEjecutado,
+            fecha_pago: mergeDateList(...(block.fechasPago || []), summaryAction?.fecha_pago),
             observacion: summaryAction?.observacion || block.observacion || '',
         });
     };
@@ -461,6 +504,8 @@ function parseActivityExecutionBlocks(rows, summary) {
                 rawName: row[1] || '',
                 nombre_accion: stripTipoPrefix(row[1] || ''),
                 detalleTotal: 0,
+                fechaPagoColumn: -1,
+                fechasPago: [],
                 observacion: '',
             };
             continue;
@@ -474,9 +519,17 @@ function parseActivityExecutionBlocks(rows, summary) {
             continue;
         }
 
-        if (/^Tercero$/i.test(firstCell)) continue;
+        if (/^Tercero$/i.test(firstCell)) {
+            block.fechaPagoColumn = row.findIndex((cell) => {
+                const normalized = normalizeText(cell);
+                return normalized.includes('fecha de pago') || normalized.includes('fecha pago') || normalized === 'pago';
+            });
+            continue;
+        }
 
         const detailValue = toNumber(row[6]);
+        const fechaPago = block.fechaPagoColumn !== -1 ? formatExcelDate(row[block.fechaPagoColumn]) : '';
+        if (fechaPago) block.fechasPago.push(fechaPago);
         block.detalleTotal += detailValue;
         if (!block.observacion && row[2]) {
             block.observacion = String(row[2]).trim();
@@ -509,6 +562,7 @@ function parseTopExecutionRows(summaryActions) {
             gasto: tipo === 'gasto' ? presupuestoEjecutado : 0,
             inversion: tipo === 'inversion' ? presupuestoEjecutado : 0,
             presupuesto_ejecutado: presupuestoEjecutado,
+            fecha_pago: action.fecha_pago || '',
             observacion: action.observacion || '',
         };
     });

@@ -222,6 +222,46 @@ ctrl.upsertRespuesta = async (req, res) => {
     }
 };
 
+ctrl.avalProyecto = async (req, res) => {
+    try {
+        const { estado_aval_proyecto, aval_por, aval_comentario, aval_razones, aval_otro_cual, comentarios_campos } = req.body;
+        if (!['Aprobado', 'Rechazado'].includes(estado_aval_proyecto)) {
+            return res.status(400).json({ error: 'estado_aval_proyecto debe ser Aprobado o Rechazado' });
+        }
+        const doc = await svc.avalProyecto(req.params.respuestaId, {
+            estado_aval_proyecto,
+            aval_por,
+            aval_comentario,
+            aval_razones,
+            aval_otro_cual,
+            comentarios_campos,
+        });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+ctrl.getRespuestasPendientesAvalProyecto = async (req, res) => {
+    try {
+        const { responsable_email } = req.query;
+        if (!responsable_email) return res.json([]);
+        const docs = await svc.getRespuestasPendientesAvalProyecto(responsable_email);
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+ctrl.getRespuestasPendientesResponsableProyecto = async (req, res) => {
+    try {
+        const docs = await svc.getRespuestasPendientesResponsableProyecto();
+        res.json(docs);
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
 ctrl.avalRespuesta = async (req, res) => {
     try {
         const { estado_aval, aval_por, aval_comentario, aval_razones, aval_otro_cual, comentarios_campos } = req.body;
@@ -266,6 +306,28 @@ ctrl.avalPlaneacion = async (req, res) => {
         res.json(doc);
     } catch (e) {
         res.status(400).json({ error: e.message });
+    }
+};
+
+ctrl.getResponsableProyectoEmailIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json({ responsable_email: '' });
+        const responsable_email = await svc.getResponsableProyectoEmailForIndicador(indicador_id);
+        res.json({ responsable_email });
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
+ctrl.getReportersEmailsIndicador = async (req, res) => {
+    try {
+        const { indicador_id } = req.query;
+        if (!indicador_id) return res.json({ emails: [] });
+        const emails = await svc.getReportersEmailsForIndicador(indicador_id);
+        res.json({ emails });
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
     }
 };
 

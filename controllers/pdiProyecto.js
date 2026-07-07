@@ -11,6 +11,15 @@ function invalidatePresupuestoCache() {
     } catch (_) { /* cache invalidation is best-effort */ }
 }
 
+function mergeDateList(...values) {
+    return [...new Set(
+        values
+            .flatMap((value) => String(value || '').split(/[;,]/))
+            .map((value) => value.trim())
+            .filter(Boolean)
+    )].join(', ');
+}
+
 function normalizePeso(peso) {
     const value = Number(peso) || 0;
     return value <= 1 ? value * 100 : value;
@@ -255,6 +264,7 @@ ctrl.importExecuted = async (req, res) => {
                         nombre_proyecto: importedAction.nombre_proyecto || null,
                         accion: importedAction.nombre_accion,
                         presupuesto_ejecutado: importedAction.presupuesto_ejecutado,
+                        fecha_pago: importedAction.fecha_pago || '',
                         fila: importedAction.fila,
                     });
                     continue;
@@ -277,6 +287,7 @@ ctrl.importExecuted = async (req, res) => {
                     nombre_proyecto: proyecto?.nombre || importedAction.nombre_proyecto,
                     accion_excel: importedAction.nombre_accion,
                     presupuesto_ejecutado: importedAction.presupuesto_ejecutado,
+                    fecha_pago: importedAction.fecha_pago || '',
                     fila: importedAction.fila,
                 });
                 continue;
@@ -289,6 +300,7 @@ ctrl.importExecuted = async (req, res) => {
                     accion, proyecto,
                     presupuesto_ejecutado: 0,
                     gasto: 0, inversion: 0,
+                    fecha_pago: '',
                     observacion: '', filas: [],
                 });
             }
@@ -296,6 +308,7 @@ ctrl.importExecuted = async (req, res) => {
             pending.presupuesto_ejecutado += importedAction.presupuesto_ejecutado;
             pending.gasto += importedAction.gasto || 0;
             pending.inversion += importedAction.inversion || 0;
+            pending.fecha_pago = mergeDateList(pending.fecha_pago, importedAction.fecha_pago);
             if (importedAction.observacion) pending.observacion = importedAction.observacion;
             pending.filas.push(importedAction.fila);
         }
@@ -305,10 +318,11 @@ ctrl.importExecuted = async (req, res) => {
         const accionesActualizadasDetalle = [];
         const proyectosTocados = new Set();
 
-        for (const { accion, proyecto, presupuesto_ejecutado, gasto, inversion, observacion, filas } of pendingAcciones.values()) {
+        for (const { accion, proyecto, presupuesto_ejecutado, gasto, inversion, fecha_pago, observacion, filas } of pendingAcciones.values()) {
             accion.presupuesto_ejecutado = presupuesto_ejecutado;
             accion.gasto = gasto;
             accion.inversion = inversion;
+            accion.fecha_pago = fecha_pago;
             if (!accion.presupuesto_ejecutado_por_anio) accion.presupuesto_ejecutado_por_anio = new Map();
             accion.presupuesto_ejecutado_por_anio.set(anioImport, presupuesto_ejecutado);
             accion.markModified('presupuesto_ejecutado_por_anio');
@@ -338,6 +352,7 @@ ctrl.importExecuted = async (req, res) => {
                 gasto,
                 inversion,
                 presupuesto_ejecutado,
+                fecha_pago,
                 fila_excel: filas[0],
                 observacion,
             });

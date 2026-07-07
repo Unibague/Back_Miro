@@ -324,6 +324,7 @@ qrController.getFormData = async (req, res) => {
       dependency: dep?.name || qrToken.dependency,
       deadline: pubTem.deadline,
       periodId,
+      periodName: pubTem.period?.name || null,
       sheets,
     });
   } catch (error) {

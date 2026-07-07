@@ -11,14 +11,19 @@ router.put('/:id',  ctrl.update);
 router.delete('/:id', ctrl.remove);
 
 // ── Respuestas ─────────────────────────────────────────────────────────────
+router.get('/respuestas/pendientes-aval-proyecto', ctrl.getRespuestasPendientesAvalProyecto);
+router.get('/respuestas/pendientes-responsable-proyecto', ctrl.getRespuestasPendientesResponsableProyecto);
 router.get('/respuestas/pendientes-aval',          ctrl.getRespuestasPendientesAval);
 router.get('/respuestas/pendientes-lider',         ctrl.getRespuestasPendientesLider);
 router.get('/respuestas/pendientes-planeacion',    ctrl.getRespuestasPendientesPlaneacion);
 router.get('/respuestas/por-indicador',            ctrl.getRespuestasPorIndicador);
 router.get('/respuestas/lider-email-indicador',    ctrl.getLiderEmailIndicador);
+router.get('/respuestas/responsable-proyecto-email-indicador', ctrl.getResponsableProyectoEmailIndicador);
+router.get('/respuestas/reporters-email-indicador', ctrl.getReportersEmailsIndicador);
 router.get('/:id/respuestas',                    ctrl.getRespuestas);
 router.get('/:id/respuestas/:respuestaId',        ctrl.getRespuestaById);
 router.post('/:id/respuestas',                   ctrl.upsertRespuesta);
+router.put('/:id/respuestas/:respuestaId/aval-proyecto', ctrl.avalProyecto);
 router.put('/:id/respuestas/:respuestaId/aval',        ctrl.avalRespuesta);
 router.put('/:id/respuestas/:respuestaId/comentarios/:campoId/resuelto', ctrl.marcarComentarioCampoResuelto);
 router.put('/:id/respuestas/:respuestaId/planeacion',  ctrl.avalPlaneacion);

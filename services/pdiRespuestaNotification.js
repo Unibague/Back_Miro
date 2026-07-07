@@ -309,9 +309,154 @@ const sendRespuestaApprovedToAdmins = async (respuesta, formulario, indicador, l
   }
 };
 
+const buildEmailHtmlEstadoGenerico = ({ headerTitle, introText, statusLabel, statusColor, indicadorCodigo, indicadorNombre, corteName, comentario, comentarioLabel, reportadoPor }) => {
+  return `
+    <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
+        <tr><td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:620px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+
+            <!-- Header -->
+            <tr><td style="background:#1e3a5f;padding:30px 20px;text-align:left;">
+              <div style="font-size:11px;color:#8899aa;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px;">PDI - Sistema de Gestión</div>
+              <h1 style="margin:0;font-size:20px;line-height:1.3;font-weight:600;color:#ffffff;">${headerTitle}</h1>
+            </td></tr>
+
+            <!-- Body -->
+            <tr><td style="padding:30px 20px;color:#2c3e50;line-height:1.7;">
+
+              <p style="margin:0 0 28px;font-size:14px;color:#475569;line-height:1.8;">
+                ${introText}
+              </p>
+
+              <!-- Status Section -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;border-top:2px solid #e5e7eb;border-bottom:2px solid #e5e7eb;">
+                <tr><td style="padding:20px 0;text-align:center;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Estado</div>
+                  <div style="font-size:22px;color:${statusColor};font-weight:700;">${statusLabel}</div>
+                </td></tr>
+              </table>
+
+              <!-- Details Table -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:28px 0;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+                <tr style="background:#f9fafb;">
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Indicador</div>
+                  </td>
+                  <td style="padding:12px 16px;width:60%;">
+                    <div style="font-size:14px;color:#2c3e50;font-weight:600;">${indicadorCodigo}</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Descripción</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${indicadorNombre}</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Corte/Período</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${corteName}</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Reportado por</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${reportadoPor || 'No especificado'}</div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Comments Section -->
+              ${comentario ? `
+                <div style="margin:28px 0;padding:20px;background:#f9fafb;border-left:4px solid ${statusColor};border-radius:4px;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">${comentarioLabel || 'Observaciones'}</div>
+                  <div style="font-size:14px;color:#2c3e50;line-height:1.8;font-weight:500;">${comentario}</div>
+                </div>
+              ` : ''}
+
+              <!-- CTA -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:32px 0;">
+                <tr><td align="center">
+                  <a href="https://miro.unibague.edu.co/pdi"
+                     style="background-color:#1e3a5f;color:#ffffff;text-decoration:none;padding:12px 32px;border-radius:4px;font-size:14px;font-weight:600;display:inline-block;border:none;cursor:pointer;">
+                    Acceder a la Plataforma
+                  </a>
+                </td></tr>
+              </table>
+
+              <p style="font-size:13px;color:#7c8fa3;margin:28px 0 0;line-height:1.6;border-top:1px solid #e5e7eb;padding-top:20px;">
+                Para más información comunicarse al correo: <strong>gestionpdi@unibague.edu.co</strong>
+              </p>
+
+            </td></tr>
+
+            <!-- Footer -->
+            <tr><td style="background:#f9fafb;padding:15px 20px;border-top:1px solid #e5e7eb;text-align:center;">
+              <p style="margin:0;font-size:11px;color:#999;line-height:1.6;">
+                Este es un mensaje automático del sistema de gestión institucional. Por favor, no responda directamente a este correo.
+              </p>
+            </td></tr>
+
+          </table>
+        </td></tr>
+      </table>
+    </div>
+  `;
+};
+
+// Notificación genérica multi-destinatario (usada para "devuelto por Planeación" y para
+// avisar al responsable del proyecto cuando el líder del macroproyecto rechaza un reporte).
+const sendRespuestaEstadoNotification = async ({ recipients, subject, headerTitle, introText, statusLabel, statusColor, indicador, corte, respondidoPor, comentario, comentarioLabel }) => {
+  const destinatarios = Array.from(new Set((recipients || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean)));
+  if (destinatarios.length === 0) {
+    console.warn('[PDI-RESPUESTA-ESTADO] No hay destinatarios para la notificación');
+    return;
+  }
+
+  try {
+    const emailConfig = getEmailConfig('general');
+    const transporter = nodemailer.createTransport({
+      host: emailConfig.host,
+      port: emailConfig.port,
+      secure: false,
+      auth: { user: emailConfig.username, pass: emailConfig.password },
+      tls: { rejectUnauthorized: false }
+    });
+
+    await transporter.sendMail({
+      from: `"${emailConfig.fromName}" <${emailConfig.fromAddress}>`,
+      to: destinatarios.join(','),
+      subject,
+      html: buildEmailHtmlEstadoGenerico({
+        headerTitle,
+        introText,
+        statusLabel,
+        statusColor,
+        indicadorCodigo: indicador?.codigo || 'Sin código',
+        indicadorNombre: indicador?.nombre || 'Sin nombre',
+        corteName: corte || 'Sin corte',
+        comentario,
+        comentarioLabel,
+        reportadoPor: respondidoPor,
+      }),
+    });
+    console.log(`[PDI-RESPUESTA-ESTADO] ✓ Email enviado a: ${destinatarios.join(', ')} - ${statusLabel}`);
+  } catch (error) {
+    console.error('[PDI-RESPUESTA-ESTADO] Error enviando notificación:', error.message);
+  }
+};
+
 module.exports = {
   sendRespuestaEvaluationNotification,
   buildEmailHtmlRespuestaEvaluation,
   sendRespuestaApprovedToAdmins,
-  buildEmailHtmlApprovedForAdmins
+  buildEmailHtmlApprovedForAdmins,
+  sendRespuestaEstadoNotification,
 };

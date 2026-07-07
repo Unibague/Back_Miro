@@ -339,6 +339,7 @@ ctrl.corte = async (req, res) => {
                     _id:    ind._id,
                     codigo: ind.codigo,
                     nombre: ind.nombre,
+                    meta:   p.meta,
                     responsable:       ind.responsable,
                     responsable_email: ind.responsable_email,
                 });
