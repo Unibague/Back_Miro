@@ -4,6 +4,7 @@ const { requireAdmin } = require('../middleware/auth');
 const auditMiddleware = require('../middleware/configurationAudit');
 
 // Historial de auditoría por entidad
+router.get('/templates/latest', requireAdmin, controller.getLatestTemplateAudits);
 router.get('/template/:templateId', requireAdmin, controller.getTemplateAuditHistory);
 router.get('/report/:reportId', requireAdmin, controller.getReportAuditHistory);
 router.get('/producer-report/:reportId', requireAdmin, controller.getProducerReportAuditHistory);

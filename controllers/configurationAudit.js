@@ -21,6 +21,17 @@ configAuditController.getTemplateAuditHistory = async (req, res) => {
   }
 };
 
+configAuditController.getLatestTemplateAudits = async (req, res) => {
+  try {
+    const ids = String(req.query.ids || '').split(',').map((id) => id.trim()).filter(Boolean);
+    const map = await ConfigurationAuditService.getLatestAuditsForEntities('template', ids);
+    res.status(200).json(map);
+  } catch (error) {
+    console.error('Error obteniendo historial de plantillas en lote:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 configAuditController.getReportAuditHistory = async (req, res) => {
   try {
     const { reportId } = req.params;

@@ -15,6 +15,33 @@ const { ObjectId } = mongoose.Types;
 
 const escapeRegExp = (value = "") => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const getPublishedTemplateIdConditions = (templateId) => {
+  const idText = String(templateId || "");
+  if (!idText) return [];
+
+  const conditions = [
+    { "template._id": idText },
+    { "template.id": idText },
+  ];
+
+  if (mongoose.Types.ObjectId.isValid(idText)) {
+    const objectId = new ObjectId(idText);
+    conditions.push(
+      { "template._id": objectId },
+      { "template.id": objectId },
+    );
+  }
+
+  return conditions;
+};
+
+const buildPublishedTemplateLookup = (templateId, periodId) => {
+  const idConditions = getPublishedTemplateIdConditions(templateId);
+  const query = idConditions.length ? { $or: idConditions } : {};
+  if (periodId) query.period = periodId;
+  return query;
+};
+
 const validateWithToText = (validateWith) => {
   if (!validateWith) return '';
   if (typeof validateWith === 'string') return validateWith;
@@ -74,13 +101,13 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
     if (periodId && onlyPublishedInPeriod) {
       const publishedTemplates = await PubTemplate.find(
         { period: periodId },
-        { "template._id": 1 }
+        { "template._id": 1, "template.id": 1 }
       ).lean();
 
       const publishedTemplateIds = [
         ...new Set(
           publishedTemplates
-            .map((pt) => String(pt.template?._id || ""))
+            .map((pt) => String(pt.template?._id || pt.template?.id || ""))
             .filter((id) => mongoose.Types.ObjectId.isValid(id))
         ),
       ].map((id) => new ObjectId(id));
@@ -98,10 +125,9 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
       templates.map(async (template) => {
         template = await sanitizeTemplateDropdownPayload(template);
         if (periodId) {
-          const publishedTemplate = await PubTemplate.findOne({
-            "template._id": template._id,
-            period: periodId,
-          });
+          const publishedTemplate = await PubTemplate.findOne(
+            buildPublishedTemplateLookup(template._id, periodId)
+          );
           template.published = !!publishedTemplate;
         }
         template.validators = await collectValidatorsForTemplate(template, periodId);
@@ -123,6 +149,12 @@ templateController.getPlantillas = async (req, res) => {
   const skip = (page - 1) * limit;
   const periodId = req.query.periodId;
   const onlyPublishedInPeriod = req.query.onlyPublishedInPeriod === "true";
+  // Sanitizar el workbook (re-parsea/reescribe el xlsx completo) y calcular
+  // validadores por campo es costoso y solo lo necesitan las acciones de
+  // descarga/exportación (que ya piden datos frescos por su cuenta). El
+  // listado paginado/busqueda no los usa para renderizar filas, asi que se
+  // omiten por defecto para no pagar ese costo en cada tecla de busqueda.
+  const withValidators = req.query.withValidators === "true";
 
   try {
     const query = search
@@ -142,13 +174,13 @@ templateController.getPlantillas = async (req, res) => {
     if (periodId && onlyPublishedInPeriod) {
       const publishedTemplates = await PubTemplate.find(
         { period: periodId },
-        { "template._id": 1 }
+        { "template._id": 1, "template.id": 1 }
       ).lean();
 
       const publishedTemplateIds = [
         ...new Set(
           publishedTemplates
-            .map((publishedTemplate) => String(publishedTemplate.template?._id || ""))
+            .map((publishedTemplate) => String(publishedTemplate.template?._id || publishedTemplate.template?.id || ""))
             .filter((id) => mongoose.Types.ObjectId.isValid(id))
         ),
       ].map((id) => new ObjectId(id));
@@ -172,15 +204,24 @@ templateController.getPlantillas = async (req, res) => {
 
     const templatesWithValidators = await Promise.all(
       templates.map(async (template) => {
-        template = await sanitizeTemplateDropdownPayload(template);
+        if (withValidators) {
+          template = await sanitizeTemplateDropdownPayload(template);
+        } else if (typeof template.toObject === 'function') {
+          // sanitizeTemplateDropdownPayload normalmente convierte el documento
+          // a objeto plano; al omitirla por rendimiento hay que hacerlo igual
+          // aqui, porque asignar campos ad-hoc (published, validators) sobre
+          // un documento de Mongoose sin convertir no se serializa en el JSON.
+          template = template.toObject();
+        }
         if (periodId) {
-          const publishedTemplate = await PubTemplate.findOne({
-            'template._id': template._id,
-            'period': periodId
-          });
+          const publishedTemplate = await PubTemplate.findOne(
+            buildPublishedTemplateLookup(template._id, periodId)
+          );
           template.published = !!publishedTemplate;
         }
-        template.validators = await collectValidatorsForTemplate(template, periodId);
+        if (withValidators) {
+          template.validators = await collectValidatorsForTemplate(template, periodId);
+        }
         return template;
       })
     );
@@ -423,7 +464,7 @@ templateController.updatePlantilla = async (req, res) => {
     const removedDependencies = await Dependency.find({ _id: { $in: removedProducers } });
     const removedDepCodes = removedDependencies.map(dep => dep.dep_code);
 
-    const publishedTemplates = await PublishedTemplate.find({ "template._id": id });
+    const publishedTemplates = await PublishedTemplate.find(buildPublishedTemplateLookup(id));
 
     const bloqueadas = [];
 
@@ -457,7 +498,6 @@ templateController.updatePlantilla = async (req, res) => {
     }
 
     // 🔁 Se sincronizan los producers embebidos en publishedTemplates
-    const objectId = new mongoose.Types.ObjectId(id);
     const newProducersAsObjectIds = updatedFields.producers.map(id => new mongoose.Types.ObjectId(id));
 
     const camposASincronizar = {
@@ -491,7 +531,7 @@ templateController.updatePlantilla = async (req, res) => {
     };
 
     const updatedPublishedTemplates = await PublishedTemplate.updateMany(
-      { "template._id": objectId },
+      { $or: getPublishedTemplateIdConditions(id) },
       { $set: camposASincronizar }
     );
 
@@ -528,8 +568,6 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
     const logs = [];
 
     for (const template of templates) {
-      const templateId = new mongoose.Types.ObjectId(template._id);
-
       // Construir snapshot completo
       const templateSnapshot = await sanitizeTemplateDropdownPayload({
         _id: template._id,
@@ -546,7 +584,7 @@ templateController.syncAllPublishedTemplates = async (req, res) => {
       });
 
       const result = await PublishedTemplate.updateMany(
-        { "template._id": templateId },
+        { $or: getPublishedTemplateIdConditions(template._id) },
         {
           $set: {
             template: templateSnapshot,
@@ -588,9 +626,7 @@ templateController.deletePlantilla = async (req, res) => {
       return res.status(404).json({ mensaje: "Plantilla no encontrada" });
     }
     
-    const publishedTemplate = await PubTemplate.find({
-      'template._id': new ObjectId(id)
-    });
+    const publishedTemplate = await PubTemplate.find(buildPublishedTemplateLookup(id));
 
     console.log(id, publishedTemplate)
 

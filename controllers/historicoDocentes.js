@@ -9,6 +9,67 @@ const {
 const controller = {};
 
 const VALID_CATEGORIES = ['snies', 'plantillas', 'informes'];
+const EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PDF_CONTENT_TYPE = "application/pdf";
+
+const INVALID_WORKSHEET_CHARS = /[\\/*?:\[\]]/g;
+
+const sanitizeWorksheetName = (name, index, usedNames) => {
+  const fallback = `Hoja ${index + 1}`;
+  const baseName = String(name || fallback)
+    .replace(INVALID_WORKSHEET_CHARS, " ")
+    .trim()
+    .slice(0, 31) || fallback;
+
+  let candidate = baseName;
+  let suffix = 1;
+  while (usedNames.has(candidate.toLowerCase())) {
+    const suffixText = ` ${suffix}`;
+    candidate = `${baseName.slice(0, 31 - suffixText.length)}${suffixText}`;
+    suffix += 1;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+};
+
+const buildWorkbookBufferFromSheets = async (sheets = []) => {
+  if (!Array.isArray(sheets) || sheets.length === 0) return null;
+
+  const workbook = new ExcelJS.Workbook();
+  const usedNames = new Set();
+
+  sheets.forEach((sheet, index) => {
+    const worksheetName = sanitizeWorksheetName(sheet?.name, index, usedNames);
+    const worksheet = workbook.addWorksheet(worksheetName);
+    const headers = Array.isArray(sheet?.headers) ? sheet.headers : [];
+    const rows = Array.isArray(sheet?.rows) ? sheet.rows : [];
+
+    if (headers.length > 0) {
+      worksheet.addRow(headers);
+    }
+
+    rows.forEach((row) => {
+      const values = Array.isArray(row) ? row : [];
+      worksheet.addRow(headers.length > 0 ? headers.map((_, i) => values[i] ?? "") : values);
+    });
+  });
+
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+};
+
+const safeDownloadFileName = (fileName, fallback = "archivo.xlsx") => {
+  const cleanName = String(fileName || "").trim() || fallback;
+  return cleanName.replace(/[\r\n"]/g, "");
+};
+
+const setAttachmentHeaders = (res, fileName, contentType) => {
+  const safeName = safeDownloadFileName(fileName);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`
+  );
+  res.setHeader("Content-Type", contentType);
+};
 
 const parseSheetsFromBuffer = async (buffer) => {
   const workbook = new ExcelJS.Workbook();
@@ -201,6 +262,7 @@ controller.upload = async (req, res) => {
       file_name: fileName,
       uploaded_by: { full_name: user.full_name || user.name, email: user.email },
       file_type: isPdf ? 'pdf' : 'excel',
+      excel_data: isExcel ? buffer : null,
       pdf_data: isPdf ? buffer : null,
       sheets,
       category,
@@ -474,13 +536,40 @@ controller.downloadFile = async (req, res) => {
       registro = await HistoricoDocentes.findOne(query).sort({ createdAt: -1 });
     }
 
-    if (!registro || !registro.drive_file_id) {
+    if (!registro) {
       return res.status(404).json({ message: "No hay archivo disponible para descargar." });
     }
 
-    const buffer = await downloadDriveFileBuffer(registro.drive_file_id);
-    res.setHeader("Content-Disposition", `attachment; filename="${registro.file_name}"`);
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    if (registro.file_type === "pdf") {
+      if (!registro.pdf_data) {
+        return res.status(404).json({ message: "No hay PDF disponible para descargar." });
+      }
+      setAttachmentHeaders(res, registro.file_name || "archivo.pdf", PDF_CONTENT_TYPE);
+      return res.send(registro.pdf_data);
+    }
+
+    let buffer = null;
+    if (registro.drive_file_id) {
+      try {
+        buffer = await downloadDriveFileBuffer(registro.drive_file_id);
+      } catch (driveError) {
+        console.warn("No se pudo descargar desde Drive, usando respaldo local:", driveError?.message || driveError);
+      }
+    }
+
+    if (!buffer && registro.excel_data) {
+      buffer = registro.excel_data;
+    }
+
+    if (!buffer) {
+      buffer = await buildWorkbookBufferFromSheets(registro.sheets);
+    }
+
+    if (!buffer) {
+      return res.status(404).json({ message: "No hay archivo disponible para descargar." });
+    }
+
+    setAttachmentHeaders(res, registro.file_name || "archivo.xlsx", EXCEL_CONTENT_TYPE);
     return res.send(buffer);
   } catch (error) {
     console.error("Error al descargar archivo:", error);

@@ -4,6 +4,10 @@ const ctrl    = require('../controllers/pdiDashboard');
 
 // Resumen institucional global
 router.get('/resumen',                  ctrl.resumen);
+// Excel con la memoria de calculo del avance (formulas auditables)
+router.get('/exportar-avance',          ctrl.exportarAvance);
+// Excel base de indicadores PDI con todas las metas por periodo
+router.get('/exportar-indicadores-metas', ctrl.exportarIndicadoresMetas);
 // Red editable de nodos y relaciones del PDI
 router.get('/red-nodos',                ctrl.redNodos);
 router.put('/red-nodos',                ctrl.guardarRedNodos);

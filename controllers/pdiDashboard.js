@@ -6,6 +6,8 @@ const RespuestaFormulario = require('../models/pdiFormularioRespuesta');
 const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
 const pdiNodeNetwork  = require('../services/pdiNodeNetwork');
+const { buildAvanceWorkbook, buildIndicadoresMetasWorkbook } = require('../services/pdiAvanceExcelExport');
+const { weightedAverage } = require('../services/pdiAvanceCalculator');
 const {
     autoApproveAllPendingLeaderSubmittedResponses,
 } = require('../services/pdiFormulario');
@@ -142,10 +144,11 @@ ctrl.resumen = async (req, res) => {
         await applyPlaneacionStateToIndicadores(indicadores);
 
         // Avance ponderado global (promedio ponderado de macroproyectos)
-        const totalPesoMacro = macros.reduce((a, m) => a + m.peso, 0);
-        const avanceGlobal = totalPesoMacro > 0
-            ? Math.round(macros.reduce((a, m) => a + (m.avance * m.peso), 0) / totalPesoMacro)
-            : 0;
+        const avanceGlobal = weightedAverage(
+            macros,
+            (macro) => macro.avance,
+            (macro) => macro.peso
+        );
 
         // Presupuesto — suma desde macroproyectos (cada uno agrega sus proyectos)
         const presupuestoTotal = macros.reduce((a, m) => a + (m.presupuesto || 0), 0);
@@ -371,6 +374,74 @@ ctrl.corte = async (req, res) => {
         });
     } catch (e) {
         res.status(500).json({ error: 'Error interno', detalle: e.message });
+    }
+};
+
+/*
+  GET /pdi/dashboard/exportar-avance
+  Genera un Excel con la memoria de cálculo del avance de todo el PDI:
+  Periodos -> Indicadores -> Acciones -> Proyectos -> Macroproyectos -> PDI general,
+  con fórmulas reales de Excel (no valores fijos) para poder auditar el cálculo.
+*/
+ctrl.exportarAvance = async (req, res) => {
+    try {
+        await autoApproveAllPendingLeaderSubmittedResponses();
+
+        const [macros, proyectos, acciones, indicadores] = await Promise.all([
+            Macroproyecto.find({}).sort({ codigo: 1 }).lean(),
+            Proyecto.find({}).sort({ codigo: 1 }).lean(),
+            AccionEstrategica.find({}).sort({ codigo: 1 }).lean(),
+            Indicador.find({}).sort({ codigo: 1 }).lean(),
+        ]);
+        await applyPlaneacionStateToIndicadores(indicadores);
+
+        const workbook = await buildAvanceWorkbook({ macros, proyectos, acciones, indicadores });
+
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="pdi_memoria_calculo_avance_${new Date().toISOString().slice(0, 10)}.xlsx"`
+        );
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        res.status(500).json({ error: 'No se pudo generar el Excel de avance', detalle: e.message });
+    }
+};
+
+/*
+  GET /pdi/dashboard/exportar-indicadores-metas
+  Genera la tabla base de indicadores PDI con la estructura del archivo
+  institucional y agrega todas las metas/avances por periodo.
+*/
+ctrl.exportarIndicadoresMetas = async (req, res) => {
+    try {
+        const [macros, proyectos, acciones, indicadores] = await Promise.all([
+            Macroproyecto.find({}).sort({ codigo: 1 }).lean(),
+            Proyecto.find({}).sort({ codigo: 1 }).lean(),
+            AccionEstrategica.find({}).sort({ codigo: 1 }).lean(),
+            Indicador.find({}).sort({ codigo: 1 }).lean(),
+        ]);
+
+        const workbook = await buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indicadores });
+
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="pdi_indicadores_metas_${new Date().toISOString().slice(0, 10)}.xlsx"`
+        );
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        res.status(500).json({ error: 'No se pudo generar el Excel de indicadores y metas', detalle: e.message });
     }
 };
 

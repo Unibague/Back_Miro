@@ -8,11 +8,189 @@ const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('..
 const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
 const Historial = require('../models/pdiIndicadorHistorial');
 const User = require('../models/users');
+const AccionEstrategica = require('../models/pdiAccionEstrategica');
+require('../models/pdiProyecto');
+require('../models/pdiMacroproyecto');
+const {
+    toNumberValue,
+    clampPercentage,
+    weightedContribution,
+} = require('../services/pdiAvanceCalculator');
 const {
     autoApproveAllPendingLeaderSubmittedResponses,
 } = require('../services/pdiFormulario');
 
 const normalizePeriodoKey = (value) => String(value ?? '').trim().toUpperCase();
+const INDICADOR_CODE_REGEX = /^(M[1-9]\d*)-(P[1-9]\d*)-(A[1-9]\d*)-(I([1-9]\d*))$/;
+
+function normalizeIndicatorCode(value) {
+    return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+function getEntityId(value) {
+    return String(value?._id ?? value?.id ?? value ?? '').trim();
+}
+
+function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseIndicatorCode(value) {
+    const normalized = normalizeIndicatorCode(value);
+    const match = normalized.match(INDICADOR_CODE_REGEX);
+    if (!match) return null;
+
+    return {
+        normalized,
+        macro: match[1],
+        proyecto: match[2],
+        accion: match[3],
+        indicador: match[4],
+        indicadorNumero: Number(match[5]),
+    };
+}
+
+function extractCodeSegment(value, letter) {
+    const segmentRegex = new RegExp(`^${letter}[1-9]\\d*$`);
+    return normalizeIndicatorCode(value)
+        .split('-')
+        .find((part) => segmentRegex.test(part)) || null;
+}
+
+function extractIndicatorNumber(value) {
+    const segment = normalizeIndicatorCode(value)
+        .split('-')
+        .find((part) => /^I[1-9]\d*$/.test(part));
+    return segment ? Number(segment.slice(1)) : null;
+}
+
+function getFirstAvailableIndicatorNumber(usedNumbers) {
+    let nextNumber = 1;
+    while (usedNumbers.has(nextNumber)) nextNumber += 1;
+    return nextNumber;
+}
+
+function buildFlexibleCodeRegex(normalizedCode) {
+    return `^\\s*${normalizedCode.split('-').map(escapeRegex).join('\\s*-\\s*')}\\s*$`;
+}
+
+async function getAccionHierarchy(accionId) {
+    const accion = await AccionEstrategica.findById(accionId)
+        .select('codigo nombre proyecto_id')
+        .populate({
+            path: 'proyecto_id',
+            select: 'codigo nombre macroproyecto_id',
+            populate: {
+                path: 'macroproyecto_id',
+                select: 'codigo nombre',
+            },
+        })
+        .lean();
+
+    if (!accion) {
+        throw new Error('La accion estrategica seleccionada no existe.');
+    }
+
+    const proyecto = accion.proyecto_id;
+    const macro = proyecto?.macroproyecto_id;
+
+    if (!proyecto || !macro) {
+        throw new Error('La accion estrategica seleccionada no tiene una jerarquia completa de macroproyecto y proyecto.');
+    }
+
+    return { accion, proyecto, macro };
+}
+
+function buildExpectedIndicatorPrefix({ accion, proyecto, macro }) {
+    const macroSegment = extractCodeSegment(macro?.codigo, 'M');
+    const proyectoSegment = extractCodeSegment(proyecto?.codigo, 'P');
+    const accionSegment = extractCodeSegment(accion?.codigo, 'A');
+
+    if (!macroSegment || !proyectoSegment || !accionSegment) {
+        throw new Error('No se puede validar el codigo porque la jerarquia seleccionada no tiene codigos M/P/A completos.');
+    }
+
+    return `${macroSegment}-${proyectoSegment}-${accionSegment}`;
+}
+
+async function findDuplicateIndicatorCode(normalizedCode, currentId) {
+    const query = {
+        codigo: { $regex: buildFlexibleCodeRegex(normalizedCode), $options: 'i' },
+    };
+    if (currentId) query._id = { $ne: currentId };
+
+    return Indicador.findOne(query).select('_id codigo nombre').lean();
+}
+
+async function validateIndicatorNumberSequence({ parsed, accionId, expectedPrefix, currentId, existing, accion }) {
+    const query = { accion_id: accionId };
+    if (currentId) query._id = { $ne: currentId };
+
+    const siblings = await Indicador.find(query).select('_id codigo nombre').lean();
+    const usedNumbers = new Set();
+    let sameNumberSibling = null;
+
+    for (const sibling of siblings) {
+        const number = extractIndicatorNumber(sibling.codigo);
+        if (!number) continue;
+        usedNumbers.add(number);
+        if (number === parsed.indicadorNumero) sameNumberSibling = sibling;
+    }
+
+    if (sameNumberSibling) {
+        throw new Error(`Ya existe un indicador con la numeracion I${parsed.indicadorNumero} dentro de la accion ${accion.codigo}. Codigo actual: ${sameNumberSibling.codigo}.`);
+    }
+
+    const existingParsed = parseIndicatorCode(existing?.codigo);
+    const keepsSameActionAndNumber = Boolean(
+        currentId &&
+        getEntityId(existing?.accion_id) === accionId &&
+        existingParsed?.indicadorNumero === parsed.indicadorNumero
+    );
+
+    if (keepsSameActionAndNumber) return;
+
+    const expectedNumber = getFirstAvailableIndicatorNumber(usedNumbers);
+    if (parsed.indicadorNumero !== expectedNumber) {
+        throw new Error(`La numeracion del indicador no es consecutiva dentro de la accion ${accion.codigo}. El siguiente codigo esperado es ${expectedPrefix}-I${expectedNumber}.`);
+    }
+}
+
+async function validateIndicatorPayload(body, { currentId = null, existing = null } = {}) {
+    const parsed = parseIndicatorCode(body.codigo ?? existing?.codigo);
+    if (!parsed) {
+        throw new Error('El codigo del indicador debe tener la estructura completa M#-P#-A#-I# (por ejemplo, M4-P1-A4-I1).');
+    }
+
+    const accionId = getEntityId(body.accion_id ?? existing?.accion_id);
+    if (!accionId) {
+        throw new Error('Debes seleccionar una accion estrategica para validar el codigo del indicador.');
+    }
+
+    const hierarchy = await getAccionHierarchy(accionId);
+    const expectedPrefix = buildExpectedIndicatorPrefix(hierarchy);
+    const currentPrefix = `${parsed.macro}-${parsed.proyecto}-${parsed.accion}`;
+
+    if (currentPrefix !== expectedPrefix) {
+        throw new Error(`El codigo ${parsed.normalized} no corresponde con la jerarquia seleccionada. Para la accion ${hierarchy.accion.codigo} debe iniciar con ${expectedPrefix}-I.`);
+    }
+
+    const duplicate = await findDuplicateIndicatorCode(parsed.normalized, currentId);
+    if (duplicate) {
+        throw new Error(`Ya existe un indicador con el codigo ${duplicate.codigo}. Corrige el codigo antes de guardar.`);
+    }
+
+    await validateIndicatorNumberSequence({
+        parsed,
+        accionId,
+        expectedPrefix,
+        currentId,
+        existing,
+        accion: hierarchy.accion,
+    });
+
+    return { codigo: parsed.normalized, accionId };
+}
 
 const getEstadoReporteFromRespuesta = (respuesta = {}) => {
     if (respuesta.aval_planeacion === 'Validado') return 'Validado';
@@ -108,36 +286,28 @@ function withCalculatedFields(doc) {
     };
 }
 
-function toNumberValue(value) {
-    if (value === null || value === undefined) return null;
-    if (typeof value === 'number') return Number.isNaN(value) ? null : value;
-    const normalized = String(value).replace('%', '').replace(',', '.').trim();
-    if (!normalized) return null;
-    const parsed = Number(normalized);
-    return Number.isNaN(parsed) ? null : parsed;
+function round2(value) {
+    return Math.round((Number(value) || 0) * 100) / 100;
 }
 
-function normalizePeso(peso) {
-    const value = Number(peso) || 0;
-    return value <= 1 ? value * 100 : value;
+function valoresNumericos(lista = [], campo) {
+    return lista
+        .map((p) => toNumberValue(p[campo]))
+        .filter((value) => value !== null);
 }
 
-function clampPercentage(value) {
-    return Math.min(Math.max(Number(value) || 0, 0), 100);
+// Indicadores tipo "promedio":
+// promedio aritmético de los avances reportados en los periodos con dato.
+function promedioAvances(lista = []) {
+    const valores = valoresNumericos(lista, 'avance');
+    if (!valores.length) return null;
+    return round2(valores.reduce((acc, value) => acc + value, 0) / valores.length);
 }
 
-// Formula del Excel para indicadores tipo "promedio":
-// MIN(SUMA(avances) / SUMA(metas), 1) * 100
-function formulaExcel(lista) {
-    const con = lista.filter((p) =>
-        toNumberValue(p.avance) !== null &&
-        toNumberValue(p.meta) !== null
-    );
-    if (!con.length) return null;
-    const sumaMetas = con.reduce((acc, p) => acc + toNumberValue(p.meta), 0);
-    const sumaAvances = con.reduce((acc, p) => acc + toNumberValue(p.avance), 0);
-    if (sumaMetas === 0) return 0;
-    return Math.round(Math.min(sumaAvances / sumaMetas, 1) * 100 * 100) / 100;
+function promedioMetas(lista = []) {
+    const valores = valoresNumericos(lista, 'meta');
+    if (!valores.length) return null;
+    return round2(valores.reduce((acc, value) => acc + value, 0) / valores.length);
 }
 
 function ordenarPeriodos(lista = []) {
@@ -188,8 +358,8 @@ function calcularAvanceActual(periodosOrdenados, tipo_calculo) {
         return cumplimientoUltimoValor(periodosOrdenados);
     }
 
-    const porExcel = formulaExcel(periodosOrdenados);
-    return porExcel !== null ? porExcel : 0;
+    const promedio = promedioAvances(periodosOrdenados);
+    return promedio !== null ? promedio : 0;
 }
 
 function calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio) {
@@ -203,10 +373,10 @@ function calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio) {
 
 /*
   Formula tomada del Excel:
-  - avanceActual: suma acumulada o cumplimiento del ultimo valor, segun tipo_calculo
+  - avanceActual: suma acumulada, promedio aritmetico o cumplimiento del ultimo valor, segun tipo_calculo
   - avance: % de avance total capado a 100
   - avance_total_real: % de avance total mostrado en la UI
-  - avances_por_anio: % del avance reportado en cada anio frente a la meta de ese mismo anio
+  - avances_por_anio: % del avance reportado en cada anio frente a la meta de referencia de ese mismo anio
 */
 function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
     const periodosOrdenados = ordenarPeriodos(periodos);
@@ -222,25 +392,29 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
     const avances_por_anio = {};
     for (const anio of anios) {
         const periodosDelAnio = periodosOrdenados.filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
-        const metaAnual = sumarMetas(periodosDelAnio);
         const avanceAnual = calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio);
-        avances_por_anio[anio] = tipo_calculo === 'ultimo_valor'
-            ? Math.min(avanceAnual, 100)
-            : (metaAnual > 0
-                ? Math.round(Math.min(avanceAnual / metaAnual, 1) * 100 * 100) / 100
-                : 0);
+        if (tipo_calculo === 'ultimo_valor') {
+            avances_por_anio[anio] = Math.min(avanceAnual, 100);
+        } else {
+            const metaReferencia = tipo_calculo === 'promedio'
+                ? promedioMetas(periodosDelAnio)
+                : sumarMetas(periodosDelAnio);
+            avances_por_anio[anio] = metaReferencia > 0
+                ? round2(Math.min(avanceAnual / metaReferencia, 1) * 100)
+                : 0;
+        }
     }
 
     const avance = tipo_calculo === 'ultimo_valor'
         ? Math.min(avanceActual, 100)
         : (metaFinal > 0
-            ? Math.round(Math.min(avanceActual / metaFinal, 1) * 100 * 100) / 100
+            ? round2(Math.min(avanceActual / metaFinal, 1) * 100)
             : 0);
 
     const avanceTotalRealRaw = tipo_calculo === 'ultimo_valor'
         ? avance
         : (metaFinal > 0
-            ? Math.round((avanceActual / metaFinal) * 100 * 100) / 100
+            ? round2((avanceActual / metaFinal) * 100)
             : null);
     const avance_total_real = avanceTotalRealRaw === null ? null : clampPercentage(avanceTotalRealRaw);
     const avance_actual = clampPercentage(avance_total_real ?? avance);
@@ -249,17 +423,15 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
 }
 
 async function recalcularAccion(accion_id) {
-    const AccionEstrategica = require('../models/pdiAccionEstrategica');
     const indicadores = await Indicador.find({ accion_id });
     if (!indicadores.length) return;
 
     // En Excel la accion suma la contribucion ponderada de los indicadores
     // usando el % de avance total capado (no el porcentaje real sin tope).
-    const avance = Math.round(
-        indicadores.reduce(
-            (acc, indicador) => acc + (clampPercentage(indicador.avance) * normalizePeso(indicador.peso)),
-            0
-        ) / 100
+    const avance = weightedContribution(
+        indicadores,
+        (indicador) => indicador.avance,
+        (indicador) => indicador.peso
     );
 
     const accion = await AccionEstrategica.findByIdAndUpdate(accion_id, { avance }, { new: true });
@@ -335,6 +507,9 @@ ctrl.getById = async (req, res) => {
 ctrl.create = async (req, res) => {
     try {
         const body = { ...req.body };
+        const validated = await validateIndicatorPayload(body);
+        body.codigo = validated.codigo;
+        body.accion_id = validated.accionId;
         const calculados = calcularCamposDinamicos(body.periodos || [], body.tipo_calculo, body.meta_final_2029);
         const doc = await Indicador.create({ ...body, ...calculados });
         await recalcularAccion(doc.accion_id);
@@ -349,6 +524,18 @@ ctrl.update = async (req, res) => {
         const body = { ...req.body };
         const existing = await Indicador.findById(req.params.id);
         if (!existing) return res.status(404).json({ error: 'No encontrado' });
+        const incomingAccionId = getEntityId(body.accion_id);
+        const existingAccionId = getEntityId(existing.accion_id);
+        const shouldValidateCode = body.codigo !== undefined ||
+            (body.accion_id !== undefined && incomingAccionId !== existingAccionId);
+
+        if (shouldValidateCode) {
+            const validated = await validateIndicatorPayload(body, { currentId: req.params.id, existing });
+            body.codigo = validated.codigo;
+            body.accion_id = validated.accionId;
+        } else if (body.accion_id !== undefined) {
+            body.accion_id = incomingAccionId || existingAccionId;
+        }
         const periodos = body.periodos ?? existing.periodos;
         const tipo_calculo = body.tipo_calculo ?? existing.tipo_calculo;
         const meta_final = body.meta_final_2029 ?? existing.meta_final_2029;

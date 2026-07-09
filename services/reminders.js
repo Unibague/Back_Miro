@@ -10,6 +10,7 @@ const mongoose = require("mongoose");
 const { ObjectId } = mongoose.Types;
 const nodemailer = require('nodemailer');
 const { getEmailConfig } = require('../config/emailConfig');
+const { userHasViewPermission } = require('./viewPermissionsResolver');
 
 const RemindersService = {
 
@@ -37,6 +38,11 @@ runReminderEmails: async function (periodId = null) {
   const logs = [];
 
   for (const usuario of usuarios) {
+    // Si el usuario pertenece a un perfil de permisos que no le otorga la
+    // vista de plantillas pendientes, no se le envia el recordatorio (aunque
+    // siga siendo Productor de la dependencia).
+    if (!(await userHasViewPermission(usuario, "producerTemplates"))) continue;
+
     const dependencia = dependenciaCache[usuario.dep_code] ||
       await Dependency.findOne({ dep_code: usuario.dep_code });
 
@@ -119,6 +125,10 @@ runPendingProducerReportEmails: async function(periodId = null) {
   const logs = [];
 
   for (const usuario of usuariosPendientes) {
+    // Igual que con plantillas: si el perfil del usuario no le otorga la
+    // vista de informes de productor, no se le envia el recordatorio.
+    if (!(await userHasViewPermission(usuario, "producerReports"))) continue;
+
     const deadlines = await PubProdReport.find({
       period: periodId,
       "report.producers": { $exists: true, $ne: [] }
@@ -435,6 +445,8 @@ const userDeps = dependencies.filter(dep =>
       results.push({
         full_name: user.full_name,
         email: user.email,
+        position: user.position,
+        identification: user.identification,
         pendingReports: pendingTemplates
       });
     }

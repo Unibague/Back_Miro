@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const ConfigurationAudit = require('../models/configurationAudit');
 
 class ConfigurationAuditService {
@@ -116,6 +117,25 @@ class ConfigurationAuditService {
     };
   }
   
+  // Trae el ultimo audit de cada entidad en una sola consulta (evita N llamadas,
+  // una por fila, cuando se necesita solo "ultima modificacion" en un listado).
+  static async getLatestAuditsForEntities(entityType, entityIds = []) {
+    const ids = entityIds
+      .filter((id) => mongoose.Types.ObjectId.isValid(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+    if (!ids.length) return {};
+
+    const results = await ConfigurationAudit.aggregate([
+      { $match: { entity_type: entityType, entity_id: { $in: ids } } },
+      { $sort: { timestamp: -1 } },
+      { $group: { _id: '$entity_id', doc: { $first: '$$ROOT' } } },
+    ]);
+
+    const map = {};
+    for (const r of results) map[String(r._id)] = r.doc;
+    return map;
+  }
+
   static async getUserAuditHistory(userEmail, options = {}) {
     const { page = 1, limit = 20 } = options;
     const skip = (page - 1) * limit;

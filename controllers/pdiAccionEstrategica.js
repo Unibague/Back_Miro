@@ -2,19 +2,17 @@ const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const Proyecto          = require('../models/pdiProyecto');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularMacroproyecto } = require('./pdiProyecto');
-
-function normalizePeso(peso) {
-    const value = Number(peso) || 0;
-    return value <= 1 ? value * 100 : value;
-}
+const { weightedContribution } = require('../services/pdiAvanceCalculator');
 
 // Recalcula el avance y los presupuestos del proyecto a partir de sus acciones
 async function recalcularProyecto(proyecto_id) {
     const acciones = await AccionEstrategica.find({ proyecto_id });
     if (!acciones.length) return;
 
-    const avance = Math.round(
-        acciones.reduce((acc, a) => acc + ((Number(a.avance) || 0) * normalizePeso(a.peso)), 0) / 100
+    const avance = weightedContribution(
+        acciones,
+        (accion) => accion.avance,
+        (accion) => accion.peso
     );
 
     const presupuesto = acciones.reduce((acc, a) => acc + (a.presupuesto || 0), 0);

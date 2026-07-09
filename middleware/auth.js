@@ -137,7 +137,16 @@ const requireAdminOrProfilePermission = async (req, res, next) => {
         // Verificar si el cargo tiene permiso Gestionar o Administrar en profiles
         const AccessProfile = require('../models/accessProfiles');
         const normalizedPosition = user.position?.trim() || 'Sin cargo';
-        const profilesWithPosition = await AccessProfile.find({ positions: normalizedPosition }).lean();
+        const normalizedIdentification = Number(String(user.identification).trim());
+        const profilesWithPosition = await AccessProfile.find({
+            $or: [
+                ...(Number.isFinite(normalizedIdentification) ? [{ individualMembers: normalizedIdentification }] : []),
+                {
+                    positions: normalizedPosition,
+                    ...(Number.isFinite(normalizedIdentification) ? { excludedMembers: { $ne: normalizedIdentification } } : {})
+                }
+            ]
+        }).lean();
         const profilePositionNames = profilesWithPosition.flatMap(p => (p.positions || []).map(pos => pos.trim()));
         const allPositionNames = Array.from(new Set([normalizedPosition, ...profilePositionNames]));
         const permDocs = await PositionViewPermission.find({ position: { $in: allPositionNames } });

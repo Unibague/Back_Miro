@@ -4,6 +4,7 @@ const AccionEstrategica = require('../models/pdiAccionEstrategica');
 const fs = require('fs/promises');
 const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { parseExecutedWorkbook, getSheetNames, normalizeCode, DEFAULT_SHEET_NAME } = require('../services/pdiBudgetImport');
+const { weightedContribution } = require('../services/pdiAvanceCalculator');
 
 function invalidatePresupuestoCache() {
     try {
@@ -18,11 +19,6 @@ function mergeDateList(...values) {
             .map((value) => value.trim())
             .filter(Boolean)
     )].join(', ');
-}
-
-function normalizePeso(peso) {
-    const value = Number(peso) || 0;
-    return value <= 1 ? value * 100 : value;
 }
 
 // Mantiene sincronizados los campos legacy responsable/responsable_email (primer
@@ -40,8 +36,10 @@ async function recalcularMacroproyecto(macroproyecto_id) {
     const proyectos = await Proyecto.find({ macroproyecto_id });
     if (!proyectos.length) return;
 
-    const avance = Math.round(
-        proyectos.reduce((acc, p) => acc + ((Number(p.avance) || 0) * normalizePeso(p.peso)), 0) / 100
+    const avance = weightedContribution(
+        proyectos,
+        (proyecto) => proyecto.avance,
+        (proyecto) => proyecto.peso
     );
     const presupuesto = proyectos.reduce((acc, p) => acc + (p.presupuesto || 0), 0);
     const presupuesto_ejecutado = proyectos.reduce((acc, p) => acc + (p.presupuesto_ejecutado || 0), 0);

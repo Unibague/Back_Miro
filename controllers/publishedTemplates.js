@@ -290,7 +290,13 @@ const matchesCategoryFilter = (publishedTemplate, categoryFilter) => {
   );
 };
 
-const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
+// `full=false` (por defecto): usado por los listados paginados de productor,
+// donde solo hace falta la categoria/flags actualizados para filtrar y
+// mostrar la fila — evita sanear el workbook completo (reparsea/reescribe el
+// xlsx embebido) para CADA plantilla de la lista, que era el principal cuello
+// de botella de estas pantallas. `full=true` sigue disponible para cuando de
+// verdad se necesita el workbook saneado y actualizado.
+const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate, { full = false } = {}) => {
   const templateId = publishedTemplate?.template?._id || publishedTemplate?.template?.id;
   const originalTemplate = templateId
     ? await Template.findById(templateId)
@@ -301,6 +307,24 @@ const enrichPublishedTemplateWithLiveTemplate = async (publishedTemplate) => {
         })
         .lean()
     : null;
+
+  if (!full) {
+    return {
+      ...publishedTemplate,
+      template: {
+        ...publishedTemplate.template,
+        allows_qr: originalTemplate?.allows_qr ?? publishedTemplate.template?.allows_qr ?? false,
+        notify_producers: originalTemplate?.notify_producers ?? publishedTemplate.template?.notify_producers ?? false,
+        shared: originalTemplate?.shared ?? publishedTemplate.template?.shared ?? false,
+        responsible_producers: originalTemplate?.responsible_producers || publishedTemplate.template?.responsible_producers || [],
+        qr_authorized_producers: originalTemplate?.qr_authorized_producers || publishedTemplate.template?.qr_authorized_producers || [],
+        category: normalizeCategoryForResponse(
+          originalTemplate?.category || publishedTemplate.template?.category
+        ),
+      },
+    };
+  }
+
   const currentTemplate = await sanitizeTemplateDropdownPayload(publishedTemplate.template || {});
   const liveTemplate = originalTemplate
     ? await sanitizeTemplateDropdownPayload(originalTemplate)
@@ -438,19 +462,46 @@ const getAllProducerIds = (publishedTemplate) => {
 };
 
 const notifyResponsibleProducersOnUpload = (publishedTemplate, user, userDependencies = []) => {
-  if (!uploadNotificationsEnabled(publishedTemplate)) return;
-
-  const responsibleIds = getAllProducerIds(publishedTemplate);
-  if (responsibleIds.length === 0) return;
-
   const templateName = publishedTemplate.name;
   const uploaderEmail = user.email;
   const uploaderName = user.full_name || user.name || user.email;
   const uploaderDependency = userDependencies.find((dep) => dep.dep_code === user.dep_code) || userDependencies[0];
   const uploaderDependencyName = uploaderDependency?.name || user.dep_code;
+  const uploaderDependencyResponsibleEmail = uploaderDependency?.responsible || null;
+
+  const notifyAllProducers = uploadNotificationsEnabled(publishedTemplate);
+  const responsibleIds = notifyAllProducers ? getAllProducerIds(publishedTemplate) : [];
 
   setImmediate(async () => {
+    const sentTo = new Set(uploaderEmail ? [uploaderEmail] : []);
+
     try {
+      // El productor encargado de la dependencia de quien sube el reporte se
+      // notifica siempre, tenga o no activo "Notificar a productores": es el
+      // unico correo garantizado cuando el toggle esta apagado.
+      if (uploaderDependencyResponsibleEmail && !sentTo.has(uploaderDependencyResponsibleEmail)) {
+        const encargado = await User.findOne(
+          { email: uploaderDependencyResponsibleEmail, isActive: true },
+          'email name full_name'
+        ).lean();
+
+        if (encargado?.email) {
+          sentTo.add(encargado.email);
+          await RemindersService.sendUploadNotificationEmail(
+            encargado.email,
+            encargado.full_name || encargado.name || encargado.email,
+            templateName,
+            uploaderDependencyName,
+            uploaderName,
+            new Date()
+          ).catch((error) => {
+            console.error(`[UPLOAD-NOTIFY] Error enviando a encargado ${encargado.email}:`, error.message);
+          });
+        }
+      }
+
+      if (!notifyAllProducers || responsibleIds.length === 0) return;
+
       const responsibleDeps = await Dependency.find(
         { _id: { $in: responsibleIds } },
         'dep_code name'
@@ -468,7 +519,6 @@ const notifyResponsibleProducersOnUpload = (publishedTemplate, user, userDepende
         ],
       }, 'email name full_name').lean();
 
-      const sentTo = new Set();
       for (const recipient of recipients) {
         if (!recipient.email || sentTo.has(recipient.email)) continue;
         sentTo.add(recipient.email);
@@ -1098,10 +1148,24 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     // (Administrador, Responsable y Productor quedan exentos, igual que en middleware/auth.js)
     if (!['Administrador', 'Responsable', 'Productor'].includes(activeRole)) {
       const userPosition = (user.position || '').trim() || 'Sin cargo';
+      const userIdentification = Number(String(user.identification || '').trim());
       // Perfiles/permisos por cargo cambian con poca frecuencia: cache corto (60s)
       // para evitar repetir estas 2 consultas en cada request de este endpoint.
-      const permDocs = await simpleCache.getOrSet(`positionPerms:${userPosition}`, 60000, async () => {
-        const profilesWithPos = await AccessProfile.find({ positions: userPosition }).lean();
+      // La cache incluye la identificacion porque un perfil puede incluir a una
+      // persona individualmente (sin vincular todo su cargo).
+      const cacheKey = Number.isFinite(userIdentification)
+        ? `positionPerms:${userPosition}:${userIdentification}`
+        : `positionPerms:${userPosition}`;
+      const permDocs = await simpleCache.getOrSet(cacheKey, 60000, async () => {
+        const profilesWithPos = await AccessProfile.find({
+          $or: [
+            ...(Number.isFinite(userIdentification) ? [{ individualMembers: userIdentification }] : []),
+            {
+              positions: userPosition,
+              ...(Number.isFinite(userIdentification) ? { excludedMembers: { $ne: userIdentification } } : {})
+            }
+          ]
+        }).lean();
         const profilePositionNames = profilesWithPos.flatMap(p => (p.positions || []).map(pos => (pos || '').trim() || 'Sin cargo'));
         const allPositionNames = Array.from(new Set([userPosition, ...profilePositionNames]));
         return PositionViewPermission.find({ position: { $in: allPositionNames } }).lean();
@@ -1437,7 +1501,7 @@ publTempController.exportPendingTemplates = async (req, res) => {
 }
 
 publTempController.loadProducerData = async (req, res) => {
-  const { email, pubTem_id, data, sheetsData, edit, asDraft, bypassValidation, sender_email, sender_name, isFromPublicQr, hasQrOrigin } = req.body;
+  const { email, pubTem_id, data, sheetsData, edit, asDraft, bypassValidation, sender_email, sender_name, isFromPublicQr, hasQrOrigin, onBehalfOfDependency } = req.body;
 
 
 
@@ -1458,6 +1522,12 @@ publTempController.loadProducerData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
+    // Una vez el productor encargado hizo el envio final al SNIES, ninguna
+    // dependencia (ni el encargado) puede seguir cargando o modificando datos.
+    if (pubTem.final_submitted) {
+      return res.status(403).json({ status: 'Esta plantilla ya fue enviada al SNIES y no admite mas cambios' });
+    }
+
     await refreshPublishedTemplateSnapshot(pubTem);
 
     const saveAsDraft = asDraft === true || asDraft === 'true';
@@ -1466,6 +1536,30 @@ publTempController.loadProducerData = async (req, res) => {
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
     const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+
+    // El productor encargado de la plantilla puede editar/guardar informacion
+    // en nombre de OTRA dependencia (no solo la suya). Se valida que quien
+    // hace la peticion sea realmente el encargado y que la dependencia
+    // destino este asignada como productora de esta plantilla.
+    let targetDepCode = user.dep_code;
+    if (onBehalfOfDependency && onBehalfOfDependency !== user.dep_code) {
+      const responsibleDepIds = (
+        pubTem.responsible_producers?.length ? pubTem.responsible_producers : pubTem.template?.responsible_producers
+      ) || [];
+      const isEncargado = responsibleDepIds.length > 0 &&
+        userDependencyIds.some((id) => responsibleDepIds.map((r) => r.toString()).includes(id));
+      if (!isEncargado) {
+        return res.status(403).json({ status: 'No tienes permiso para editar la información de otra dependencia' });
+      }
+
+      const targetDependency = await Dependency.findOne({ dep_code: onBehalfOfDependency });
+      const assignedProducerIds = (pubTem.template?.producers || []).map((p) => (p._id || p).toString());
+      if (!targetDependency || !assignedProducerIds.includes(targetDependency._id.toString())) {
+        return res.status(403).json({ status: 'La dependencia indicada no está asignada a esta plantilla' });
+      }
+
+      targetDepCode = onBehalfOfDependency;
+    }
 
     // Las verificaciones de fecha y permisos solo aplican a envíos definitivos, no a borradores
     if (!saveAsDraft) {
@@ -1613,7 +1707,7 @@ publTempController.loadProducerData = async (req, res) => {
         draftSource = 'qr';
       } else {
         // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
-        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === targetDepCode);
         if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
           // Preservar el origen de los datos ya enviados
           draftSource = existingLoadedData.source;
@@ -1621,7 +1715,7 @@ publTempController.loadProducerData = async (req, res) => {
       }
 
       // Obtener información de la dependencia
-      const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+      const userDependency = await Dependency.findOne({ dep_code: targetDepCode });
 
       // Si viene del QR, usar info del remitente original; si no, usar usuario actual
       let sendBy = user;
@@ -1630,14 +1724,14 @@ publTempController.loadProducerData = async (req, res) => {
           email: sender_email,
           name: sender_name,
           full_name: sender_name,
-          dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+          dep_code: targetDepCode, // La dependencia sigue siendo la del productor actual
         };
       }
 
       const producersData = {
-        dependency: user.dep_code,
-        dependency_code: user.dep_code,
-        dependency_name: userDependency?.name || user.dep_code,
+        dependency: targetDepCode,
+        dependency_code: targetDepCode,
+        dependency_name: userDependency?.name || targetDepCode,
         send_by: sendBy,
         filled_data: result,
         loaded_date: datetime_now(),
@@ -1815,7 +1909,7 @@ publTempController.loadProducerData = async (req, res) => {
         sheetsDataSource = 'qr';
       } else {
         // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
-        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+        const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === targetDepCode);
         if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
           // Preservar el origen de los datos ya enviados
           sheetsDataSource = existingLoadedData.source;
@@ -1823,7 +1917,7 @@ publTempController.loadProducerData = async (req, res) => {
       }
 
       // Obtener información de la dependencia
-      const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+      const userDependency = await Dependency.findOne({ dep_code: targetDepCode });
 
       // Si viene del QR, usar info del remitente original; si no, usar usuario actual
       let sendBy = user;
@@ -1832,14 +1926,14 @@ publTempController.loadProducerData = async (req, res) => {
           email: sender_email,
           name: sender_name,
           full_name: sender_name,
-          dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+          dep_code: targetDepCode, // La dependencia sigue siendo la del productor actual
         };
       }
 
       const producersData = {
-        dependency: user.dep_code,
-        dependency_code: user.dep_code,
-        dependency_name: userDependency?.name || user.dep_code,
+        dependency: targetDepCode,
+        dependency_code: targetDepCode,
+        dependency_name: userDependency?.name || targetDepCode,
         send_by: sendBy,
         filled_data: result,
         loaded_date: datetime_now(),
@@ -1860,7 +1954,7 @@ publTempController.loadProducerData = async (req, res) => {
         });
       }
 
-      const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
+      const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === targetDepCode);
       if (existingDataIndex > -1) {
         // Si ya existe información, preservar el origen original
         const existingData = pubTem.loaded_data[existingDataIndex];
@@ -1869,7 +1963,7 @@ publTempController.loadProducerData = async (req, res) => {
           sender_email: existingData.sender_email,
           sender_name: existingData.sender_name,
         };
-        
+
         pubTem.loaded_data[existingDataIndex] = {
           ...producersData,
           source: preservedSource, // Mantener origen original
@@ -1881,7 +1975,7 @@ publTempController.loadProducerData = async (req, res) => {
 
       if (pubTem.qr_draft_data?.length) {
         pubTem.qr_draft_data = pubTem.qr_draft_data.filter(
-          d => !allUserDependencies.includes(d.dependency)
+          d => !allUserDependencies.includes(d.dependency) && d.dependency !== targetDepCode
         );
       }
 
@@ -1890,7 +1984,7 @@ publTempController.loadProducerData = async (req, res) => {
       await auditLogger.logCreate(req, user, 'publishedTemplateData', {
         publishedTemplateId: pubTem_id,
         templateName: pubTem.name,
-        dependency: user.dep_code,
+        dependency: targetDepCode,
         recordsLoaded
       });
 
@@ -2011,6 +2105,10 @@ if (field.multiple) {
       templateField.required = getEffectiveRequired(templateField);
       templateField.values = field.values;
 
+      // Si bypassValidation=true (carga desde Excel o correccion del encargado), saltar validación de opciones del validador
+      if (bypassValidation) {
+        return { status: true };
+      }
       const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
       return validationResult;
     });
@@ -2050,7 +2148,7 @@ if (field.multiple) {
       dataSource = 'qr';
     } else {
       // Si no hay flags específicos, verificar si ya hay loaded_data con origen específico
-      const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === user.dep_code);
+      const existingLoadedData = pubTem.loaded_data.find(d => d.dependency === targetDepCode);
       if (existingLoadedData?.source && existingLoadedData.source !== 'manual') {
         // Preservar el origen de los datos ya enviados
         dataSource = existingLoadedData.source;
@@ -2058,7 +2156,7 @@ if (field.multiple) {
     }
 
     // Obtener información de la dependencia
-    const userDependency = await Dependency.findOne({ dep_code: user.dep_code });
+    const userDependency = await Dependency.findOne({ dep_code: targetDepCode });
 
     // Si viene del QR, usar info del remitente original; si no, usar usuario actual
     let sendBy = user;
@@ -2067,14 +2165,14 @@ if (field.multiple) {
         email: sender_email,
         name: sender_name,
         full_name: sender_name,
-        dep_code: user.dep_code, // La dependencia sigue siendo la del productor actual
+        dep_code: targetDepCode, // La dependencia sigue siendo la del productor actual
       };
     }
-    
+
     const producersData = {
-      dependency: user.dep_code,
-      dependency_code: user.dep_code,
-      dependency_name: userDependency?.name || user.dep_code,
+      dependency: targetDepCode,
+      dependency_code: targetDepCode,
+      dependency_name: userDependency?.name || targetDepCode,
       send_by: sendBy,
       filled_data: result,
       loaded_date: datetime_now(),
@@ -2094,7 +2192,7 @@ if (field.multiple) {
     }
 
     // Verificar si ya existe data para esta dependencia
-    const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === user.dep_code);
+    const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === targetDepCode);
 
     if (existingDataIndex > -1) {
       // Si ya existe información, preservar el origen original
@@ -2104,7 +2202,7 @@ if (field.multiple) {
         sender_email: existingData.sender_email,
         sender_name: existingData.sender_name,
       };
-      
+
       // Si ya existe, actualizar los datos pero preservar origen original
       pubTem.loaded_data[existingDataIndex] = {
         ...producersData,
@@ -2119,7 +2217,7 @@ if (field.multiple) {
     // Limpiar borrador QR para todas las dependencias del usuario
     if (pubTem.qr_draft_data?.length) {
       pubTem.qr_draft_data = pubTem.qr_draft_data.filter(
-        d => !allUserDependencies.includes(d.dependency)
+        d => !allUserDependencies.includes(d.dependency) && d.dependency !== targetDepCode
       );
     }
 
@@ -2129,7 +2227,7 @@ if (field.multiple) {
     await auditLogger.logCreate(req, user, 'publishedTemplateData', {
       publishedTemplateId: pubTem_id,
       templateName: pubTem.name,
-      dependency: user.dep_code,
+      dependency: targetDepCode,
       recordsLoaded: data.length
     });
 
@@ -2168,6 +2266,10 @@ publTempController.submitEmptyData = async (req, res) => {
 
     if (!pubTem) {
       throw new Error('Published template not found');
+    }
+
+    if (pubTem.final_submitted) {
+      return res.status(403).json({ status: 'Esta plantilla ya fue enviada al SNIES y no admite mas cambios' });
     }
 
     // Cualquier dependencia productora puede reportar en cero (sin envío a SNIES)
@@ -2223,6 +2325,82 @@ publTempController.submitEmptyData = async (req, res) => {
   }
 }
 
+// Confirma directamente el borrador (qr_draft_data) ya guardado de la
+// dependencia del usuario, sin pasar por el formulario en linea: lo mueve a
+// loaded_data (envio definitivo). Se usa desde el boton "Enviar" de la lista
+// de plantillas pendientes cuando ya hay un borrador guardado (p.ej. desde
+// "Guardar" en el formulario o desde un envio por QR).
+publTempController.confirmDraftData = async (req, res) => {
+  const { pubTemId, email } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'User not found' });
+    }
+
+    const pubTem = await PublishedTemplate.findById(pubTemId)
+      .populate('period')
+      .populate({
+        path: 'template',
+        populate: { path: 'producers', model: 'dependencies' }
+      });
+
+    if (!pubTem) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    if (pubTem.final_submitted) {
+      return res.status(403).json({ status: 'Esta plantilla ya fue enviada al SNIES y no admite mas cambios' });
+    }
+
+    const fechaLimiteProductores = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
+    if (fechaLimiteProductores) {
+      const fechaLimite = new Date(new Date(fechaLimiteProductores).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
+      if (fechaLimite < new Date(datetime_now())) {
+        return res.status(403).json({ status: 'El periodo ya se encuentra cerrado' });
+      }
+    }
+
+    const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+    const draftEntries = Array.isArray(pubTem.qr_draft_data) ? pubTem.qr_draft_data : [];
+    const draftIndex = draftEntries.findIndex((entry) => allUserDependencies.includes(entry.dependency));
+
+    if (draftIndex === -1) {
+      return res.status(404).json({ status: 'No hay un borrador guardado para confirmar' });
+    }
+
+    const draft = draftEntries[draftIndex];
+
+    const existingLoadedIndex = pubTem.loaded_data.findIndex((entry) => entry.dependency === draft.dependency);
+    if (existingLoadedIndex > -1) {
+      pubTem.loaded_data[existingLoadedIndex] = draft;
+    } else {
+      pubTem.loaded_data.push(draft);
+    }
+    pubTem.qr_draft_data.splice(draftIndex, 1);
+    pubTem.markModified('loaded_data');
+    pubTem.markModified('qr_draft_data');
+
+    await pubTem.save();
+
+    await auditLogger.logUpdate(req, user, 'publishedTemplateData', {
+      publishedTemplateId: pubTemId,
+      templateName: pubTem.name,
+      dependency: draft.dependency,
+      action: 'confirm_draft'
+    });
+
+    const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+    notifyResponsibleProducersOnUpload(pubTem, user, userDependencies);
+
+    return res.status(200).json({ status: 'Draft confirmed successfully' });
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ status: 'Internal server error', details: error.message });
+  }
+};
+
 publTempController.deleteLoadedDataDependency = async (req, res) => {
   const { pubTem_id, email } = req.query
 
@@ -2237,6 +2415,10 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
       })
 
     if (!pubTem) { return res.status(404).json({ status: 'Published template not found' }) }
+
+    // Nota: a diferencia de cargar/editar/reportar en cero, eliminar SI se
+    // permite despues del envio final al SNIES: es el mecanismo para
+    // deshacer un envio con error (resetea final_submitted mas abajo).
 
     // Verificar si el usuario puede eliminar datos desde alguna de sus dependencias
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
@@ -2520,7 +2702,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
 
     const categoryFilter = await resolveCategoryFilter(filterByCategory);
     const templatesWithCurrentCategories = await Promise.all(
-      normalizedTemplatesWithData.map(enrichPublishedTemplateWithLiveTemplate)
+      normalizedTemplatesWithData.map((t) => enrichPublishedTemplateWithLiveTemplate(t))
     );
     const categoryFilteredTemplates = templatesWithCurrentCategories.filter((template) =>
       matchesCategoryFilter(template, categoryFilter)
@@ -2530,12 +2712,18 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     const userDeps = await Dependency.find({ dep_code: { $in: dependenciesToQuery } }).select('_id').lean();
     const userDepIds = userDeps.map(d => d._id.toString());
 
+    // Los validadores (con sus posibles cientos de valores) solo se necesitan
+    // para descargar/diligenciar una plantilla puntual, no para listarla; se
+    // omiten por defecto para no pagar ese costo en cada carga de la pagina.
+    const includeValidators = req.query.withValidators === 'true';
     const templatesWithValidators = await Promise.all(
       categoryFilteredTemplates.slice(skip, skip + limit).map(async (template) => {
-        template.validators = await collectValidatorsForTemplate(
-          template.template,
-          template.period?._id || template.period
-        );
+        if (includeValidators) {
+          template.validators = await collectValidatorsForTemplate(
+            template.template,
+            template.period?._id || template.period
+          );
+        }
         const rawResponsible = template.responsible_producers?.length > 0
           ? template.responsible_producers
           : template.template?.responsible_producers;
@@ -2626,7 +2814,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
 
     // Manually fetch categories
     const templatesWithCategories = await Promise.all(
-      templates.map(enrichPublishedTemplateWithLiveTemplate)
+      templates.map((t) => enrichPublishedTemplateWithLiveTemplate(t))
     );
 
     const categoryFilter = await resolveCategoryFilter(filterByCategory);
@@ -2675,12 +2863,18 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
 
     // Get validators for filtered templates + marcar si el usuario es productor encargado
     const userDepIds = dependencies.map(d => d._id.toString());
+    // Igual que en getUploadedTemplatesByProducer: los validadores solo se
+    // piden si se solicitan explicitamente (se usan para descargar/diligenciar,
+    // no para listar).
+    const includeValidators = req.query.withValidators === 'true';
     const templatesWithValidators = await Promise.all(
       paginatedTemplates.map(async (template) => {
-        const validators = await collectValidatorsForTemplate(
-          template.template,
-          template.period?._id || template.period
-        );
+        const validators = includeValidators
+          ? await collectValidatorsForTemplate(
+              template.template,
+              template.period?._id || template.period
+            )
+          : undefined;
         const rawResponsible = template.responsible_producers?.length > 0
           ? template.responsible_producers
           : template.template?.responsible_producers;
@@ -3355,8 +3549,13 @@ publTempController.getPublishedByTemplateId = async (req, res) => {
       : null;
 
     const idConditions = idAsObjectId
-      ? [{ 'template._id': idAsObjectId }, { 'template._id': templateId }]
-      : [{ 'template._id': templateId }];
+      ? [
+          { 'template._id': idAsObjectId },
+          { 'template._id': templateId },
+          { 'template.id': idAsObjectId },
+          { 'template.id': templateId },
+        ]
+      : [{ 'template._id': templateId }, { 'template.id': templateId }];
 
     const baseQuery = periodId
       ? { $or: idConditions, period: periodId }

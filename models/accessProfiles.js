@@ -12,6 +12,18 @@ const accessProfileSchema = new mongoose.Schema(
       type: [String],
       default: []
     },
+    individualMembers: {
+      type: [Number],
+      default: []
+    },
+    // Personas cuyo cargo esta vinculado al perfil (positions) pero que se
+    // excluyeron individualmente (p.ej. al dar "Quitar" en una fila de la
+    // tabla de personas activas). Permite remover a una sola persona sin
+    // desvincular el cargo completo, que seguiria dando acceso a los demas.
+    excludedMembers: {
+      type: [Number],
+      default: []
+    },
     createdBy: {
       type: String,
       default: null

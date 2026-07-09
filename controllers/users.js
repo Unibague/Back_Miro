@@ -17,42 +17,67 @@ USERS_ENDPOINT = process.env.USERS_ENDPOINT;
 // Added 'Chat' role to the list of available roles
 const roles = ["Administrador", "Responsable", "Productor", "Usuario"];
 const profiles = ["Ver", "Administrar", "Gestionar"];
+// "module" = modulo grande del dashboard (las tarjetas de /dashboard).
+// "group" = submodulo dentro de ese modulo. La pantalla de permisos por
+// perfil (Gestionar vistas) agrupa dinamicamente por estos dos campos: para
+// agregar una vista nueva a la jerarquia solo hay que declararla aqui, con el
+// module/group que le corresponda, sin tocar el frontend.
 const viewPermissionOptions = [
-    { key: "dashboard", label: "Inicio", path: "/dashboard", group: "General" },
-    { key: "adminTemplates", label: "Configurar plantillas", path: "/admin/templates", group: "Plantillas" },
-    { key: "publishedTemplates", label: "Plantillas publicadas", path: "/templates/published", group: "Plantillas" },
-    { key: "producerTemplates", label: "Plantillas pendientes", path: "/producer/templates", group: "Plantillas" },
-    { key: "templatesWithFilters", label: "Plantillas con filtros", path: "/templates-with-filters", group: "Plantillas" },
-    { key: "adminReports", label: "Configurar reportes", path: "/admin/reports", group: "Reportes" },
-    { key: "publishedReports", label: "Reportes publicados", path: "/admin/reports/uploaded", group: "Reportes" },
-    { key: "producerReportsConfig", label: "Configurar informes productores", path: "/admin/reports/producers", group: "Reportes" },
-    { key: "producerReportsManagement", label: "Gestionar informes productores", path: "/reportproducers", group: "Reportes" },
-    { key: "producerReports", label: "Reportes de productor", path: "/producer/reports", group: "Reportes" },
-    { key: "responsibleReports", label: "Reportes de responsable", path: "/responsible/reports", group: "Reportes" },
-    { key: "periods", label: "Periodos", path: "/admin/periods", group: "Administracion" },
-    { key: "dimensions", label: "Ambitos", path: "/admin/dimensions", group: "Administracion" },
-    { key: "dependencies", label: "Dependencias", path: "/admin/dependencies", group: "Administracion" },
-    { key: "validations", label: "Validaciones", path: "/admin/validations", group: "Administracion" },
-    { key: "users", label: "Usuarios", path: "/admin/users", group: "Administracion" },
-    { key: "configuration", label: "Configuracion", path: "/configuracion", group: "Administracion" },
-    { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", group: "Administracion" },
-    { key: "snies", label: "SNIES", path: "/snies/templates", group: "Modulos" },
-    { key: "cna", label: "CNA", path: "/cna/templates", group: "Modulos" },
-    { key: "supportTemplates", label: "Cruce de apoyos", path: "/apoyos-plantillas", group: "Modulos" },
-    { key: "dateReview", label: "Gestion de procesos", path: "/processes-MEN", group: "Gestion de procesos" },
-    { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/processes-MEN", group: "Gestion de procesos" },
-    { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/processes-MEN?section=alertas", group: "Gestion de procesos" },
-    { key: "dateReviewHistory", label: "Historial de procesos", path: "/processes-MEN?section=historial", group: "Gestion de procesos" },
-    { key: "dateReviewProgram", label: "Ficha de programa", path: "/processes-MEN/program/:programId", group: "Gestion de procesos" },
-    { key: "dateReviewProgramProcess", label: "Gestionar proceso por programa", path: "/processes-MEN?programId=:programId&gestionar=1", group: "Gestion de procesos" },
-    { key: "dateReviewRc", label: "Procesos Registro calificado", path: "/processes-MEN?tipo=registro-calificado", group: "Gestion de procesos" },
-    { key: "dateReviewAv", label: "Procesos Acreditacion voluntaria", path: "/processes-MEN?tipo=acreditacion-voluntaria", group: "Gestion de procesos" },
-    { key: "dateReviewAdmin", label: "Administrar importacion procesos", path: "/processes-MEN/admin", group: "Gestion de procesos" },
-    { key: "pdi", label: "PDI", path: "/pdi", group: "PDI" },
-    { key: "pdiMine", label: "Mis indicadores PDI", path: "/pdi/mis-indicadores", group: "PDI" },
-    { key: "pdiDashboard", label: "Tablero PDI", path: "/pdi/dashboard", group: "PDI" },
-    { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", group: "PDI" },
-    { key: "pdiCharts", label: "Graficas PDI", path: "/pdi/graficas", group: "PDI" }
+    { key: "dashboard", label: "Inicio", path: "/dashboard", module: "General", group: "General" },
+
+    { key: "adminTemplates", label: "Configurar plantillas", path: "/admin/templates", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "publishedTemplates", label: "Plantillas publicadas", path: "/templates/published", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "producerTemplates", label: "Plantillas pendientes", path: "/producer/templates", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "templatesWithFilters", label: "Plantillas con filtros", path: "/templates-with-filters", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "adminReports", label: "Configurar reportes", path: "/admin/reports", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "publishedReports", label: "Reportes publicados", path: "/admin/reports/uploaded", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "producerReportsConfig", label: "Configurar informes productores", path: "/admin/reports/producers", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "producerReportsManagement", label: "Gestionar informes productores", path: "/reportproducers", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "producerReports", label: "Reportes de productor", path: "/producer/reports", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "responsibleReports", label: "Reportes de responsable", path: "/responsible/reports", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "validationsView", label: "Validaciones (consulta)", path: "/validations", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "ambitosReportsConfig", label: "Configurar informes ámbitos", path: "/admin/reports/ambitos", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "ambitosReportsManagement", label: "Gestionar informes ámbitos", path: "/admin/reports/ambitos/uploaded", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "templatesLogs", label: "Registros de error", path: "/admin/logs", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "reminders", label: "Recordatorios por correo", path: "/admin/reminders", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "audit", label: "Historial de trazabilidad", path: "/admin/audit", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "templatesManagement", label: "Plantillas con filtros (admin)", path: "/admin/templates-management", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "dependenciesHierarchy", label: "Jerarquía de dependencias", path: "/admin/dependencies-hierarchy", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "traceability", label: "Historial de cambios", path: "/traceability", module: "Gestión de reportes", group: "Plantillas y reportes" },
+    { key: "historicoDocentes", label: "Consulta de información", path: "/historico-docentes", module: "Gestión de reportes", group: "Consulta de información" },
+    { key: "snies", label: "SNIES", path: "/snies/templates", module: "Gestión de reportes", group: "SNIES" },
+    { key: "cna", label: "CNA", path: "/cna/templates", module: "Gestión de reportes", group: "CNA" },
+
+    { key: "supportTemplates", label: "Cruce de apoyos", path: "/apoyos-plantillas", module: "Cruce de apoyos SIGA/Iceberg", group: "Cruce de apoyos" },
+
+    { key: "dateReview", label: "Gestion de procesos", path: "/processes-MEN", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewDashboard", label: "Estadisticas y tablero", path: "/processes-MEN", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewAlerts", label: "Alertas de procesos", path: "/processes-MEN?section=alertas", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewHistory", label: "Historial de procesos", path: "/processes-MEN?section=historial", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewProgram", label: "Ficha de programa", path: "/processes-MEN/program/:programId", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewProgramProcess", label: "Gestionar proceso por programa", path: "/processes-MEN?programId=:programId&gestionar=1", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewRc", label: "Procesos Registro calificado", path: "/processes-MEN?tipo=registro-calificado", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewAv", label: "Procesos Acreditacion voluntaria", path: "/processes-MEN?tipo=acreditacion-voluntaria", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+    { key: "dateReviewAdmin", label: "Administrar importacion procesos", path: "/processes-MEN/admin", module: "Procesos de calidad MEN", group: "Gestion de procesos" },
+
+    { key: "pdi", label: "PDI", path: "/pdi", module: "PDI", group: "PDI" },
+    { key: "pdiMine", label: "Mis indicadores PDI", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI" },
+    { key: "pdiDashboard", label: "Tablero PDI", path: "/pdi/dashboard", module: "PDI", group: "PDI" },
+    { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", module: "PDI", group: "PDI" },
+    { key: "pdiCharts", label: "Graficas PDI", path: "/pdi/graficas", module: "PDI", group: "PDI" },
+
+    { key: "periods", label: "Periodos", path: "/admin/periods", module: "Configuración", group: "Administración" },
+    { key: "dimensions", label: "Ambitos", path: "/admin/dimensions", module: "Configuración", group: "Administración" },
+    { key: "dependencies", label: "Dependencias", path: "/admin/dependencies", module: "Configuración", group: "Administración" },
+    { key: "validations", label: "Validaciones", path: "/admin/validations", module: "Configuración", group: "Administración" },
+    { key: "users", label: "Usuarios", path: "/admin/users", module: "Configuración", group: "Administración" },
+    { key: "configuration", label: "Configuracion", path: "/configuracion", module: "Configuración", group: "Administración" },
+    { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", module: "Configuración", group: "Administración" },
+    { key: "homeSettings", label: "Ajustes página inicial", path: "/admin/homeSettings", module: "Configuración", group: "Administración" },
+
+    { key: "dependency", label: "Ver mi dependencia", path: "/dependency", module: "Administración", group: "Administración" },
+    { key: "childDependenciesTemplates", label: "Plantillas de dependencias hijo", path: "/dependency/children-dependencies/templates", module: "Administración", group: "Administración" },
+    { key: "childDependenciesReports", label: "Reportes de dependencias hijo", path: "/dependency/children-dependencies/reports", module: "Administración", group: "Administración" }
 ];
 
 userController.addExternalUser = async (req, res) => {
@@ -403,9 +428,19 @@ userController.getUserRoles = async (req, res) => {
         }
 
         const normalizedPosition = normalizePosition(user.position);
+        const normalizedIdentification = normalizeIdentification(user.identification);
 
-        // Buscar perfiles que contengan este cargo
-        const profilesWithPosition = await AccessProfile.find({ positions: normalizedPosition }).lean();
+        // Buscar perfiles que contengan este cargo (y no la hayan excluido
+        // individualmente) o que incluyan a la persona individualmente
+        const profilesWithPosition = await AccessProfile.find({
+            $or: [
+                { individualMembers: normalizedIdentification },
+                {
+                    positions: normalizedPosition,
+                    excludedMembers: { $ne: normalizedIdentification }
+                }
+            ]
+        }).lean();
 
         // Recopilar todos los cargos: el del usuario + los de todos sus perfiles
         const profilePositionNames = profilesWithPosition.flatMap(p => normalizePositions(p.positions || []));
@@ -876,6 +911,26 @@ userController.getPositionViewPermissions = async (req, res) => {
             dependencies.map((dependency) => [dependency.dep_code, dependency.name])
         );
 
+        // Personas agregadas individualmente al perfil (sin vincular su cargo
+        // completo). Se resuelven aparte de positionsByName para no mezclarlas
+        // con "Cargos asociados" del perfil.
+        const requestedIndividualMembers = Array.isArray(requestedProfile?.individualMembers)
+            ? requestedProfile.individualMembers
+            : [];
+        const individualMembersSet = new Set(requestedIndividualMembers);
+        const individualUsers = users
+            .filter((user) => individualMembersSet.has(user.identification))
+            .map((user) => ({
+                _id: user._id,
+                identification: user.identification,
+                full_name: user.full_name,
+                email: user.email,
+                dep_code: user.dep_code,
+                dependencyName: dependencyByCode.get(user.dep_code) || user.dep_code || "Sin dependencia",
+                position: normalizePosition(user.position),
+                isActive: user.isActive
+            }));
+
         const positionsByName = users.reduce((groupedPositions, user) => {
             const positionName = normalizePosition(user.position);
 
@@ -914,16 +969,21 @@ userController.getPositionViewPermissions = async (req, res) => {
             }
         });
 
+        // Solo se listan todos los cargos cuando no se pidio un perfil/cargo
+        // especifico. Si se pidio un perfil y este quedo sin cargos asociados,
+        // el resultado debe ser vacio (no "todos"), a diferencia de la
+        // convencion de ambitos/dependencias donde vacio significa "todos".
+        const hasExplicitFilter = Boolean(requestedProfileId || req.query.position);
         const requestedPositionsSet = new Set(requestedPositions);
-        const filteredPositions = requestedPositions.length > 0
+        const filteredPositions = !hasExplicitFilter
             ? positions
+            : positions
                 .filter((position) => requestedPositionsSet.has(normalizePosition(position.position)))
                 .sort(
                     (firstPosition, secondPosition) =>
                         requestedPositions.indexOf(normalizePosition(firstPosition.position)) -
                         requestedPositions.indexOf(normalizePosition(secondPosition.position))
-                )
-            : positions;
+                );
         const positionNames = filteredPositions.map((position) => position.position);
         const savedPermissions = await PositionViewPermission.find({
             position: { $in: positionNames }
@@ -943,6 +1003,14 @@ userController.getPositionViewPermissions = async (req, res) => {
             ? permissionsByPosition.get(normalizePosition(filteredPositions[0].position))
             : null;
 
+        // Personas excluidas individualmente del perfil aunque su cargo siga
+        // vinculado (ver removeUserFromPosition). Se quitan de la lista de
+        // "Personas activas" sin desvincular el cargo completo.
+        const requestedExcludedMembers = Array.isArray(requestedProfile?.excludedMembers)
+            ? requestedProfile.excludedMembers
+            : [];
+        const excludedMembersSet = new Set(requestedExcludedMembers);
+
         res.status(200).json({
             levels: profiles,
             views: viewPermissionOptions,
@@ -953,6 +1021,8 @@ userController.getPositionViewPermissions = async (req, res) => {
                     _id: requestedProfile._id,
                     name: requestedProfile.name,
                     positions: requestedPositions,
+                    individualMembers: requestedIndividualMembers,
+                    excludedMembers: requestedExcludedMembers,
                     createdBy: requestedProfile.createdBy || null,
                     updatedBy: requestedProfile.updatedBy || null,
                     createdAt: requestedProfile.createdAt || null,
@@ -962,18 +1032,22 @@ userController.getPositionViewPermissions = async (req, res) => {
             positions: filteredPositions.map((position) => {
                 const positionName = normalizePosition(position.position);
                 const saved = permissionsByPosition.get(positionName);
+                const visibleUsers = excludedMembersSet.size > 0
+                    ? position.users.filter((positionUser) => !excludedMembersSet.has(positionUser.identification))
+                    : position.users;
 
                 return {
                     position: positionName,
-                    usersCount: position.usersCount,
-                    users: position.users,
+                    usersCount: visibleUsers.length,
+                    users: visibleUsers,
                     permissions: normalizeViewPermissions(saved?.permissions || {}),
                     allowed_dimensions: (saved?.allowed_dimensions || []).map(id => String(id)),
                     allowed_dependencies: (saved?.allowed_dependencies || []).map(id => String(id)),
                     updatedBy: saved?.updatedBy || null,
                     updatedAt: saved?.updatedAt || null
                 };
-            })
+            }),
+            individualUsers
         });
     } catch (error) {
         console.error('Error fetching position view permissions:', error);
@@ -1014,16 +1088,36 @@ userController.addUserToPosition = async (req, res) => {
 
             const currentPosition = normalizePosition(user.position);
             const currentPositions = normalizePositions(accessProfile.positions || []);
-            const wasAlreadyLinked = currentPositions.includes(currentPosition);
+            const currentIndividualMembers = Array.isArray(accessProfile.individualMembers)
+                ? accessProfile.individualMembers
+                : [];
+            const currentExcludedMembers = Array.isArray(accessProfile.excludedMembers)
+                ? accessProfile.excludedMembers
+                : [];
+            const coveredByPosition = currentPositions.includes(currentPosition);
+            const wasExcluded = currentExcludedMembers.includes(normalizedIdentification);
+            const alreadyIndividualMember = currentIndividualMembers.includes(normalizedIdentification);
+            const wasAlreadyLinked = (coveredByPosition && !wasExcluded) || alreadyIndividualMember;
 
-            if (!wasAlreadyLinked) {
-                accessProfile.positions = [...currentPositions, currentPosition];
+            if (coveredByPosition && wasExcluded) {
+                // Su cargo esta vinculado pero se la habia excluido individualmente
+                // (p.ej. al "Quitar"la antes): se re-incluye.
+                accessProfile.excludedMembers = currentExcludedMembers.filter(
+                    (memberId) => memberId !== normalizedIdentification
+                );
+                accessProfile.updatedBy = adminEmail;
+                await accessProfile.save();
+            } else if (!coveredByPosition && !alreadyIndividualMember) {
+                // No pertenece a ningun cargo vinculado al perfil: se agrega
+                // unicamente a esta persona (individualMembers), sin vincular todo
+                // su cargo (eso daria acceso a todos los que lo comparten).
+                accessProfile.individualMembers = [...currentIndividualMembers, normalizedIdentification];
                 accessProfile.updatedBy = adminEmail;
                 await accessProfile.save();
             }
 
             await auditLogger.logUpdate(req, adminUser, 'user', {
-                sectionTitle: `Usuario agregado al perfil ${accessProfile.name}`,
+                sectionTitle: `Persona agregada al perfil ${accessProfile.name}`,
                 userId: user._id,
                 userEmail: user.email,
                 identification: user.identification,
@@ -1038,7 +1132,9 @@ userController.addUserToPosition = async (req, res) => {
                 profile: {
                     _id: accessProfile._id,
                     name: accessProfile.name,
-                    positions: accessProfile.positions || []
+                    positions: accessProfile.positions || [],
+                    individualMembers: accessProfile.individualMembers || [],
+                    excludedMembers: accessProfile.excludedMembers || []
                 },
                 position: currentPosition,
                 wasAlreadyLinked
@@ -1106,13 +1202,59 @@ userController.removeUserFromPosition = async (req, res) => {
             }
 
             const currentPosition = normalizePosition(user.position);
-            const currentPositions = normalizePositions(accessProfile.positions || []);
-            accessProfile.positions = currentPositions.filter((profilePosition) => profilePosition !== currentPosition);
-            accessProfile.updatedBy = adminEmail;
-            await accessProfile.save();
+            const currentIndividualMembers = Array.isArray(accessProfile.individualMembers)
+                ? accessProfile.individualMembers
+                : [];
+            const isIndividualMember = currentIndividualMembers.includes(normalizedIdentification);
+
+            if (isIndividualMember) {
+                // La persona fue agregada individualmente (no via cargo): se retira
+                // solo a ella, sin afectar a nadie mas.
+                accessProfile.individualMembers = currentIndividualMembers.filter(
+                    (memberId) => memberId !== normalizedIdentification
+                );
+                accessProfile.updatedBy = adminEmail;
+                await accessProfile.save();
+
+                await auditLogger.logUpdate(req, adminUser, 'user', {
+                    sectionTitle: `Persona removida del perfil ${accessProfile.name}`,
+                    userId: user._id,
+                    userEmail: user.email,
+                    identification: user.identification,
+                    profileId: accessProfile._id,
+                    profileName: accessProfile.name,
+                    position: currentPosition
+                });
+
+                return res.status(200).json({
+                    user: formatPositionUser(user),
+                    profile: {
+                        _id: accessProfile._id,
+                        name: accessProfile.name,
+                        positions: accessProfile.positions || [],
+                        individualMembers: accessProfile.individualMembers || [],
+                        excludedMembers: accessProfile.excludedMembers || []
+                    },
+                    position: currentPosition,
+                    removedIndividually: true
+                });
+            }
+
+            // La persona pertenece al perfil via un cargo vinculado: se excluye
+            // solo a ella (excludedMembers), sin desvincular el cargo completo,
+            // que seguiria dando acceso a todos los demas que lo comparten. Para
+            // desvincular el cargo por completo se usa "Editar perfil".
+            const currentExcludedMembers = Array.isArray(accessProfile.excludedMembers)
+                ? accessProfile.excludedMembers
+                : [];
+            if (!currentExcludedMembers.includes(normalizedIdentification)) {
+                accessProfile.excludedMembers = [...currentExcludedMembers, normalizedIdentification];
+                accessProfile.updatedBy = adminEmail;
+                await accessProfile.save();
+            }
 
             await auditLogger.logUpdate(req, adminUser, 'user', {
-                sectionTitle: `Cargo removido del perfil ${accessProfile.name}`,
+                sectionTitle: `Persona excluida del perfil ${accessProfile.name}`,
                 userId: user._id,
                 userEmail: user.email,
                 identification: user.identification,
@@ -1126,9 +1268,12 @@ userController.removeUserFromPosition = async (req, res) => {
                 profile: {
                     _id: accessProfile._id,
                     name: accessProfile.name,
-                    positions: accessProfile.positions || []
+                    positions: accessProfile.positions || [],
+                    individualMembers: accessProfile.individualMembers || [],
+                    excludedMembers: accessProfile.excludedMembers || []
                 },
-                position: currentPosition
+                position: currentPosition,
+                excludedFromPosition: true
             });
         }
 

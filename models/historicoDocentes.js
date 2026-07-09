@@ -27,6 +27,7 @@ const historicoDocentesSchema = new mongoose.Schema(
     drive_file_link: { type: String },
     drive_file_download: { type: String },
     file_type: { type: String, enum: ['excel', 'pdf'], default: 'excel' },
+    excel_data: { type: Buffer, default: null },
     pdf_data: { type: Buffer, default: null },
     sheets: [sheetDataSchema],
     anexos: { type: [anexoSchema], default: [] },
