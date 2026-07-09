@@ -519,6 +519,24 @@ ctrl.create = async (req, res) => {
     }
 };
 
+// El formulario de "Editar Indicador" (pestaña Metas Periodos) solo conoce
+// periodo/meta/avance/fechas; no carga resultados_alcanzados, logros,
+// alertas, estado_reporte, reportado_por, etc. Si se reemplazara el arreglo
+// de periodos tal cual llega, cualquier edicion general del indicador
+// borraria lo que un productor ya hubiera reportado en esos campos. Por eso
+// se combina cada periodo entrante con el existente (mismo nombre de
+// periodo), y solo se sobreescriben los campos que realmente llegaron.
+const mergePeriodos = (existingPeriodos, incomingPeriodos) => {
+    if (!incomingPeriodos) return existingPeriodos;
+    const existingByPeriodo = new Map(
+        (existingPeriodos || []).map((p) => [p.periodo, p.toObject ? p.toObject() : p])
+    );
+    return incomingPeriodos.map((incoming) => {
+        const existingPeriodo = existingByPeriodo.get(incoming.periodo) || {};
+        return { ...existingPeriodo, ...incoming };
+    });
+};
+
 ctrl.update = async (req, res) => {
     try {
         const body = { ...req.body };
@@ -536,7 +554,8 @@ ctrl.update = async (req, res) => {
         } else if (body.accion_id !== undefined) {
             body.accion_id = incomingAccionId || existingAccionId;
         }
-        const periodos = body.periodos ?? existing.periodos;
+        const periodos = mergePeriodos(existing.periodos, body.periodos);
+        body.periodos = periodos;
         const tipo_calculo = body.tipo_calculo ?? existing.tipo_calculo;
         const meta_final = body.meta_final_2029 ?? existing.meta_final_2029;
         const calculados = calcularCamposDinamicos(periodos, tipo_calculo, meta_final);
