@@ -333,6 +333,27 @@ templateController.getPlantilla = async (req, res) => {
 templateController.createPlantilla = async (req, res) => {
   try {
     const sanitizedBody = await sanitizeTemplateDropdownPayload(req.body);
+
+    // Normalizar fields para asegurar que múltiple sea false por defecto
+    if (Array.isArray(sanitizedBody.fields)) {
+      sanitizedBody.fields = sanitizedBody.fields.map(field => ({
+        ...field,
+        multiple: field.multiple === true ? true : false,
+      }));
+    }
+
+    // Normalizar workbook_sheets fields
+    if (Array.isArray(sanitizedBody.workbook_sheets)) {
+      sanitizedBody.workbook_sheets = sanitizedBody.workbook_sheets.map(sheet => ({
+        ...sheet,
+        fields: Array.isArray(sheet.fields)
+          ? sheet.fields.map(field => ({
+              ...field,
+              multiple: field.multiple === true ? true : false,
+            }))
+          : sheet.fields,
+      }));
+    }
     const autoRename = sanitizedBody.auto_rename === true || sanitizedBody.auto_rename === "true";
     const requestedName = String(sanitizedBody.name || "").trim();
     let templateName = requestedName;
@@ -417,6 +438,27 @@ templateController.updatePlantilla = async (req, res) => {
   const { id } = req.params;
   const updatedFields = await sanitizeTemplateDropdownPayload(req.body);
 
+  // Normalizar fields para asegurar que múltiple sea false por defecto
+  if (Array.isArray(updatedFields.fields)) {
+    updatedFields.fields = updatedFields.fields.map(field => ({
+      ...field,
+      multiple: field.multiple === true ? true : false,
+    }));
+  }
+
+  // Normalizar workbook_sheets fields
+  if (Array.isArray(updatedFields.workbook_sheets)) {
+    updatedFields.workbook_sheets = updatedFields.workbook_sheets.map(sheet => ({
+      ...sheet,
+      fields: Array.isArray(sheet.fields)
+        ? sheet.fields.map(field => ({
+            ...field,
+            multiple: field.multiple === true ? true : false,
+          }))
+        : sheet.fields,
+    }));
+  }
+
   const invalidFileNameChars = /[<>:"/\\|?*]/;
   if (updatedFields.file_name && invalidFileNameChars.test(updatedFields.file_name)) {
     return res.status(400).json({
@@ -436,8 +478,43 @@ templateController.updatePlantilla = async (req, res) => {
     }
   }
 
+  // ✅ Validación: Prevenir eliminar hojas que ya tienen datos cargados
   try {
     const originalTemplate = await Template.findById(id).populate('producers');
+    if (!originalTemplate) {
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+
+    const oldSheetNames = (originalTemplate.workbook_sheets || []).map(s => s.name);
+    const newSheetNames = (updatedFields.workbook_sheets || []).map(s => s.name);
+    const deletedSheetNames = oldSheetNames.filter(name => !newSheetNames.includes(name));
+
+    // Si hay hojas eliminadas, verificar si tienen datos en publishedTemplates
+    if (deletedSheetNames.length > 0) {
+      const publishedTemplates = await PublishedTemplate.find(buildPublishedTemplateLookup(id));
+      
+      for (const pubTem of publishedTemplates) {
+        for (const deletedSheetName of deletedSheetNames) {
+          // Buscar datos cargados con sheet_name igual al eliminado
+          const hasDataInSheet = pubTem.loaded_data?.some(ld => 
+            ld.filled_data?.some(fd => fd.sheet_name === deletedSheetName)
+          );
+          
+          // También buscar en qr_draft_data
+          const hasQrDraftInSheet = pubTem.qr_draft_data?.some(qd =>
+            qd.filled_data?.some(fd => fd.sheet_name === deletedSheetName)
+          );
+
+          if (hasDataInSheet || hasQrDraftInSheet) {
+            return res.status(403).json({
+              error: `No puedes eliminar la hoja "${deletedSheetName}" porque ya hay datos cargados en ella. Primero, contacta a los productores para que limpien sus datos o accede a la plantilla publicada para limpiar manualmente.`
+            });
+          }
+        }
+      }
+    }
+
+    // Continuar con la lógica de actualización normal...
     if (!originalTemplate) {
       return res.status(404).json({ error: "Plantilla no encontrada" });
     }

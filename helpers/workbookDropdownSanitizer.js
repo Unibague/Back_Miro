@@ -106,6 +106,8 @@ const sanitizeFieldDropdownOptions = (field) => {
 
   return {
     ...field,
+    // Normalizar multiple: si no tiene validate_with válido, debe ser false
+    multiple: field.multiple === true ? true : false,
     dropdown_options: normalizeDropdownOptionArray(field.dropdown_options),
     excel_validation_options: normalizeDropdownOptionArray(field.excel_validation_options),
     validator_options: normalizeDropdownOptionArray(field.validator_options),

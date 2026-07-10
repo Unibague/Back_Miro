@@ -201,12 +201,19 @@ const enrichFields = async (fields, periodId) => {
   const editable = fields || [];
   return Promise.all(editable.map(async (field) => {
     const plainField = withEffectiveRequired(field);
+    
+    // Asegurar que multiple esté correctamente normalizado
+    // Si no tiene validate_with, multiple debe ser false
+    const normalizedField = {
+      ...plainField,
+      multiple: plainField.multiple === true ? true : false,
+    };
 
     // Si el campo ya trae sus propias opciones (comentario o dropdown_options),
     // esas tienen prioridad y no deben sobreescribirse con un validador.
     const ownOptions = getFieldDropdownOptions(plainField);
     if (ownOptions.length > 0) {
-      return { ...plainField, dropdown_options: ownOptions };
+      return { ...normalizedField, dropdown_options: ownOptions };
     }
 
     try {
@@ -225,7 +232,7 @@ const enrichFields = async (fields, periodId) => {
         columnName = null;
       }
 
-      if (!validatorName) return plainField;
+      if (!validatorName) return normalizedField;
 
       let validator = await Validator.findValidatorByName(validatorName, periodId);
       if (!validator && columnName) {
@@ -238,7 +245,7 @@ const enrichFields = async (fields, periodId) => {
           const dropdownOptions = buildDropdownOptions(validator, col);
           if (dropdownOptions.length) {
             return {
-              ...plainField,
+              ...normalizedField,
               validate_with: `${validator.name} - ${col.name}`, // Retornar como string, no como objeto
               dropdown_options: dropdownOptions,
             };
@@ -246,7 +253,7 @@ const enrichFields = async (fields, periodId) => {
         }
       }
     } catch (_) { /* ignore */ }
-    return plainField;
+    return normalizedField;
   }));
 };
 
