@@ -2762,9 +2762,9 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
   const skip = (pageNumber - 1) * limitNumber;
 
   try {
-    console.log('=== DEBUG getAvailableTemplatesToProductor ===');
+    console.log('\n=== DEBUG getAvailableTemplatesToProductor ===');
     console.log('Email:', email);
-    console.log('FilterByCategory:', filterByCategory);
+    console.log('PeriodId:', periodId);
     
     // Find user productor
     const user = await UserService.findUserByEmailAndRole(email, 'Productor');
@@ -2772,10 +2772,11 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
       return res.status(404).json({ error: 'User not found or not a producer' });
     }
     
-    console.log('User dep_code:', user.dep_code);
-    console.log('User additional_dependencies:', user.additional_dependencies);
+    console.log('User found:');
+    console.log('  - dep_code:', user.dep_code);
+    console.log('  - additional_dependencies:', user.additional_dependencies);
 
-    // Obtener todas las dependencias del usuario (principal + adicionales)l + adicionales)
+    // Obtener todas las dependencias del usuario (principal + adicionales)
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     console.log('All user dependencies:', allUserDependencies);
     
@@ -2783,9 +2784,13 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     const dependenciesToQuery = filterByDependency ? [filterByDependency] : allUserDependencies;
     console.log('Dependencies to query:', dependenciesToQuery);
     
-    // Obtener IDs de las dependencias a consulta
+    // Obtener IDs de las dependencias a consultar
     const dependencies = await Dependency.find({ dep_code: { $in: dependenciesToQuery } });
-    console.log('Found dependencies:', dependencies.map(d => ({ code: d.dep_code, name: d.name })));
+    console.log('Found dependencies:');
+    dependencies.forEach(d => {
+      console.log(`  - ${d.dep_code}: members=${d.members?.length || 0}`, d.members);
+    });
+    
     const dependencyIds = dependencies.map(dep => dep._id);
     console.log('Dependency IDs:', dependencyIds);
 
@@ -2811,6 +2816,8 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           { path: 'producers', model: 'dependencies' }
         ]
       }).lean();
+
+    console.log(`Total templates found: ${templates.length}`);
 
     // Manually fetch categories
     const templatesWithCategories = await Promise.all(
@@ -2855,17 +2862,38 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
         return !hasLoadedData;
       }
     );
-    
-    console.log(`Templates after filtering: ${filteredTemplates.length} of ${sortedTemplates.length}`);
 
-    const total = filteredTemplates.length;
-    const paginatedTemplates = filteredTemplates.slice(skip, skip + limitNumber);
+    // ✅ NUEVO FILTRO: Verificar que el usuario sea miembro de la dependencia
+    console.log(`\nVerifying user is member of dependencies...`);
+    const userMemberDependencies = dependencies.filter(dep => 
+      dep.members && dep.members.includes(email)
+    );
+    console.log(`User is member of: ${userMemberDependencies.map(d => d.dep_code).join(', ') || 'NONE'}`);
+    
+    const finalFilteredTemplates = filteredTemplates.filter(template => {
+      // Obtener los IDs de las dependencias productoras de esta plantilla
+      const templateProducerIds = template.template?.producers?.map(p => p._id?.toString() || p.toString()) || [];
+      
+      // Verificar si el usuario es miembro de AL MENOS UNA dependencia productora
+      const isMember = templateProducerIds.some(producerId =>
+        userMemberDependencies.some(dep => dep._id.toString() === producerId)
+      );
+      
+      if (!isMember) {
+        console.log(`❌ Template '${template.name}' filtered out - user is NOT member of producers`);
+      }
+      
+      return isMember;
+    });
+    
+    console.log(`Templates after member verification: ${finalFilteredTemplates.length} of ${filteredTemplates.length}`);
+    console.log('=== DEBUG END ===\n');
+
+    const total = finalFilteredTemplates.length;
+    const paginatedTemplates = finalFilteredTemplates.slice(skip, skip + limitNumber);
 
     // Get validators for filtered templates + marcar si el usuario es productor encargado
     const userDepIds = dependencies.map(d => d._id.toString());
-    // Igual que en getUploadedTemplatesByProducer: los validadores solo se
-    // piden si se solicitan explicitamente (se usan para descargar/diligenciar,
-    // no para listar).
     const includeValidators = req.query.withValidators === 'true';
     const templatesWithValidators = await Promise.all(
       paginatedTemplates.map(async (template) => {

@@ -405,29 +405,65 @@ dependencyController.updateDependency = async (req, res) => {
   try {
     const dependency = await Dependency.findById(id);
     if (!dependency) {
+      console.log(`❌ Dependency not found with ID: ${id}`);
       return res.status(404).json({ status: "Dependency not found" });
     }
 
+    console.log(`✅ Dependency found: ${dependency.name}`);
+
+    // Obtener los miembros anteriores para identificar quiénes se desactivan
+    const previousMembers = dependency.members || [];
+    const newMembers = Array.isArray(producers) ? [...new Set(producers)] : [];
+    
+    // Usuarios que se están removiendo de la dependencia
+    const removedUsers = previousMembers.filter(email => !newMembers.includes(email));
+    
+    // Usuarios que se están agregando a la dependencia
+    const addedUsers = newMembers.filter(email => !previousMembers.includes(email));
+
+    console.log(`Miembros previos: ${previousMembers.length}`, previousMembers);
+    console.log(`Nuevos miembros: ${newMembers.length}`, newMembers);
+    console.log(`Usuarios removidos: ${removedUsers.length}`, removedUsers);
+    console.log(`Usuarios agregados: ${addedUsers.length}`, addedUsers);
+
+    // ACTUALIZAR miembros (reemplazar, no concatenar)
     dependency.dep_code = dep_code;
     dependency.name = name;
     dependency.responsible = responsible;
     dependency.dep_father = dep_father;
-    dependency.members = [...new Set([...dependency.members, ...producers])];
+    dependency.members = newMembers;
 
-    const users = await User.find({ email: { $in: producers } });
-    console.log(users);
+    console.log(`✅ Dependency object updated in memory`);
 
-    await User.updateMany(
-      { email: { $in: producers } },
-      { $addToSet: { roles: "Productor" } },
-      { multi: true }
-    );
+    // Asegurar que todos los nuevos miembros tengan el rol de Productor
+    if (newMembers.length > 0) {
+      console.log(`Updating roles for ${newMembers.length} producers...`);
+      await User.updateMany(
+        { email: { $in: newMembers } },
+        { $addToSet: { roles: "Productor" } },
+        { multi: true }
+      );
+      console.log(`✅ ${newMembers.length} usuarios con rol Productor`);
+    }
 
+    console.log(`Saving dependency to database...`);
     await dependency.save();
+    console.log(`✅ Dependency saved successfully`);
 
-    res.status(200).json({ status: "Dependency updated" });
+    console.log(`=== DEBUG updateDependency END ===\n`);
+
+    res.status(200).json({ 
+      status: "Dependency updated",
+      summary: {
+        totalMembers: newMembers.length,
+        removed: removedUsers.length,
+        added: addedUsers.length
+      }
+    });
   } catch (error) {
-    console.error(error);
+    console.error(`\n❌ ERROR in updateDependency:`, error);
+    console.error(`Error message: ${error.message}`);
+    console.error(`Error stack:`, error.stack);
     res
       .status(500)
       .json({ status: "Error updating dependency", error: error.message });
@@ -442,6 +478,8 @@ dependencyController.getMembers = async (req, res) => {
       return res.status(404).json({ status: "Dependency not found" });
     }
 
+    // Obtener TODOS los miembros (activos e inactivos) - sin filtrar por isActive
+    // El isActive es para acceso a la app, no para estar en la dependencia
     const members = await User.find({ email: { $in: dependency.members } });
     
     // Eliminar duplicados por email (mantener el más reciente)

@@ -676,7 +676,10 @@ userController.updateUserStatus = async (req, res) => {
 userController.getUsersByDependency = async (req, res) => {
     const { dep_code } = req.params;
     try {
-        const users = await User.find({ dep_code });
+        // Traer TODOS los usuarios que tienen esta dep_code (activos e inactivos)
+        const users = await User.find({ dep_code }).sort({ full_name: 1 });
+        
+        console.log(`getUsersByDependency: Found ${users.length} users for dep_code: ${dep_code}`);
         res.status(200).json(users);
     } catch (error) {
         console.error('Error fetching users by dependency:', error);

@@ -3,6 +3,9 @@ const router = express.Router();
 const controller = require('../controllers/users.js');
 const { requireAdmin, requireReadAccess, requireAdminOrProfilePermission } = require('../middleware/auth');
 
+// Rutas con parámetros específicos PRIMERO (para evitar conflictos)
+router.get("/:dep_code/users", controller.getUsersByDependency);
+
 router.get("/all", controller.getUsers);
 
 router.get("/allPagination", controller.getUsersPagination);
@@ -54,8 +57,6 @@ router.put("/updateStatus", requireAdmin, controller.updateUserStatus);
 router.put("/migrate", requireAdmin, controller.migrateUserDependecy);
 
 router.get("/exportActiveUsers", requireAdmin, controller.exportActiveUsersExcel);
-
-router.get("/:dep_code/users", controller.getUsersByDependency);
 
 
 module.exports = router;
