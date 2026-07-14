@@ -314,31 +314,21 @@ function ordenarPeriodos(lista = []) {
     return [...lista].sort((a, b) => String(a.periodo ?? '').localeCompare(String(b.periodo ?? '')));
 }
 
+// Un periodo recien agregado guarda avance:0 por defecto aunque nadie lo haya
+// reportado (estado_reporte queda en 'Borrador'). Si solo filtraramos por
+// "avance no nulo" ese 0 de relleno se confundiria con un reporte real y
+// desplazaria el ultimo valor genuino hacia un periodo futuro sin reportar.
+function fueReportado(p) {
+    return Boolean(p.estado_reporte) && p.estado_reporte !== 'Borrador';
+}
+
 function ultimoValor(lista) {
     const con = ordenarPeriodos(lista).filter((p) =>
+        fueReportado(p) &&
         p.avance !== null && p.avance !== undefined &&
         p.avance !== '' && toNumberValue(p.avance) !== null
     );
     return con.length ? toNumberValue(con[con.length - 1].avance) : null;
-}
-
-function cumplimientoUltimoValor(lista) {
-    const con = ordenarPeriodos(lista).filter((p) =>
-        p.avance !== null && p.avance !== undefined &&
-        p.avance !== '' && toNumberValue(p.avance) !== null
-    );
-    if (!con.length) return 0;
-
-    const ultimo = con[con.length - 1];
-    const avance = toNumberValue(ultimo.avance);
-    const meta = toNumberValue(ultimo.meta);
-
-    if (avance === null) return 0;
-    if (meta !== null && meta > 0) {
-        return Math.round(Math.min(avance / meta, 1) * 100 * 100) / 100;
-    }
-
-    return Math.round(Math.min(avance, 100) * 100) / 100;
 }
 
 function sumarAvances(lista = []) {
@@ -355,7 +345,8 @@ function calcularAvanceActual(periodosOrdenados, tipo_calculo) {
     }
 
     if (tipo_calculo === 'ultimo_valor') {
-        return cumplimientoUltimoValor(periodosOrdenados);
+        const ultimo = ultimoValor(periodosOrdenados);
+        return ultimo !== null ? ultimo : 0;
     }
 
     const promedio = promedioAvances(periodosOrdenados);
@@ -373,10 +364,13 @@ function calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio) {
 
 /*
   Formula tomada del Excel:
-  - avanceActual: suma acumulada, promedio aritmetico o cumplimiento del ultimo valor, segun tipo_calculo
-  - avance: % de avance total capado a 100
+  - avanceActual: suma acumulada, promedio aritmetico o ultimo valor reportado (crudo), segun tipo_calculo
+  - avance: % de avance total capado a 100, siempre referenciado contra la Meta final 2029
   - avance_total_real: % de avance total mostrado en la UI
-  - avances_por_anio: % del avance reportado en cada anio frente a la meta de referencia de ese mismo anio
+  - avances_por_anio: % del avance reportado en cada anio, tambien referenciado contra la Meta final 2029
+    para "ultimo_valor" (es la misma medicion evolucionando hacia una unica meta final, no una cuota
+    independiente por anio); para "acumulado"/"promedio" sigue comparando cada anio contra la meta
+    propia de ese anio, porque ahi si son cuotas anuales independientes.
 */
 function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
     const periodosOrdenados = ordenarPeriodos(periodos);
@@ -393,29 +387,23 @@ function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
     for (const anio of anios) {
         const periodosDelAnio = periodosOrdenados.filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
         const avanceAnual = calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio);
-        if (tipo_calculo === 'ultimo_valor') {
-            avances_por_anio[anio] = Math.min(avanceAnual, 100);
-        } else {
-            const metaReferencia = tipo_calculo === 'promedio'
-                ? promedioMetas(periodosDelAnio)
-                : sumarMetas(periodosDelAnio);
-            avances_por_anio[anio] = metaReferencia > 0
-                ? round2(Math.min(avanceAnual / metaReferencia, 1) * 100)
-                : 0;
-        }
+        const metaReferencia = tipo_calculo === 'ultimo_valor'
+            ? metaFinal
+            : tipo_calculo === 'promedio'
+            ? promedioMetas(periodosDelAnio)
+            : sumarMetas(periodosDelAnio);
+        avances_por_anio[anio] = metaReferencia > 0
+            ? round2(Math.min(avanceAnual / metaReferencia, 1) * 100)
+            : 0;
     }
 
-    const avance = tipo_calculo === 'ultimo_valor'
-        ? Math.min(avanceActual, 100)
-        : (metaFinal > 0
-            ? round2(Math.min(avanceActual / metaFinal, 1) * 100)
-            : 0);
+    const avance = metaFinal > 0
+        ? round2(Math.min(avanceActual / metaFinal, 1) * 100)
+        : 0;
 
-    const avanceTotalRealRaw = tipo_calculo === 'ultimo_valor'
-        ? avance
-        : (metaFinal > 0
-            ? round2((avanceActual / metaFinal) * 100)
-            : null);
+    const avanceTotalRealRaw = metaFinal > 0
+        ? round2((avanceActual / metaFinal) * 100)
+        : null;
     const avance_total_real = avanceTotalRealRaw === null ? null : clampPercentage(avanceTotalRealRaw);
     const avance_actual = clampPercentage(avance_total_real ?? avance);
 

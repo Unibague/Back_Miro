@@ -477,7 +477,7 @@ async function generarInformeIndicador({ indicador, respuestasInd = [], corte = 
         new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 600 },
-            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}`, color: '6B7280' })],
         }),
         ...seccionIndicador(indicador, respuestasInd, corte),
     ];
@@ -506,7 +506,7 @@ async function generarInformeAccion({ accion, indicadores = [], respuestasPorInd
         new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 600 },
-            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}`, color: '6B7280' })],
         }),
         ...seccionAccion(accion, indicadores, respuestasPorIndicador, corte),
     ];
@@ -535,7 +535,7 @@ async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion
         new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 600 },
-            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}`, color: '6B7280' })],
         }),
         h1(`${proyecto.codigo} · ${proyecto.nombre}`),
         campo('Responsable', proyecto.responsable),
@@ -578,7 +578,7 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
         new Paragraph({
             alignment: AlignmentType.CENTER,
             spacing: { before: 0, after: 600 },
-            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO')}`, color: '6B7280' })],
+            children: [new TextRun({ text: `Generado el ${new Date().toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}`, color: '6B7280' })],
         }),
         h1(`${macro.codigo} · ${macro.nombre}`),
         campo('Líder', macro.lider),
