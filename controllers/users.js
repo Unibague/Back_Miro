@@ -80,8 +80,10 @@ const viewPermissionOptions = [
 
     { key: "pdi", label: "PDI - Vista principal", path: "/pdi", module: "PDI", group: "PDI", roles: ["Administrador"] },
     { key: "pdiResponsable", label: "PDI - Vista principal (Responsable)", path: "/pdi", module: "PDI", group: "PDI", roles: ["Responsable"] },
-    { key: "pdiMine", label: "Proyectos PDI (mis indicadores)", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Administrador"] },
-    { key: "pdiMineResponsable", label: "Proyectos PDI (mis indicadores) — Responsable", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Responsable"] },
+    // "Mis indicadores" es un concepto exclusivo de Responsable (indicadores
+    // asignados al usuario que inició sesión); no existe una variante de
+    // Administrador porque un administrador no tiene indicadores propios.
+    { key: "pdiMineResponsable", label: "Proyectos PDI (mis indicadores)", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Responsable"] },
     { key: "pdiDashboard", label: "Tablero de control PDI", path: "/pdi/dashboard", module: "PDI", group: "PDI", roles: ["Administrador"] },
     { key: "pdiDashboardResponsable", label: "Tablero de control PDI (Responsable)", path: "/pdi/dashboard", module: "PDI", group: "PDI", roles: ["Responsable"] },
     { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", module: "PDI", group: "PDI", roles: ["Administrador"] },
