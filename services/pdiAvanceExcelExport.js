@@ -49,54 +49,54 @@ function ultimoValorReportado(lista = []) {
     return toNumberValue(conAvance[conAvance.length - 1].avance) ?? 0;
 }
 
-// Cumplimiento del indicador EN un año puntual, frente a la meta programada
-// para ESE mismo año (no la Meta final 2029). Replica exactamente
-// controllers/pdiDashboard.js (cumplimientoIndicadorAnio) para que la hoja
-// "Resumen PDI {año}" cuadre con el "Avance del año" del tablero.
-function cumplimientoIndicadorAnio(indicador, anio) {
+// Igual que calcularIndicadorExport, pero con "Meta {año}" en vez de "Meta
+// final 2029": la meta y el avance operativo del indicador se calculan SOLO
+// con los periodos de ESE año (según su tipo de cálculo), y el % de avance
+// se compara contra esa meta anual. Replica exactamente la metodología de
+// controllers/pdiDashboard.js (cumplimientoIndicadorAnio) pero exponiendo
+// también la meta usada, para poder mostrarla como columna/fórmula en el
+// libro de memoria de cálculo enfocado en un año.
+function calcularIndicadorExportAnio(indicador, anio) {
     const periodosAnio = ordenarPeriodos(indicador.periodos || [])
         .filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
-    if (!periodosAnio.length) return 0;
-
     const tipo = indicador.tipo_calculo || 'promedio';
 
-    if (tipo === 'ultimo_valor') {
-        const conAvance = periodosAnio.filter((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
-        if (!conAvance.length) return 0;
-        const ultimo = conAvance[conAvance.length - 1];
-        const avance = toNumberValue(ultimo.avance);
-        const meta = toNumberValue(ultimo.meta);
-        if (avance === null) return 0;
-        if (meta !== null && meta > 0) return round2(Math.min(avance / meta, 1) * 100);
-        return round2(Math.min(avance, 100));
+    let metaAnio = 0;
+    let avanceOperacion = 0;
+
+    if (periodosAnio.length) {
+        if (tipo === 'ultimo_valor') {
+            const conAvance = periodosAnio.filter((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
+            if (conAvance.length) {
+                const ultimo = conAvance[conAvance.length - 1];
+                avanceOperacion = round2(toNumberValue(ultimo.avance) ?? 0);
+                metaAnio = round2(toNumberValue(ultimo.meta) ?? 0);
+            }
+        } else if (tipo === 'promedio') {
+            avanceOperacion = round2(promedioCampo(periodosAnio, 'avance') ?? 0);
+            metaAnio = round2(promedioCampo(periodosAnio, 'meta') ?? 0);
+        } else {
+            avanceOperacion = round2(sumarCampo(periodosAnio, 'avance'));
+            metaAnio = round2(sumarCampo(periodosAnio, 'meta'));
+        }
     }
 
-    if (tipo === 'promedio') {
-        const avances = periodosAnio.map((p) => toNumberValue(p.avance)).filter((v) => v !== null);
-        const metas = periodosAnio.map((p) => toNumberValue(p.meta)).filter((v) => v !== null);
-        if (!avances.length || !metas.length) return 0;
-        const avanceProm = avances.reduce((a, b) => a + b, 0) / avances.length;
-        const metaProm = metas.reduce((a, b) => a + b, 0) / metas.length;
-        if (!(metaProm > 0)) return 0;
-        return round2(Math.min(avanceProm / metaProm, 1) * 100);
-    }
+    // Sin redondear: alimenta la Acción del archivo de año (weightedContribution).
+    const porcentajeAvance = metaAnio > 0 ? Math.min(avanceOperacion / metaAnio, 1) * 100 : 0;
 
-    // acumulado
-    const sumaAvance = periodosAnio.reduce((s, p) => s + (toNumberValue(p.avance) ?? 0), 0);
-    const sumaMeta = periodosAnio.reduce((s, p) => s + (toNumberValue(p.meta) ?? 0), 0);
-    if (!(sumaMeta > 0)) return 0;
-    return round2(Math.min(sumaAvance / sumaMeta, 1) * 100);
-}
+    // "Tiene meta en el año" = al menos un periodo de ESE año con meta no
+    // nula (igual definición que indicadoresConMetaEnAnio en
+    // controllers/pdiDashboard.js): una meta en 0 SÍ cuenta como definida,
+    // solo se excluyen los indicadores sin ningún dato de meta ese año.
+    const tieneMetaAnio = periodosAnio.some((p) => toNumberValue(p.meta) !== null);
 
-// Avance real del año en curso para un conjunto de indicadores: promedio
-// simple del % de cumplimiento individual de cada indicador con meta en ese
-// año (suma de los % ÷ total de indicadores). Misma metodología que
-// controllers/pdiDashboard.js (calcularAvanceGlobalAnio) y que la tarjeta
-// "Avance del año" del tablero: NO es ponderado por peso ni jerárquico.
-function avanceAnioSimple(indicadoresDelAnio, anio) {
-    if (!indicadoresDelAnio.length) return 0;
-    const suma = indicadoresDelAnio.reduce((acc, ind) => acc + cumplimientoIndicadorAnio(ind, anio), 0);
-    return Math.round((suma / indicadoresDelAnio.length) * 100) / 100;
+    return {
+        tiene_meta_anio: tieneMetaAnio,
+        meta_anio: metaAnio,
+        avance_operacion_anio: avanceOperacion,
+        porcentaje_avance_anio: porcentajeAvance,
+        semaforo_anio: getSemaforo(porcentajeAvance),
+    };
 }
 
 function calcularIndicadorExport(ind = {}) {
@@ -113,8 +113,11 @@ function calcularIndicadorExport(ind = {}) {
         avanceOperacion = promedioCampo(periodos, 'avance') ?? 0;
     }
 
-    const porcentajeAvance = metaFinal > 0 ? round2(Math.min(avanceOperacion / metaFinal, 1) * 100) : 0;
-    const avanceTotalReal = metaFinal > 0 ? clampPercentage(round2((avanceOperacion / metaFinal) * 100)) : null;
+    // Sin redondear: igual que en controllers/pdiIndicador.js, este porcentaje
+    // alimenta la Acción (weightedContribution) y no debe llevar redondeo
+    // propio, para que no se acumule error subiendo por la cadena.
+    const porcentajeAvance = metaFinal > 0 ? Math.min(avanceOperacion / metaFinal, 1) * 100 : 0;
+    const avanceTotalReal = metaFinal > 0 ? clampPercentage((avanceOperacion / metaFinal) * 100) : null;
 
     return {
         avance_operacion: avanceOperacion,
@@ -382,9 +385,9 @@ const TIPO_LABEL = {
 };
 
 const FORMULA_TEXTO = {
-    acumulado: 'Suma de los avances reportados en cada periodo, dividida entre la Meta final 2029 (tope 100%).',
-    promedio: 'Promedio aritmético de los avances reportados en los periodos con dato, dividido entre la Meta final 2029 (tope 100%).',
-    ultimo_valor: 'Último periodo con avance reportado, dividido entre la Meta final 2029 (tope 100%).',
+    acumulado: 'Se suman los valores reportados en todos los períodos del indicador. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta final 2029, aplicando un límite máximo del 100 %.',
+    promedio: 'Se promedian los valores reportados en los períodos del indicador con información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta final 2029, aplicando un límite máximo del 100 %.',
+    ultimo_valor: 'Se toma el valor reportado en el último período con información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta final 2029, aplicando un límite máximo del 100 %.',
 };
 
 const HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7C3AED' } };
@@ -464,45 +467,21 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
 
     const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
     macrosNorm.forEach((macro) => {
-        macro.avance_descarga = weightedContribution(
+        // Macroproyecto es un valor final que se muestra: sí se redondea, a
+        // diferencia de Indicador/Acción/Proyecto.
+        macro.avance_descarga = Math.round(weightedContribution(
             proyectosPorMacro.get(String(macro._id)) || [],
             (proyecto) => proyecto.avance_descarga,
             (proyecto) => proyecto.peso
-        );
+        ));
     });
 
-    const avanceGlobalDescarga = weightedAverage(
+    // PDI global también es un valor final: se redondea aquí.
+    const avanceGlobalDescarga = Math.round(weightedAverage(
         macrosNorm,
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
-    );
-
-    // ── Avance del año en curso — MISMA metodología que la tarjeta "Avance del
-    // año" del tablero (controllers/pdiDashboard.js: calcularAvanceGlobalAnio):
-    // promedio simple del % de cumplimiento individual de los indicadores con
-    // meta en ese año, frente a la meta de ESE año (no la Meta final 2029).
-    // No es ponderado por peso ni jerárquico, a propósito, para que el número
-    // coincida exactamente con el que ve Planeación en el tablero.
-    const anioActual = String(new Date().getFullYear());
-    const proyectoAMacroId = new Map(
-        proyectosNorm.map((p) => [String(p._id), String(p.macroproyecto_id?._id ?? p.macroproyecto_id ?? '')])
-    );
-    const accionAMacroId = new Map(
-        accionesNorm.map((a) => [String(a._id), proyectoAMacroId.get(String(a.proyecto_id?._id ?? a.proyecto_id)) || ''])
-    );
-    const indicadoresConMetaAnio = indicadoresConPeriodos.filter((ind) =>
-        (ind.periodos || []).some((p) => String(p.periodo ?? '').slice(0, 4) === anioActual && toNumberValue(p.meta) !== null)
-    );
-    const indicadoresPorMacroAnio = groupBy(
-        indicadoresConMetaAnio,
-        (ind) => accionAMacroId.get(String(ind.accion_id?._id ?? ind.accion_id)) || ''
-    );
-    macrosNorm.forEach((macro) => {
-        const indsMacro = indicadoresPorMacroAnio.get(String(macro._id)) || [];
-        macro.avance_anio = avanceAnioSimple(indsMacro, anioActual);
-        macro.conteo_indicadores_anio = indsMacro.length;
-    });
-    const avanceGlobalAnio = avanceAnioSimple(indicadoresConMetaAnio, anioActual);
+    ));
 
     const validationRows = [
         ...duplicateCodes(macrosNorm, 'Macroproyecto'),
@@ -519,7 +498,6 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     // pestañas ("Resumen PDI" primero); se llenan más abajo en orden de
     // dependencia (Periodos -> Indicadores -> Acciones -> Proyectos -> Macros -> Resumen).
     const wsResumen = workbook.addWorksheet('Resumen PDI');
-    const wsResumenAnio = workbook.addWorksheet(`Resumen PDI ${anioActual}`);
     const wsGuia = workbook.addWorksheet('Guía');
     const wsValidaciones = workbook.addWorksheet('Validaciones');
     const wsMacro = workbook.addWorksheet('Macroproyectos');
@@ -540,7 +518,34 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     styleHeaderRow(wsPeriodos.getRow(1));
     wsPeriodos.autoFilter = { from: 'A1', to: 'H1' };
 
+    // ── Hoja "Metas y Avances por Periodo" — versión consolidada y legible de
+    // "Periodos" para consulta humana, con la jerarquía completa (Macroproyecto
+    // → Proyecto → Acción → Indicador). "Periodos" se deja intacta porque las
+    // fórmulas de la hoja Indicadores la referencian por columna (SUMIF/
+    // AVERAGEIF/SUMIFS); esta hoja nueva no alimenta ninguna fórmula, es solo
+    // de lectura.
+    const wsConsolidado = workbook.addWorksheet('Metas y Avances por Periodo');
+    wsConsolidado.columns = [
+        { header: 'Macroproyecto', key: 'macro', width: 16 },
+        { header: 'Proyecto', key: 'proyecto', width: 16 },
+        { header: 'Acción', key: 'accion', width: 16 },
+        { header: 'Indicador', key: 'indicador', width: 16 },
+        { header: 'Nombre del indicador', key: 'nombre', width: 46 },
+        { header: 'Periodo', key: 'periodo', width: 12 },
+        { header: 'Meta del período', key: 'meta', width: 16 },
+        { header: 'Valor reportado del período', key: 'avance', width: 22 },
+        { header: 'Estado del reporte', key: 'estado', width: 18 },
+        { header: 'Reportado por', key: 'reportado_por', width: 28 },
+        { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+    ];
+    styleHeaderRow(wsConsolidado.getRow(1));
+    wsConsolidado.autoFilter = { from: 'A1', to: 'K1' };
+    wsConsolidado.views = [{ state: 'frozen', ySplit: 1 }];
+
     for (const ind of indicadoresConPeriodos) {
+        const accion = accionPorId.get(String(ind.accion_id?._id ?? ind.accion_id));
+        const proyecto = proyectoPorId.get(String(accion?.proyecto_id?._id ?? accion?.proyecto_id ?? ''));
+        const macro = macroPorId.get(String(proyecto?.macroproyecto_id?._id ?? proyecto?.macroproyecto_id ?? ''));
         for (const p of ind.periodos_marcados) {
             wsPeriodos.addRow({
                 codigo: ind.codigo,
@@ -552,8 +557,26 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
             });
+            wsConsolidado.addRow({
+                macro: macro?.codigo ?? '',
+                proyecto: proyecto?.codigo ?? '',
+                accion: accion?.codigo ?? '',
+                indicador: ind.codigo,
+                nombre: ind.nombre,
+                periodo: p.periodo,
+                meta: toNumberValue(p.meta),
+                avance: toNumberValue(p.avance),
+                estado: p.estado_reporte || '',
+                reportado_por: p.reportado_por || '',
+                fecha_envio: p.fecha_envio || null,
+            });
         }
     }
+    wsConsolidado.getColumn('K').numFmt = 'yyyy-mm-dd';
+    wsConsolidado.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        row.getCell(5).alignment = { wrapText: true, vertical: 'top' };
+    });
     const lastPeriodosRow = Math.max(wsPeriodos.rowCount, 2);
     wsPeriodos.getColumn('H').numFmt = 'yyyy-mm-dd';
     const P = {
@@ -571,8 +594,8 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         { header: 'Peso en su Acción (%)', key: 'peso', width: 16 },
         { header: 'Tipo de cálculo', key: 'tipo', width: 20 },
         { header: 'Meta final 2029', key: 'meta_final', width: 16 },
-        { header: 'Avance actual\n(calculado con fórmula)', key: 'avance_actual', width: 20 },
-        { header: '% Avance del indicador\n(fórmula final)', key: 'pct_avance', width: 20 },
+        { header: 'Valor utilizado para el cálculo', key: 'avance_actual', width: 20 },
+        { header: 'Porcentaje de avance del indicador (%)', key: 'pct_avance', width: 20 },
         { header: 'Avance guardado\nen el sistema', key: 'sistema', width: 18 },
         { header: 'Diferencia', key: 'diferencia', width: 12 },
         { header: 'Semáforo', key: 'semaforo', width: 12 },
@@ -604,8 +627,9 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
                 : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.avance}),2),0)`;
         wsInd.getCell(`G${r}`).value = { formula: gFormula, result: ind.avance_operacion_descarga };
 
-        // H: % avance final del indicador, siempre G ÷ Meta final 2029 (tope 100%)
-        const hFormula = `IF($F${r}>0,ROUND(MIN(G${r}/$F${r},1)*100,2),0)`;
+        // H: % avance final del indicador, siempre G ÷ Meta final 2029 (tope 100%).
+        // Sin redondear: alimenta la Acción (columna E de "Acciones").
+        const hFormula = `IF($F${r}>0,MIN(G${r}/$F${r},1)*100,0)`;
         wsInd.getCell(`H${r}`).value = { formula: hFormula, result: ind.avance_descarga };
 
         wsInd.getCell(`I${r}`).value = Number(ind.avance) || 0;
@@ -645,7 +669,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsAcc.autoFilter = { from: 'A1', to: 'H1' };
     wsAcc.views = [{ state: 'frozen', ySplit: 1 }];
 
-    const ACCION_FORMULA_TXT = 'Promedio ponderado de los indicadores de la acción: Σ(% avance del indicador × peso del indicador) ÷ 100.';
+    const ACCION_FORMULA_TXT = 'Consolidación del avance de la Acción Estratégica mediante la sumatoria ponderada del avance de los indicadores que la conforman, utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ 100.';
     accionesNorm.forEach((acc, idx) => {
         const r = idx + 2;
         const proyecto = proyectoPorId.get(String(acc.proyecto_id?._id ?? acc.proyecto_id));
@@ -653,9 +677,10 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         wsAcc.getCell(`B${r}`).value = acc.nombre;
         wsAcc.getCell(`C${r}`).value = proyecto?.codigo ?? '';
         wsAcc.getCell(`D${r}`).value = acc.peso_norm;
-        // Redondeada a entero, igual que recalcularAccion en controllers/pdiIndicador.js
+        // Sin redondear, igual que recalcularAccion en controllers/pdiIndicador.js:
+        // alimenta el Proyecto y no debe llevar redondeo propio.
         wsAcc.getCell(`E${r}`).value = {
-            formula: `ROUND(SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100,0)`,
+            formula: `SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100`,
             result: acc.avance_descarga,
         };
         wsAcc.getCell(`F${r}`).value = Number(acc.avance) || 0;
@@ -690,7 +715,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsProy.autoFilter = { from: 'A1', to: 'H1' };
     wsProy.views = [{ state: 'frozen', ySplit: 1 }];
 
-    const PROYECTO_FORMULA_TXT = 'Promedio ponderado de las acciones del proyecto: Σ(avance de la acción × peso de la acción) ÷ 100.';
+    const PROYECTO_FORMULA_TXT = 'Consolidación del avance del proyecto mediante la sumatoria ponderada del avance de las acciones estratégicas que lo conforman, utilizando el peso asignado a cada una.\nFórmula aplicada: Σ (Avance de la acción estratégica × Peso de la acción estratégica) ÷ 100.';
     proyectosNorm.forEach((p, idx) => {
         const r = idx + 2;
         const macro = macroPorId.get(String(p.macroproyecto_id?._id ?? p.macroproyecto_id));
@@ -698,9 +723,10 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         wsProy.getCell(`B${r}`).value = p.nombre;
         wsProy.getCell(`C${r}`).value = macro?.codigo ?? '';
         wsProy.getCell(`D${r}`).value = p.peso_norm;
-        // Redondeada a entero, igual que recalcularProyecto en controllers/pdiAccionEstrategica.js
+        // Sin redondear, igual que recalcularProyecto en controllers/pdiAccionEstrategica.js:
+        // alimenta el Macroproyecto y no debe llevar redondeo propio.
         wsProy.getCell(`E${r}`).value = {
-            formula: `ROUND(SUMPRODUCT((${ACC.proyecto}=$A${r})*${ACC.avance}*${ACC.peso})/100,0)`,
+            formula: `SUMPRODUCT((${ACC.proyecto}=$A${r})*${ACC.avance}*${ACC.peso})/100`,
             result: p.avance_descarga,
         };
         wsProy.getCell(`F${r}`).value = Number(p.avance) || 0;
@@ -734,13 +760,14 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsMacro.autoFilter = { from: 'A1', to: 'G1' };
     wsMacro.views = [{ state: 'frozen', ySplit: 1 }];
 
-    const MACRO_FORMULA_TXT = 'Promedio ponderado de los proyectos del macroproyecto: Σ(avance del proyecto × peso del proyecto) ÷ 100.';
+    const MACRO_FORMULA_TXT = 'El avance del macroproyecto se obtiene mediante la sumatoria ponderada del avance de los proyectos asociados, utilizando el peso definido para cada proyecto (Σ Avance × Peso ÷ 100).';
     macrosNorm.forEach((m, idx) => {
         const r = idx + 2;
         wsMacro.getCell(`A${r}`).value = m.codigo;
         wsMacro.getCell(`B${r}`).value = m.nombre;
         wsMacro.getCell(`C${r}`).value = m.peso_norm;
-        // Redondeada a entero, igual que recalcularMacroproyecto en controllers/pdiProyecto.js
+        // Macroproyecto SÍ se redondea a entero (valor final que se muestra),
+        // igual que recalcularMacroproyecto en controllers/pdiProyecto.js.
         wsMacro.getCell(`D${r}`).value = {
             formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
             result: m.avance_descarga,
@@ -860,103 +887,18 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     nextRow += 1;
     [
-        `Resumen PDI ${anioActual} — el avance del año en curso, con la misma metodología que la tarjeta "Avance del año" del tablero.`,
         'Guía — propósito de cada hoja, diccionario de columnas, tipos de cálculo y reglas de validación.',
         'Validaciones — hallazgos calculados al momento de la descarga: pesos, códigos, relaciones, metas y datos numéricos.',
         'Macroproyectos — avance de cada macroproyecto y su fórmula.',
         'Proyectos — avance de cada proyecto y su fórmula.',
         'Acciones — avance de cada acción estratégica y su fórmula.',
         'Indicadores — avance de cada indicador, su tipo de cálculo y su fórmula detallada.',
-        'Periodos — meta y avance reportados en cada corte, que alimentan todas las fórmulas anteriores.',
+        'Periodos — meta y avance reportados en cada corte, que alimentan todas las fórmulas anteriores (no editar: es la base técnica de los cálculos).',
+        'Metas y Avances por Periodo — la misma información de "Periodos", pero en formato consolidado y legible, con la jerarquía completa (Macroproyecto, Proyecto, Acción, Indicador). Es solo de consulta, no alimenta fórmulas.',
     ].forEach((line) => {
         wsResumen.getCell(`A${nextRow}`).value = `• ${line}`;
         wsResumen.mergeCells(`A${nextRow}:H${nextRow}`);
         nextRow += 1;
-    });
-
-    // ── Hoja "Resumen PDI {año}" — promedio simple del % de cumplimiento
-    // individual de los indicadores con meta en el año en curso, frente a la
-    // meta de ESE año (no la Meta final 2029). Misma metodología exacta que
-    // la tarjeta "Avance del año" del tablero (no ponderada por peso ni
-    // jerárquica): así el número de esta hoja siempre coincide con el tablero.
-    wsResumenAnio.columns = [
-        { width: 22 }, { width: 46 }, { width: 22 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 12 }, { width: 12 },
-    ];
-
-    wsResumenAnio.mergeCells('A1:H1');
-    wsResumenAnio.getCell('A1').value = `Tablero de control PDI — Avance del año ${anioActual}`;
-    wsResumenAnio.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF4C1D95' } };
-    wsResumenAnio.mergeCells('A2:H2');
-    wsResumenAnio.getCell('A2').value = `Generado el ${generatedAt.toLocaleString('es-CO', { timeZone: 'America/Bogota' })}. Datos consultados y recalculados al momento de la descarga.`;
-    wsResumenAnio.getCell('A2').font = { italic: true, color: { argb: 'FF6B7280' } };
-
-    let nextRowAnio = addExplanationBlock(wsResumenAnio, 4, [
-        'Cómo leer esta hoja:',
-        `• Este número es EXACTAMENTE el mismo que muestra la tarjeta "Avance del año ${anioActual}" del tablero: promedio simple del % de cumplimiento individual de cada indicador con meta en ${anioActual} (suma de los % ÷ total de indicadores). No usa peso ni jerarquía Indicador → Acción → Proyecto → Macroproyecto.`,
-        '• Responde "¿vamos al día con lo prometido para este año?", a diferencia de "Resumen PDI", que responde "¿cuánto llevamos del objetivo final del PDI 2029?" (esa sí es una sumatoria ponderada por peso en cada nivel).',
-        `• "Último valor reportado": usa el último periodo de ${anioActual} con avance REPORTADO (no en borrador), comparado contra la meta de ese mismo periodo. "Acumulado": suma los periodos de ${anioActual} y los compara contra la suma de sus metas. "Promedio": promedia los periodos de ${anioActual} y los compara contra el promedio de sus metas.`,
-        `• La tabla por macroproyecto es informativa: promedia solo los indicadores de ese macroproyecto con meta en ${anioActual}. El total del PDI no se deriva de esas filas por peso, sino directamente del promedio simple sobre todos los indicadores (ver nota bajo la tabla).`,
-        '• Esta hoja no tiene columna "guardado en el sistema": el avance del año se calcula al vuelo (igual que en el tablero) y no se persiste en la base de datos.',
-    ]);
-
-    nextRowAnio += 1;
-    wsResumenAnio.getCell(`A${nextRowAnio}`).value = `Avance del año ${anioActual} — por macroproyecto (informativo)`;
-    wsResumenAnio.getCell(`A${nextRowAnio}`).font = { bold: true, size: 13 };
-    nextRowAnio += 1;
-
-    const tablaMacrosAnioHeaderRow = nextRowAnio;
-    wsResumenAnio.getCell(`A${tablaMacrosAnioHeaderRow}`).value = 'Código';
-    wsResumenAnio.getCell(`B${tablaMacrosAnioHeaderRow}`).value = 'Macroproyecto';
-    wsResumenAnio.getCell(`C${tablaMacrosAnioHeaderRow}`).value = `Indicadores con meta en ${anioActual}`;
-    wsResumenAnio.getCell(`D${tablaMacrosAnioHeaderRow}`).value = `Avance ${anioActual} (%)`;
-    wsResumenAnio.getRow(tablaMacrosAnioHeaderRow).eachCell((cell, colNumber) => {
-        if (colNumber > 4) return;
-        cell.font = { bold: true };
-        cell.fill = SUBHEADER_FILL;
-    });
-    nextRowAnio += 1;
-    const firstMacroAnioRow = nextRowAnio;
-    macrosNorm.forEach((m, idx) => {
-        const r = nextRowAnio + idx;
-        wsResumenAnio.getCell(`A${r}`).value = m.codigo;
-        wsResumenAnio.getCell(`B${r}`).value = m.nombre;
-        wsResumenAnio.getCell(`C${r}`).value = m.conteo_indicadores_anio;
-        wsResumenAnio.getCell(`D${r}`).value = m.avance_anio;
-        wsResumenAnio.getCell(`D${r}`).numFmt = '0.00';
-    });
-    nextRowAnio += macrosNorm.length;
-    const lastMacroAnioRow = nextRowAnio - 1;
-
-    nextRowAnio += 1;
-    wsResumenAnio.getCell(`A${nextRowAnio}`).value = `Avance del año ${anioActual} — PDI general (promedio simple, igual que el tablero)`;
-    wsResumenAnio.getCell(`A${nextRowAnio}`).font = { bold: true };
-    wsResumenAnio.mergeCells(`A${nextRowAnio}:C${nextRowAnio}`);
-    // Nota: SUMPRODUCT(avance_macro, conteo_indicadores)/SUM(conteo_indicadores)
-    // es algebraicamente el mismo promedio simple sobre todos los indicadores
-    // (cada indicador aporta su % una sola vez, agrupado por macroproyecto),
-    // así que coincide con avanceGlobalAnio salvo redondeos de centesimas.
-    wsResumenAnio.getCell(`D${nextRowAnio}`).value = {
-        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroAnioRow}:D${lastMacroAnioRow},C${firstMacroAnioRow}:C${lastMacroAnioRow})/SUM(C${firstMacroAnioRow}:C${lastMacroAnioRow}),2),0)`,
-        result: avanceGlobalAnio,
-    };
-    wsResumenAnio.getCell(`D${nextRowAnio}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
-    wsResumenAnio.getCell(`D${nextRowAnio}`).numFmt = '0.00';
-    nextRowAnio += 1;
-
-    nextRowAnio += 1;
-    wsResumenAnio.getCell(`A${nextRowAnio}`).value = 'Estructura considerada';
-    wsResumenAnio.getCell(`A${nextRowAnio}`).font = { bold: true, size: 13 };
-    nextRowAnio += 1;
-    [
-        ['Macroproyectos', macros.length],
-        ['Proyectos', proyectos.length],
-        ['Acciones estratégicas', acciones.length],
-        [`Indicadores con meta en ${anioActual}`, indicadoresConMetaAnio.length],
-        ['Indicadores totales', indicadores.length],
-    ].forEach(([label, value]) => {
-        wsResumenAnio.getCell(`A${nextRowAnio}`).value = label;
-        wsResumenAnio.getCell(`B${nextRowAnio}`).value = value;
-        nextRowAnio += 1;
     });
 
     // ── Hoja "Guía" ──────────────────────────────────────────────────────────
@@ -1010,7 +952,8 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
             ['Proyectos', 'Calcula avance por proyecto.', 'Acciones estratégicas asociadas al proyecto y sus pesos.', 'Avance calculado, avance guardado y diferencia.'],
             ['Acciones', 'Calcula avance por acción estratégica.', 'Indicadores asociados a la acción y sus pesos.', 'Avance calculado, avance guardado y diferencia.'],
             ['Indicadores', 'Calcula avance por indicador.', 'Periodos, tipo de cálculo, meta final y peso en la acción.', 'Avance operativo, porcentaje final, semáforo y fórmula aplicada.'],
-            ['Periodos', 'Conserva la base granular del cálculo.', 'Metas y avances reportados por corte.', 'Marca el último periodo con avance y alimenta las fórmulas de indicadores.'],
+            ['Periodos', 'Conserva la base granular del cálculo.', 'Metas y avances reportados por corte.', 'Marca el último periodo con avance y alimenta las fórmulas de indicadores. No editar: es la base técnica del cálculo.'],
+            ['Metas y Avances por Periodo', 'Presenta lo mismo que "Periodos", en formato legible para consulta.', 'Metas y avances reportados por corte, con la jerarquía completa.', 'Tabla consolidada con Macroproyecto, Proyecto, Acción, Indicador, meta y valor reportado de cada periodo. Solo de consulta, no alimenta fórmulas.'],
         ],
         guiaRow
     );
@@ -1057,8 +1000,8 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
             ['Indicadores', 'Peso en su Acción (%)', 'Peso del indicador dentro de su acción estratégica.'],
             ['Indicadores', 'Tipo de cálculo', 'Regla usada para consolidar los periodos.'],
             ['Indicadores', 'Meta final 2029', 'Valor objetivo contra el que se compara el avance operativo cuando aplica.'],
-            ['Indicadores', 'Avance actual', 'Valor operativo: suma, promedio o cumplimiento del último periodo según el tipo de cálculo.'],
-            ['Indicadores', '% Avance del indicador', 'Porcentaje final que sube a Acción Estratégica.'],
+            ['Indicadores', 'Valor utilizado para el cálculo', 'Valor operativo: suma, promedio o cumplimiento del último periodo según el tipo de cálculo.'],
+            ['Indicadores', 'Porcentaje de avance del indicador (%)', 'Porcentaje final que sube a Acción Estratégica.'],
             ['Indicadores', 'Avance guardado / Diferencia', 'Permite validar que los valores calculados coincidan con los valores almacenados en el sistema. Si existen diferencias, estas deben revisarse antes de utilizar la información para seguimiento o toma de decisiones.'],
             ['Indicadores', 'Semáforo', 'Clasificación por avance: Verde >= 90, Amarillo >= 60, Rojo < 60.'],
             ['Indicadores', 'Fórmula aplicada', 'Explicación textual de la regla aplicada.'],
@@ -1322,4 +1265,628 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
     return workbook;
 }
 
-module.exports = { buildAvanceWorkbook, buildIndicadoresMetasWorkbook };
+// Igual que marcarUltimoPeriodoConAvance, pero solo considera los periodos de
+// UN año: el "último periodo con avance" para el tipo Último valor reportado
+// debe salir de dentro del año, no de todo el histórico del indicador.
+function marcarUltimoPeriodoConAvanceAnio(periodos = [], anio) {
+    const periodosAnio = (periodos || []).filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
+    const ordenados = ordenarPeriodos(periodosAnio);
+    let ultimoPeriodoKey = null;
+    ordenados.forEach((p) => {
+        if (fueReportado(p) && toNumberValue(p.avance) !== null) ultimoPeriodoKey = p.periodo;
+    });
+    return periodosAnio.map((p) => ({
+        ...p,
+        _es_ultimo_con_avance: ultimoPeriodoKey !== null && p.periodo === ultimoPeriodoKey,
+    }));
+}
+
+const FORMULA_TEXTO_ANIO = (anio) => ({
+    acumulado: `Se suman los valores reportados en los períodos de ${anio} del indicador. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta ${anio}, aplicando un límite máximo del 100 %.`,
+    promedio: `Se promedian los valores reportados en los períodos de ${anio} del indicador con información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta ${anio}, aplicando un límite máximo del 100 %.`,
+    ultimo_valor: `Se toma el valor reportado en el último período de ${anio} con información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la meta de ese mismo período, aplicando un límite máximo del 100 %.`,
+});
+
+// Detecta, por cada Acción, si el peso de sus indicadores CON meta en el año
+// no suma 100% (porque otros indicadores de esa acción no tienen meta ese
+// año). Como el avance de la acción se calcula dividiendo entre 100 (no entre
+// el peso realmente cubierto — igual que en el archivo general), cuando eso
+// pasa el avance del año puede quedar subestimado; se deja como advertencia
+// explícita en vez de un cálculo silencioso.
+function validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccionAnio, anio) {
+    const rows = [];
+    const tolerancia = 0.01;
+    accionesNorm.forEach((accion) => {
+        const inds = indicadoresPorAccionAnio.get(String(accion._id)) || [];
+        if (!inds.length) return;
+        const total = round2(inds.reduce((acc, i) => acc + normalizePeso(i.peso), 0));
+        if (Math.abs(total - 100) <= tolerancia) return;
+        rows.push({
+            categoria: `Peso cubierto en ${anio}`,
+            nivel: 'Acción → Indicadores',
+            codigo: accion.codigo,
+            estado: 'Advertencia',
+            detalle: `Los indicadores con meta en ${anio} de esta acción suman ${total}% de peso (no 100%): el resto de sus indicadores no tiene meta definida en ${anio}.`,
+            accion: `El avance ${anio} de esta acción (y de su proyecto/macroproyecto) puede estar subestimado, porque se divide entre 100 y no entre el ${total}% realmente cubierto ese año.`,
+        });
+    });
+    return rows;
+}
+
+/**
+ * Igual que buildAvanceWorkbook (mismas hojas, mismo estilo de fórmulas en
+ * cascada Periodos → Indicadores → Acciones → Proyectos → Macroproyectos →
+ * PDI), pero enfocado en UN solo año: cada nivel calcula su avance usando
+ * solo las metas/avances de los periodos de ese año (no la Meta final 2029),
+ * y solo se incluyen los indicadores que tienen meta definida en ese año.
+ * No incluye columnas "guardado en el sistema" / "Diferencia": el sistema no
+ * persiste un avance por año a nivel de Acción/Proyecto/Macroproyecto/PDI
+ * (solo el avance por periodo de cada indicador), así que no hay con qué
+ * compararlas.
+ */
+async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadores, anio }) {
+    const anioStr = String(anio);
+    const workbook = new ExcelJS.Workbook();
+    const generatedAt = new Date();
+    workbook.creator = 'MIRÓ - Tablero de control PDI';
+    workbook.created = generatedAt;
+    workbook.modified = generatedAt;
+    workbook.calcProperties = workbook.calcProperties || {};
+    workbook.calcProperties.fullCalcOnLoad = true;
+
+    const accionesNorm = acciones.map((a) => ({ ...a, peso_norm: normalizePeso(a.peso) }));
+    const proyectosNorm = proyectos.map((p) => ({ ...p, peso_norm: normalizePeso(p.peso) }));
+    const macrosNorm = macros.map((m) => ({ ...m, peso_norm: normalizePeso(m.peso) }));
+    const accionPorId = new Map(accionesNorm.map((a) => [String(a._id), a]));
+    const proyectoPorId = new Map(proyectosNorm.map((p) => [String(p._id), p]));
+    const macroPorId = new Map(macrosNorm.map((m) => [String(m._id), m]));
+
+    // Solo los indicadores con meta definida en el año quedan en el libro:
+    // los demás no "aplican" a ${anioStr} y distorsionarían el cálculo.
+    const indicadoresAnio = indicadores
+        .map((ind) => ({ ...ind, peso_norm: normalizePeso(ind.peso), periodos_marcados: marcarUltimoPeriodoConAvanceAnio(ind.periodos || [], anioStr) }))
+        .map((ind) => ({ ind, calc: calcularIndicadorExportAnio(ind, anioStr) }))
+        .filter(({ calc }) => calc.tiene_meta_anio)
+        .map(({ ind, calc }) => Object.assign(ind, {
+            meta_anio: calc.meta_anio,
+            avance_operacion_anio: calc.avance_operacion_anio,
+            avance_descarga: calc.porcentaje_avance_anio,
+            semaforo_descarga: calc.semaforo_anio,
+        }));
+
+    const indicadoresPorAccion = groupBy(indicadoresAnio, (i) => i.accion_id?._id ?? i.accion_id);
+    accionesNorm.forEach((accion) => {
+        accion.avance_descarga = weightedContribution(
+            indicadoresPorAccion.get(String(accion._id)) || [],
+            (indicador) => indicador.avance_descarga,
+            (indicador) => indicador.peso
+        );
+    });
+
+    const accionesPorProyecto = groupBy(accionesNorm, (a) => a.proyecto_id?._id ?? a.proyecto_id);
+    proyectosNorm.forEach((proyecto) => {
+        proyecto.avance_descarga = weightedContribution(
+            accionesPorProyecto.get(String(proyecto._id)) || [],
+            (accion) => accion.avance_descarga,
+            (accion) => accion.peso
+        );
+    });
+
+    const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
+    macrosNorm.forEach((macro) => {
+        // Macroproyecto es un valor final que se muestra: sí se redondea, a
+        // diferencia de Indicador/Acción/Proyecto.
+        macro.avance_descarga = Math.round(weightedContribution(
+            proyectosPorMacro.get(String(macro._id)) || [],
+            (proyecto) => proyecto.avance_descarga,
+            (proyecto) => proyecto.peso
+        ));
+    });
+
+    // PDI global también es un valor final: se redondea aquí.
+    const avanceGlobalDescarga = Math.round(weightedAverage(
+        macrosNorm,
+        (macro) => macro.avance_descarga,
+        (macro) => macro.peso
+    ));
+
+    const validationRows = [
+        ...duplicateCodes(macrosNorm, 'Macroproyecto'),
+        ...duplicateCodes(proyectosNorm, 'Proyecto'),
+        ...duplicateCodes(accionesNorm, 'Acción estratégica'),
+        ...duplicateCodes(indicadoresAnio, 'Indicador'),
+        ...validarRelaciones({ macros: macrosNorm, proyectos: proyectosNorm, acciones: accionesNorm, indicadores: indicadoresAnio }),
+        ...validarPesos({ macros: macrosNorm, proyectos: proyectosNorm, acciones: accionesNorm, indicadores: indicadoresAnio }),
+        ...validarIndicadores(indicadoresAnio),
+        ...validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccion, anioStr),
+    ];
+
+    const wsResumen = workbook.addWorksheet(`Resumen PDI ${anioStr}`);
+    const wsGuia = workbook.addWorksheet('Guía');
+    const wsValidaciones = workbook.addWorksheet('Validaciones');
+    const wsMacro = workbook.addWorksheet('Macroproyectos');
+    const wsProy = workbook.addWorksheet('Proyectos');
+    const wsAcc = workbook.addWorksheet('Acciones');
+    const wsInd = workbook.addWorksheet('Indicadores');
+    const wsPeriodos = workbook.addWorksheet('Periodos');
+
+    // ── Hoja "Periodos" (solo periodos de ${anioStr}, de indicadores incluidos) ──
+    wsPeriodos.columns = [
+        { header: 'Código indicador', key: 'codigo', width: 20 },
+        { header: 'Periodo', key: 'periodo', width: 12 },
+        { header: 'Meta del periodo', key: 'meta', width: 16 },
+        { header: 'Avance del periodo', key: 'avance', width: 18 },
+        { header: '¿Es el último periodo con avance?', key: 'ultimo', width: 26 },
+        { header: 'Estado del reporte', key: 'estado', width: 18 },
+        { header: 'Reportado por', key: 'reportado_por', width: 28 },
+        { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+    ];
+    styleHeaderRow(wsPeriodos.getRow(1));
+    wsPeriodos.autoFilter = { from: 'A1', to: 'H1' };
+
+    // ── Hoja "Metas y Avances por Periodo" — versión consolidada y legible de
+    // "Periodos" (que se deja intacta: alimenta las fórmulas por columna).
+    const wsConsolidado = workbook.addWorksheet('Metas y Avances por Periodo');
+    wsConsolidado.columns = [
+        { header: 'Macroproyecto', key: 'macro', width: 16 },
+        { header: 'Proyecto', key: 'proyecto', width: 16 },
+        { header: 'Acción', key: 'accion', width: 16 },
+        { header: 'Indicador', key: 'indicador', width: 16 },
+        { header: 'Nombre del indicador', key: 'nombre', width: 46 },
+        { header: 'Periodo', key: 'periodo', width: 12 },
+        { header: 'Meta del período', key: 'meta', width: 16 },
+        { header: 'Valor reportado del período', key: 'avance', width: 22 },
+        { header: 'Estado del reporte', key: 'estado', width: 18 },
+        { header: 'Reportado por', key: 'reportado_por', width: 28 },
+        { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+    ];
+    styleHeaderRow(wsConsolidado.getRow(1));
+    wsConsolidado.autoFilter = { from: 'A1', to: 'K1' };
+    wsConsolidado.views = [{ state: 'frozen', ySplit: 1 }];
+
+    for (const ind of indicadoresAnio) {
+        const accion = accionPorId.get(String(ind.accion_id?._id ?? ind.accion_id));
+        const proyecto = proyectoPorId.get(String(accion?.proyecto_id?._id ?? accion?.proyecto_id ?? ''));
+        const macro = macroPorId.get(String(proyecto?.macroproyecto_id?._id ?? proyecto?.macroproyecto_id ?? ''));
+        for (const p of ind.periodos_marcados) {
+            wsPeriodos.addRow({
+                codigo: ind.codigo,
+                periodo: p.periodo,
+                meta: toNumberValue(p.meta),
+                avance: toNumberValue(p.avance),
+                ultimo: p._es_ultimo_con_avance,
+                estado: p.estado_reporte || '',
+                reportado_por: p.reportado_por || '',
+                fecha_envio: p.fecha_envio || null,
+            });
+            wsConsolidado.addRow({
+                macro: macro?.codigo ?? '',
+                proyecto: proyecto?.codigo ?? '',
+                accion: accion?.codigo ?? '',
+                indicador: ind.codigo,
+                nombre: ind.nombre,
+                periodo: p.periodo,
+                meta: toNumberValue(p.meta),
+                avance: toNumberValue(p.avance),
+                estado: p.estado_reporte || '',
+                reportado_por: p.reportado_por || '',
+                fecha_envio: p.fecha_envio || null,
+            });
+        }
+    }
+    wsConsolidado.getColumn('K').numFmt = 'yyyy-mm-dd';
+    wsConsolidado.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        row.getCell(5).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastPeriodosRow = Math.max(wsPeriodos.rowCount, 2);
+    wsPeriodos.getColumn('H').numFmt = 'yyyy-mm-dd';
+    const P = {
+        codigo: `Periodos!$A$2:$A$${lastPeriodosRow}`,
+        meta: `Periodos!$C$2:$C$${lastPeriodosRow}`,
+        avance: `Periodos!$D$2:$D$${lastPeriodosRow}`,
+        ultimo: `Periodos!$E$2:$E$${lastPeriodosRow}`,
+    };
+
+    // ── Hoja "Indicadores" (solo con meta en ${anioStr}) ──────────────────────
+    wsInd.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del indicador', key: 'nombre', width: 46 },
+        { header: 'Código Acción', key: 'accion', width: 16 },
+        { header: 'Peso en su Acción (%)', key: 'peso', width: 16 },
+        { header: 'Tipo de cálculo', key: 'tipo', width: 20 },
+        { header: `Meta ${anioStr}`, key: 'meta_anio', width: 16 },
+        { header: 'Valor utilizado para el cálculo', key: 'avance_actual', width: 20 },
+        { header: 'Porcentaje de avance del indicador (%)', key: 'pct_avance', width: 22 },
+        { header: 'Semáforo', key: 'semaforo', width: 12 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 60 },
+    ];
+    styleHeaderRow(wsInd.getRow(1));
+    wsInd.autoFilter = { from: 'A1', to: 'J1' };
+    wsInd.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const formulaTextoAnio = FORMULA_TEXTO_ANIO(anioStr);
+    indicadoresAnio.forEach((ind, idx) => {
+        const r = idx + 2;
+        const accion = accionPorId.get(String(ind.accion_id?._id ?? ind.accion_id));
+        const tipo = ind.tipo_calculo || 'promedio';
+
+        wsInd.getCell(`A${r}`).value = ind.codigo;
+        wsInd.getCell(`B${r}`).value = ind.nombre;
+        wsInd.getCell(`C${r}`).value = accion?.codigo ?? '';
+        wsInd.getCell(`D${r}`).value = ind.peso_norm;
+        wsInd.getCell(`E${r}`).value = TIPO_LABEL[tipo] ?? tipo;
+
+        // F: meta del año, calculada con fórmula (mismo criterio que el avance según tipo)
+        const fFormula =
+            tipo === 'acumulado'
+                ? `SUMIF(${P.codigo},$A${r},${P.meta})`
+                : tipo === 'ultimo_valor'
+                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.meta}),2),0)`;
+        wsInd.getCell(`F${r}`).value = { formula: fFormula, result: ind.meta_anio };
+
+        // G: avance operativo del año, calculado con fórmula según el tipo de cálculo
+        const gFormula =
+            tipo === 'acumulado'
+                ? `SUMIF(${P.codigo},$A${r},${P.avance})`
+                : tipo === 'ultimo_valor'
+                ? `SUMIFS(${P.avance},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.avance}),2),0)`;
+        wsInd.getCell(`G${r}`).value = { formula: gFormula, result: ind.avance_operacion_anio };
+
+        // H: % avance del indicador en el año, siempre G ÷ F (tope 100%).
+        // Sin redondear: alimenta la Acción (columna E de "Acciones").
+        const hFormula = `IF($F${r}>0,MIN(G${r}/$F${r},1)*100,0)`;
+        wsInd.getCell(`H${r}`).value = { formula: hFormula, result: ind.avance_descarga };
+
+        wsInd.getCell(`I${r}`).value = {
+            formula: `IF(H${r}>=90,"Verde",IF(H${r}>=60,"Amarillo","Rojo"))`,
+            result: ({ verde: 'Verde', amarillo: 'Amarillo', rojo: 'Rojo' })[ind.semaforo_descarga] || '',
+        };
+        wsInd.getCell(`J${r}`).value = formulaTextoAnio[tipo] ?? '';
+
+        ['F', 'G', 'H'].forEach((col) => { wsInd.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsInd.getCell(`J${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsInd.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastIndRow = Math.max(wsInd.rowCount, 2);
+    const IND = {
+        accion: `Indicadores!$C$2:$C$${lastIndRow}`,
+        pct: `Indicadores!$H$2:$H$${lastIndRow}`,
+        peso: `Indicadores!$D$2:$D$${lastIndRow}`,
+    };
+
+    // ── Hoja "Acciones" ───────────────────────────────────────────────────────
+    wsAcc.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre de la acción', key: 'nombre', width: 46 },
+        { header: 'Código Proyecto', key: 'proyecto', width: 16 },
+        { header: 'Peso en su Proyecto (%)', key: 'peso', width: 18 },
+        { header: `Avance ${anioStr}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsAcc.getRow(1));
+    wsAcc.autoFilter = { from: 'A1', to: 'F1' };
+    wsAcc.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const ACCION_FORMULA_TXT = `Consolidación del avance ${anioStr} de la Acción Estratégica mediante la sumatoria ponderada del avance ${anioStr} de los indicadores que la conforman (solo los que tienen meta ese año), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ 100.`;
+    accionesNorm.forEach((acc, idx) => {
+        const r = idx + 2;
+        const proyecto = proyectoPorId.get(String(acc.proyecto_id?._id ?? acc.proyecto_id));
+        wsAcc.getCell(`A${r}`).value = acc.codigo;
+        wsAcc.getCell(`B${r}`).value = acc.nombre;
+        wsAcc.getCell(`C${r}`).value = proyecto?.codigo ?? '';
+        wsAcc.getCell(`D${r}`).value = acc.peso_norm;
+        // Sin redondear: alimenta el Proyecto.
+        wsAcc.getCell(`E${r}`).value = {
+            formula: `SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100`,
+            result: acc.avance_descarga,
+        };
+        wsAcc.getCell(`F${r}`).value = ACCION_FORMULA_TXT;
+        ['D', 'E'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsAcc.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsAcc.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastAccRow = Math.max(wsAcc.rowCount, 2);
+    const ACC = {
+        proyecto: `Acciones!$C$2:$C$${lastAccRow}`,
+        avance: `Acciones!$E$2:$E$${lastAccRow}`,
+        peso: `Acciones!$D$2:$D$${lastAccRow}`,
+    };
+
+    // ── Hoja "Proyectos" ──────────────────────────────────────────────────────
+    wsProy.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del proyecto', key: 'nombre', width: 46 },
+        { header: 'Código Macroproyecto', key: 'macro', width: 18 },
+        { header: 'Peso en su Macroproyecto (%)', key: 'peso', width: 20 },
+        { header: `Avance ${anioStr}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsProy.getRow(1));
+    wsProy.autoFilter = { from: 'A1', to: 'F1' };
+    wsProy.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const PROYECTO_FORMULA_TXT = `Consolidación del avance ${anioStr} del proyecto mediante la sumatoria ponderada del avance ${anioStr} de las acciones estratégicas que lo conforman, utilizando el peso asignado a cada una.\nFórmula aplicada: Σ (Avance de la acción estratégica × Peso de la acción estratégica) ÷ 100.`;
+    proyectosNorm.forEach((p, idx) => {
+        const r = idx + 2;
+        const macro = macroPorId.get(String(p.macroproyecto_id?._id ?? p.macroproyecto_id));
+        wsProy.getCell(`A${r}`).value = p.codigo;
+        wsProy.getCell(`B${r}`).value = p.nombre;
+        wsProy.getCell(`C${r}`).value = macro?.codigo ?? '';
+        wsProy.getCell(`D${r}`).value = p.peso_norm;
+        // Sin redondear: alimenta el Macroproyecto.
+        wsProy.getCell(`E${r}`).value = {
+            formula: `SUMPRODUCT((${ACC.proyecto}=$A${r})*${ACC.avance}*${ACC.peso})/100`,
+            result: p.avance_descarga,
+        };
+        wsProy.getCell(`F${r}`).value = PROYECTO_FORMULA_TXT;
+        ['D', 'E'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsProy.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsProy.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastProyRow = Math.max(wsProy.rowCount, 2);
+    const PROY = {
+        macro: `Proyectos!$C$2:$C$${lastProyRow}`,
+        avance: `Proyectos!$E$2:$E$${lastProyRow}`,
+        peso: `Proyectos!$D$2:$D$${lastProyRow}`,
+    };
+
+    // ── Hoja "Macroproyectos" ─────────────────────────────────────────────────
+    wsMacro.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del macroproyecto', key: 'nombre', width: 46 },
+        { header: 'Peso (para el ponderado global)', key: 'peso', width: 20 },
+        { header: `Avance ${anioStr}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsMacro.getRow(1));
+    wsMacro.autoFilter = { from: 'A1', to: 'E1' };
+    wsMacro.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const MACRO_FORMULA_TXT = `El avance ${anioStr} del macroproyecto se obtiene mediante la sumatoria ponderada del avance ${anioStr} de los proyectos asociados, utilizando el peso definido para cada proyecto (Σ Avance × Peso ÷ 100).`;
+    macrosNorm.forEach((m, idx) => {
+        const r = idx + 2;
+        wsMacro.getCell(`A${r}`).value = m.codigo;
+        wsMacro.getCell(`B${r}`).value = m.nombre;
+        wsMacro.getCell(`C${r}`).value = m.peso_norm;
+        // Macroproyecto SÍ se redondea a entero (valor final que se muestra).
+        wsMacro.getCell(`D${r}`).value = {
+            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
+            result: m.avance_descarga,
+        };
+        wsMacro.getCell(`E${r}`).value = MACRO_FORMULA_TXT;
+        ['C', 'D'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsMacro.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsMacro.getCell(`E${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+
+    // ── Hoja "Resumen PDI {año}" (primera pestaña, resultado principal) ──────
+    wsResumen.columns = [
+        { width: 22 }, { width: 46 }, { width: 16 }, { width: 18 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 12 },
+    ];
+
+    wsResumen.mergeCells('A1:H1');
+    wsResumen.getCell('A1').value = `Tablero de control PDI — Memoria de cálculo del avance ${anioStr}`;
+    wsResumen.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF4C1D95' } };
+    wsResumen.mergeCells('A2:H2');
+    wsResumen.getCell('A2').value = `Generado el ${generatedAt.toLocaleString('es-CO', { timeZone: 'America/Bogota' })}. Datos consultados y recalculados al momento de la descarga.`;
+    wsResumen.getCell('A2').font = { italic: true, color: { argb: 'FF6B7280' } };
+
+    let nextRow = addExplanationBlock(wsResumen, 4, [
+        'Cómo leer este archivo:',
+        `• Este archivo es la versión de la memoria de cálculo enfocada SOLO en ${anioStr}: usa la misma cadena de cálculo Periodos → Indicadores → Acciones → Proyectos → Macroproyectos → PDI que el archivo general, pero cada nivel se calcula contra la meta de ${anioStr}, no contra la Meta final 2029.`,
+        `• Solo se incluyen los indicadores que tienen meta definida en ${anioStr}: los que aplican a otros años del plan no aparecen aquí.`,
+        '• Cada hoja tiene una columna "Fórmula aplicada" con el detalle del cálculo. Este archivo no compara contra un valor "guardado en el sistema": el sistema no persiste un avance por año a nivel de Acción/Proyecto/Macroproyecto/PDI (solo el avance por periodo de cada indicador).',
+        `• Si una Acción tiene indicadores que no aplican a ${anioStr}, su peso total con meta ese año puede no sumar 100%; en ese caso el avance de esa acción (y el de su proyecto/macroproyecto) puede quedar subestimado. Ver hoja Validaciones, categoría "Peso cubierto en ${anioStr}".`,
+    ]);
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado ${anioStr}`;
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
+    nextRow += 1;
+
+    const tablaMacrosHeaderRow = nextRow;
+    wsResumen.getCell(`A${tablaMacrosHeaderRow}`).value = 'Código';
+    wsResumen.getCell(`B${tablaMacrosHeaderRow}`).value = 'Macroproyecto';
+    wsResumen.getCell(`C${tablaMacrosHeaderRow}`).value = 'Peso (%)';
+    wsResumen.getCell(`D${tablaMacrosHeaderRow}`).value = `Avance ${anioStr} calculado (%)`;
+    wsResumen.getRow(tablaMacrosHeaderRow).eachCell((cell, colNumber) => {
+        if (colNumber > 4) return;
+        cell.font = { bold: true };
+        cell.fill = SUBHEADER_FILL;
+    });
+    nextRow += 1;
+    const firstMacroDataRow = nextRow;
+    macrosNorm.forEach((m, idx) => {
+        const r = nextRow + idx;
+        wsResumen.getCell(`A${r}`).value = m.codigo;
+        wsResumen.getCell(`B${r}`).value = m.nombre;
+        wsResumen.getCell(`C${r}`).value = { formula: `Macroproyectos!C${idx + 2}`, result: m.peso_norm };
+        wsResumen.getCell(`D${r}`).value = { formula: `Macroproyectos!D${idx + 2}`, result: m.avance_descarga };
+        ['C', 'D'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00'; });
+    });
+    nextRow += macrosNorm.length;
+    const lastMacroDataRow = nextRow - 1;
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado global ${anioStr} (calculado con fórmula)`;
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true };
+    wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
+    wsResumen.getCell(`D${nextRow}`).value = {
+        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),0),0)`,
+        result: avanceGlobalDescarga,
+    };
+    wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
+    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00';
+    nextRow += 1;
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = 'Estructura considerada';
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
+    nextRow += 1;
+    [
+        ['Macroproyectos', macros.length],
+        ['Proyectos', proyectos.length],
+        ['Acciones estratégicas', acciones.length],
+        [`Indicadores con meta en ${anioStr}`, indicadoresAnio.length],
+        ['Indicadores totales del PDI', indicadores.length],
+    ].forEach(([label, value]) => {
+        wsResumen.getCell(`A${nextRow}`).value = label;
+        wsResumen.getCell(`B${nextRow}`).value = value;
+        nextRow += 1;
+    });
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = 'Hojas de este archivo:';
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true };
+    nextRow += 1;
+    [
+        'Guía — propósito de cada hoja y diccionario de columnas de este archivo enfocado en el año.',
+        'Validaciones — hallazgos calculados al momento de la descarga: pesos, códigos, relaciones, metas y cobertura del peso en el año.',
+        `Macroproyectos — avance ${anioStr} de cada macroproyecto y su fórmula.`,
+        `Proyectos — avance ${anioStr} de cada proyecto y su fórmula.`,
+        `Acciones — avance ${anioStr} de cada acción estratégica y su fórmula.`,
+        `Indicadores — avance ${anioStr} de cada indicador con meta ese año, su tipo de cálculo y su fórmula detallada.`,
+        `Periodos — meta y avance reportados en los cortes de ${anioStr} que alimentan las fórmulas anteriores (no editar: es la base técnica de los cálculos).`,
+        `Metas y Avances por Periodo — la misma información de "Periodos", pero en formato consolidado y legible, con la jerarquía completa (Macroproyecto, Proyecto, Acción, Indicador). Es solo de consulta, no alimenta fórmulas.`,
+    ].forEach((line) => {
+        wsResumen.getCell(`A${nextRow}`).value = `• ${line}`;
+        wsResumen.mergeCells(`A${nextRow}:H${nextRow}`);
+        nextRow += 1;
+    });
+
+    // ── Hoja "Guía" ──────────────────────────────────────────────────────────
+    wsGuia.columns = [
+        { width: 24 }, { width: 42 }, { width: 44 }, { width: 44 }, { width: 34 }, { width: 52 },
+    ];
+    wsGuia.mergeCells('A1:F1');
+    wsGuia.getCell('A1').value = `Guía de lectura de la memoria de cálculo PDI — ${anioStr}`;
+    wsGuia.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF4C1D95' } };
+    wsGuia.mergeCells('A2:F2');
+    wsGuia.getCell('A2').value = `Este archivo documenta qué recibe cada hoja, qué genera y cómo se calcula el avance de ${anioStr} desde Indicador hasta PDI.`;
+    wsGuia.getCell('A2').font = { italic: true, color: { argb: 'FF6B7280' } };
+
+    const writeGuideTable = (title, headers, rows, startRow) => {
+        let row = startRow;
+        wsGuia.getCell(`A${row}`).value = title;
+        wsGuia.getCell(`A${row}`).font = { bold: true, size: 13 };
+        wsGuia.mergeCells(`A${row}:F${row}`);
+        row += 1;
+
+        headers.forEach((header, index) => {
+            const cell = wsGuia.getCell(row, index + 1);
+            cell.value = header;
+            cell.font = HEADER_FONT;
+            cell.fill = HEADER_FILL;
+            cell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'center' };
+        });
+        row += 1;
+
+        rows.forEach((values) => {
+            values.forEach((value, index) => {
+                const cell = wsGuia.getCell(row, index + 1);
+                cell.value = value;
+                cell.alignment = { wrapText: true, vertical: 'top' };
+            });
+            row += 1;
+        });
+
+        return row + 2;
+    };
+
+    let guiaRow = 4;
+    guiaRow = writeGuideTable(
+        'Propósito, entradas y salidas por hoja',
+        ['Hoja', 'Propósito', 'Información que recibe', 'Información que genera'],
+        [
+            [`Resumen PDI ${anioStr}`, `Presenta el resultado de ${anioStr} y la estructura considerada.`, 'Avances calculados de macroproyectos y pesos globales para ese año.', `Avance ponderado ${anioStr} calculado.`],
+            ['Guía', 'Explica cómo leer el archivo.', 'Reglas de negocio y estructura del libro.', 'Diccionario de columnas y reglas de validación.'],
+            ['Validaciones', 'Muestra controles de calidad del modelo.', 'Códigos, pesos, relaciones jerárquicas, metas y cobertura del peso en el año.', 'Estados OK, Advertencia o Error con acción sugerida.'],
+            ['Macroproyectos', `Calcula avance ${anioStr} por macroproyecto.`, 'Proyectos asociados al macroproyecto y sus pesos.', `Avance ${anioStr} calculado.`],
+            ['Proyectos', `Calcula avance ${anioStr} por proyecto.`, 'Acciones estratégicas asociadas al proyecto y sus pesos.', `Avance ${anioStr} calculado.`],
+            ['Acciones', `Calcula avance ${anioStr} por acción estratégica.`, `Indicadores con meta en ${anioStr} asociados a la acción y sus pesos.`, `Avance ${anioStr} calculado.`],
+            ['Indicadores', `Calcula avance ${anioStr} por indicador.`, `Periodos de ${anioStr}, tipo de cálculo y peso en la acción.`, `Meta ${anioStr}, avance operativo, porcentaje final y semáforo.`],
+            ['Periodos', `Conserva la base granular del cálculo de ${anioStr}.`, `Metas y avances reportados en los cortes de ${anioStr}.`, 'Marca el último periodo del año con avance y alimenta las fórmulas de indicadores. No editar: es la base técnica del cálculo.'],
+            ['Metas y Avances por Periodo', 'Presenta lo mismo que "Periodos", en formato legible para consulta.', `Metas y avances reportados en los cortes de ${anioStr}, con la jerarquía completa.`, 'Tabla consolidada con Macroproyecto, Proyecto, Acción, Indicador, meta y valor reportado de cada periodo. Solo de consulta, no alimenta fórmulas.'],
+        ],
+        guiaRow
+    );
+
+    guiaRow = writeGuideTable(
+        `Cálculo del avance por nivel (todo referido a ${anioStr})`,
+        ['Nivel', 'Cálculo', 'Resultado'],
+        [
+            ['Indicador', `Según tipo de cálculo (Acumulado, Promedio o Último valor reportado), usando solo los periodos de ${anioStr}. Se compara contra la Meta ${anioStr} (no la Meta final 2029).`, `% de avance del indicador en ${anioStr}, capado a 100%.`],
+            ['Acción Estratégica', `Σ(% avance ${anioStr} del indicador × peso del indicador) ÷ 100, solo con indicadores que tienen meta en ${anioStr}.`, `Avance ponderado ${anioStr} de la acción.`],
+            ['Proyecto', `Σ(avance ${anioStr} de la acción × peso de la acción) ÷ 100.`, `Avance ponderado ${anioStr} del proyecto.`],
+            ['Macroproyecto', `Σ(avance ${anioStr} del proyecto × peso del proyecto) ÷ 100.`, `Avance ponderado ${anioStr} del macroproyecto.`],
+            ['PDI', `Sumatoria ponderada del avance ${anioStr} de los macroproyectos: Σ (Avance ${anioStr} del Macroproyecto × Peso del Macroproyecto) ÷ 100.`, `Avance global de ${anioStr}.`],
+        ],
+        guiaRow
+    );
+
+    guiaRow = writeGuideTable(
+        'Tipos de cálculo disponibles',
+        ['Tipo', 'Cuándo usarlo', `Fórmula del indicador en ${anioStr}`],
+        [
+            ['Acumulado', 'Indicadores que suman cantidades a lo largo del tiempo.', `SUMA(avances reportados en ${anioStr}) ÷ SUMA(metas de ${anioStr}) × 100.`],
+            ['Promedio', 'Aplica a indicadores cuya medición corresponda al promedio de los valores reportados durante el periodo.', `Promedio de los avances de ${anioStr} ÷ promedio de las metas de ${anioStr} × 100.`],
+            ['Último valor reportado', 'Indicadores donde solo importa el corte más reciente con avance.', `Último avance reportado en ${anioStr} ÷ meta de ese mismo periodo × 100.`],
+        ],
+        guiaRow
+    );
+
+    writeGuideTable(
+        'Validaciones que realiza el archivo',
+        ['Validación', 'Qué revisa', 'Resultado esperado'],
+        [
+            ['Pesos al 100%', 'Macroproyectos del PDI y elementos hijos en cada nivel (estructura completa, no solo lo de este año).', 'Cada grupo debe sumar exactamente 100%.'],
+            ['Códigos duplicados', `Códigos repetidos entre los indicadores con meta en ${anioStr} (y en macroproyectos/proyectos/acciones).`, 'No debe haber códigos repetidos dentro del mismo nivel.'],
+            ['Relaciones jerárquicas', 'Proyecto → Macroproyecto, Acción → Proyecto, Indicador → Acción.', 'Cada elemento debe tener un padre válido.'],
+            ['Valores numéricos', `Avances y metas de los periodos de ${anioStr}.`, 'Los campos que participan en cálculo deben ser numéricos.'],
+            ['Tipos de cálculo', 'Tipo configurado en cada indicador incluido.', 'Debe ser Acumulado, Promedio o Último valor reportado.'],
+            [`Peso cubierto en ${anioStr}`, `Que el peso de los indicadores con meta en ${anioStr} sume 100% dentro de cada acción.`, `Si no suma 100%, el avance ${anioStr} de esa acción (y de su proyecto/macroproyecto) puede estar subestimado.`],
+        ],
+        guiaRow
+    );
+    wsGuia.views = [{ state: 'frozen', ySplit: 1 }];
+
+    // ── Hoja "Validaciones" ───────────────────────────────────────────────────
+    wsValidaciones.columns = [
+        { header: 'Categoría', key: 'categoria', width: 26 },
+        { header: 'Nivel', key: 'nivel', width: 24 },
+        { header: 'Código', key: 'codigo', width: 20 },
+        { header: 'Estado', key: 'estado', width: 16 },
+        { header: 'Detalle', key: 'detalle', width: 62 },
+        { header: 'Acción sugerida', key: 'accion', width: 62 },
+    ];
+    styleHeaderRow(wsValidaciones.getRow(1));
+    wsValidaciones.autoFilter = { from: 'A1', to: 'F1' };
+    wsValidaciones.views = [{ state: 'frozen', ySplit: 1 }];
+
+    validationRows.forEach((validation) => {
+        const row = wsValidaciones.addRow(validation);
+        const statusCell = row.getCell(4);
+        if (validation.estado === 'OK') {
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCFCE7' } };
+            statusCell.font = { bold: true, color: { argb: 'FF166534' } };
+        } else if (validation.estado === 'Advertencia') {
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+            statusCell.font = { bold: true, color: { argb: 'FF92400E' } };
+        } else {
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+            statusCell.font = { bold: true, color: { argb: 'FF991B1B' } };
+        }
+        row.eachCell((cell) => {
+            cell.alignment = { wrapText: true, vertical: 'top' };
+        });
+    });
+
+    workbook.views = [{ activeTab: 0 }];
+
+    return workbook;
+}
+
+module.exports = { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio };

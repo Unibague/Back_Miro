@@ -3036,7 +3036,11 @@ controller.getTemplates = async (req, res) => {
       periodId,
     } = req.query;
 
-    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
+    // Lectura: además de Administrador/Responsable (que configuran las
+    // plantillas), un Productor encargado necesita poder consultar este
+    // catálogo para relacionar sus plantillas SNIES publicadas (no puede
+    // crear, editar ni borrar; esos endpoints siguen restringidos abajo).
+    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable", "Productor"]);
 
     const pageNumber = parseInt(page, 10);
     const pageSize = parseInt(limit, 10);

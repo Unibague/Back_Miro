@@ -6,7 +6,7 @@ const RespuestaFormulario = require('../models/pdiFormularioRespuesta');
 const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
 const pdiNodeNetwork  = require('../services/pdiNodeNetwork');
-const { buildAvanceWorkbook, buildIndicadoresMetasWorkbook } = require('../services/pdiAvanceExcelExport');
+const { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio } = require('../services/pdiAvanceExcelExport');
 const { weightedAverage, toNumberValue } = require('../services/pdiAvanceCalculator');
 const {
     autoApproveAllPendingLeaderSubmittedResponses,
@@ -242,12 +242,14 @@ ctrl.resumen = async (req, res) => {
         await autoApproveAllPendingLeaderSubmittedResponses();
         await applyPlaneacionStateToIndicadores(indicadores);
 
-        // Avance ponderado global (promedio ponderado de macroproyectos)
-        const avanceGlobal = weightedAverage(
+        // Avance ponderado global (promedio ponderado de macroproyectos). Es
+        // el otro valor "final" que se muestra (junto con Macroproyecto), así
+        // que se redondea aquí explícitamente.
+        const avanceGlobal = Math.round(weightedAverage(
             macros,
             (macro) => macro.avance,
             (macro) => macro.peso
-        );
+        ));
 
         // Avance real del año en curso: promedio simple del % de cumplimiento
         // individual de los indicadores con meta en ese año (ver calcularAvanceGlobalAnio).
@@ -521,6 +523,46 @@ ctrl.exportarAvance = async (req, res) => {
         res.end();
     } catch (e) {
         res.status(500).json({ error: 'No se pudo generar el Excel de avance', detalle: e.message });
+    }
+};
+
+/*
+  GET /pdi/dashboard/exportar-avance-anio
+  Igual que exportar-avance, pero enfocado en un solo año (por defecto el año
+  en curso, o el que llegue en ?anio=): cada nivel calcula su avance solo con
+  las metas/avances de los periodos de ese año, no con la Meta final 2029.
+*/
+ctrl.exportarAvanceAnio = async (req, res) => {
+    try {
+        await autoApproveAllPendingLeaderSubmittedResponses();
+
+        const anio = String(req.query.anio || new Date().getFullYear());
+
+        const [macros, proyectos, acciones, indicadores] = await Promise.all([
+            Macroproyecto.find({}).sort({ codigo: 1 }).lean(),
+            Proyecto.find({}).sort({ codigo: 1 }).lean(),
+            AccionEstrategica.find({}).sort({ codigo: 1 }).lean(),
+            Indicador.find({}).sort({ codigo: 1 }).lean(),
+        ]);
+        await applyPlaneacionStateToIndicadores(indicadores);
+
+        const workbook = await buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadores, anio });
+
+        const nombreArchivo = `Memoria tecnica del calculo del avance del PDI ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const nombreArchivoUtf8 = `Memoria técnica del cálculo del avance del PDI ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            `attachment; filename="${nombreArchivo}"; filename*=UTF-8''${encodeURIComponent(nombreArchivoUtf8)}`
+        );
+
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        res.status(500).json({ error: 'No se pudo generar el Excel de avance del año', detalle: e.message });
     }
 };
 

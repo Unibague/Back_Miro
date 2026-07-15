@@ -10,6 +10,7 @@ const {
   depCodeProgramaMongoUpdateFragments,
 } = require('../helpers/depCodePrograma');
 const { assertNombreProgramaDisponible } = require('../helpers/nombreProgramaUnico');
+const { resolveFacultadCodesForUser } = require('../services/facultadResolver');
 
 async function crearProcesosParaPrograma(program_code, nombre_programa, programData) {
   // Solo se crean automáticamente RC y AV; el Plan de Mejoramiento (PM)
@@ -65,11 +66,22 @@ async function crearProcesosParaPrograma(program_code, nombre_programa, programD
 
 const programController = {};
 
-/* GET /programs — todos los programas, opcionalmente filtrados por facultad */
+/* GET /programs — todos los programas, opcionalmente filtrados por facultad.
+   Administrador ve todos; Responsable/Productor (u otro cargo sin rol admin)
+   solo ven programas de la(s) facultad(es) a las que pertenecen. */
 programController.getAll = async (req, res) => {
   try {
     const { facultad } = req.query;
     const query = facultad ? { dep_code_facultad: facultad } : {};
+
+    if (req.user && req.user.activeRole !== 'Administrador') {
+      const facCodes = await resolveFacultadCodesForUser(req.user.email);
+      const allowed = facultad
+        ? (facCodes.has(facultad) ? [facultad] : [])
+        : [...facCodes];
+      query.dep_code_facultad = { $in: allowed };
+    }
+
     const programs = await Program.find(query).sort({ nombre: 1 });
     res.status(200).json(programs);
   } catch (error) {
@@ -87,6 +99,14 @@ programController.getById = async (req, res) => {
     }
     const program = await Program.findById(rawId).lean();
     if (!program) return res.status(404).json({ error: 'Programa no encontrado' });
+
+    if (req.user && req.user.activeRole !== 'Administrador') {
+      const facCodes = await resolveFacultadCodesForUser(req.user.email);
+      if (!facCodes.has(program.dep_code_facultad)) {
+        return res.status(403).json({ error: 'No tienes acceso a este programa' });
+      }
+    }
+
     res.status(200).json(program);
   } catch (error) {
     if (error.name === 'CastError') {

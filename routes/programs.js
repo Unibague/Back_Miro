@@ -2,14 +2,15 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/programs');
 const importCatalogo = require('../controllers/importProgramasCatalogo');
+const { requireAdmin, requireReadAccess } = require('../middleware/auth');
 
-router.get('/import/plantilla', importCatalogo.descargarPlantilla);
-router.post('/import/catalogo', importCatalogo.uploadMiddleware, importCatalogo.importarCatalogo);
+router.get('/import/plantilla', requireAdmin, importCatalogo.descargarPlantilla);
+router.post('/import/catalogo', requireAdmin, importCatalogo.uploadMiddleware, importCatalogo.importarCatalogo);
 
-router.get('/',         controller.getAll);
-router.post('/',        controller.create);
-router.get('/:id',      controller.getById);
-router.put('/:id',      controller.update);
-router.delete('/:id',   controller.remove);
+router.get('/',         requireReadAccess, controller.getAll);
+router.post('/',        requireAdmin,      controller.create);
+router.get('/:id',      requireReadAccess, controller.getById);
+router.put('/:id',      requireAdmin,      controller.update);
+router.delete('/:id',   requireAdmin,      controller.remove);
 
 module.exports = router;

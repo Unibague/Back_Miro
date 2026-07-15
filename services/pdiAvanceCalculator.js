@@ -16,23 +16,24 @@ function clampPercentage(value) {
     return Math.min(Math.max(Number(value) || 0, 0), 100);
 }
 
+// Sin redondear: cada nivel de la cadena Indicador → Acción → Proyecto →
+// Macroproyecto → PDI debe alimentarse con el valor completo del nivel
+// anterior, no con una versión ya redondeada, o el error de redondeo se
+// acumula en cada escalón. El redondeo se aplica explícitamente solo donde
+// se muestra un valor final (Macroproyecto, PDI global), en el llamador.
 function weightedContribution(items = [], getAdvance, getWeight) {
-    return Math.round(
-        items.reduce((acc, item) => (
-            acc + clampPercentage(getAdvance(item)) * normalizePeso(getWeight(item))
-        ), 0) / 100
-    );
+    return items.reduce((acc, item) => (
+        acc + clampPercentage(getAdvance(item)) * normalizePeso(getWeight(item))
+    ), 0) / 100;
 }
 
 function weightedAverage(items = [], getAdvance, getWeight) {
     const totalWeight = items.reduce((acc, item) => acc + normalizePeso(getWeight(item)), 0);
     if (totalWeight <= 0) return 0;
 
-    return Math.round(
-        items.reduce((acc, item) => (
-            acc + clampPercentage(getAdvance(item)) * normalizePeso(getWeight(item))
-        ), 0) / totalWeight
-    );
+    return items.reduce((acc, item) => (
+        acc + clampPercentage(getAdvance(item)) * normalizePeso(getWeight(item))
+    ), 0) / totalWeight;
 }
 
 module.exports = {

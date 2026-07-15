@@ -8,6 +8,7 @@ const FASES_BASE_PM    = require('../helpers/fasesBasePM');
 const { crearPMAutomatico } = require('../helpers/pmAutoCreate');
 const { siguienteDiaHabil } = require('../helpers/diasHabilesColombia');
 const { findProgramByProcessCode } = require('../helpers/programByCode');
+const { resolveAllowedProgramCodesForUser } = require('../services/facultadResolver');
 
 function normalizarAliasSubtipoRC(subtipo) {
   const t = String(subtipo ?? '').trim().toLowerCase();
@@ -96,12 +97,24 @@ function calcularFechas(tipo_proceso, fecha_resolucion, duracion_unidad, offsets
 
 const processController = {};
 
-/* GET /processes — todos, opcionalmente filtrados por program_code o tipo_proceso */
+/* GET /processes — todos, opcionalmente filtrados por program_code o tipo_proceso.
+   Administrador ve todos; Responsable/Productor (u otro cargo sin rol admin)
+   solo ven procesos de programas de su(s) facultad(es). */
 processController.getAll = async (req, res) => {
   try {
     const query = {};
     if (req.query.program_code)  query.program_code  = req.query.program_code;
     if (req.query.tipo_proceso)  query.tipo_proceso  = req.query.tipo_proceso;
+
+    if (req.user && req.user.activeRole !== 'Administrador') {
+      const { programCodes } = await resolveAllowedProgramCodesForUser(req.user.email);
+      if (query.program_code) {
+        if (!programCodes.has(query.program_code)) return res.status(200).json([]);
+      } else {
+        query.program_code = { $in: [...programCodes] };
+      }
+    }
+
     const processes = await Process.find(query).sort({ createdAt: -1 });
     res.status(200).json(processes);
   } catch (error) {
@@ -115,6 +128,14 @@ processController.getById = async (req, res) => {
   try {
     const process = await Process.findById(req.params.id);
     if (!process) return res.status(404).json({ error: 'Proceso no encontrado' });
+
+    if (req.user && req.user.activeRole !== 'Administrador') {
+      const { programCodes } = await resolveAllowedProgramCodesForUser(req.user.email);
+      if (!programCodes.has(process.program_code)) {
+        return res.status(403).json({ error: 'No tienes acceso a este proceso' });
+      }
+    }
+
     const phases = await Phase.find({ proceso_id: req.params.id }).sort({ numero: 1 });
     res.status(200).json({ ...process.toObject(), fases: phases });
   } catch (error) {

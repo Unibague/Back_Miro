@@ -6,6 +6,8 @@ const ctrl    = require('../controllers/pdiDashboard');
 router.get('/resumen',                  ctrl.resumen);
 // Excel con la memoria de calculo del avance (formulas auditables)
 router.get('/exportar-avance',          ctrl.exportarAvance);
+// Igual, pero enfocado en un solo año (por defecto el año en curso)
+router.get('/exportar-avance-anio',     ctrl.exportarAvanceAnio);
 // Excel base de indicadores PDI con todas las metas por periodo
 router.get('/exportar-indicadores-metas', ctrl.exportarIndicadoresMetas);
 // Red editable de nodos y relaciones del PDI

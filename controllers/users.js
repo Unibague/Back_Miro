@@ -29,16 +29,21 @@ const profiles = ["Ver", "Administrar", "Gestionar"];
 // solo documenta el comportamiento por defecto para que Planeación/TI sepa
 // que tocar cuando arma un perfil nuevo.
 const viewPermissionOptions = [
-    { key: "dashboard", label: "Inicio", path: "/dashboard", module: "General", group: "General", roles: ["Administrador", "Responsable", "Productor"] },
+    { key: "dashboard", label: "Inicio", path: "/dashboard", module: "General", group: "General", roles: ["Administrador"] },
+    { key: "dashboardResponsable", label: "Inicio (Responsable)", path: "/dashboard", module: "General", group: "General", roles: ["Responsable"] },
+    { key: "dashboardProductor", label: "Inicio (Productor)", path: "/dashboard", module: "General", group: "General", roles: ["Productor"] },
 
     { key: "adminTemplates", label: "Configurar Plantillas", path: "/admin/templates", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
-    { key: "publishedTemplates", label: "Gestionar Plantillas (publicadas por Productores)", path: "/templates/published", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador", "Responsable"] },
+    { key: "publishedTemplates", label: "Gestionar Plantillas (publicadas por Productores)", path: "/templates/published", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
+    { key: "publishedTemplatesResponsable", label: "Gestionar Plantillas (publicadas por Productores) — Responsable", path: "/templates/published", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
     { key: "producerTemplates", label: "Gestionar Plantillas (Productor)", path: "/producer/templates", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Productor"] },
-    { key: "templatesWithFilters", label: "Gestión de Plantillas con Filtros", path: "/templates-with-filters", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable", "Productor"] },
+    { key: "templatesWithFilters", label: "Gestión de Plantillas con Filtros", path: "/templates-with-filters", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
+    { key: "templatesWithFiltersProductor", label: "Gestión de Plantillas con Filtros (Productor)", path: "/templates-with-filters", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Productor"] },
     { key: "adminReports", label: "Configurar Informes de Gestión de Responsables", path: "/admin/reports", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
     { key: "publishedReports", label: "Gestionar informes Responsables", path: "/admin/reports/uploaded", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
     { key: "producerReportsConfig", label: "Configurar Informes de Gestión de Productores", path: "/admin/reports/producers", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
-    { key: "producerReportsManagement", label: "Gestionar Informes Productores", path: "/reportproducers", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador", "Responsable"] },
+    { key: "producerReportsManagement", label: "Gestionar Informes Productores", path: "/reportproducers", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
+    { key: "producerReportsManagementResponsable", label: "Gestionar Informes Productores (Responsable)", path: "/reportproducers", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
     { key: "producerReports", label: "Informe de gestión de productor", path: "/producer/reports", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Productor"] },
     { key: "responsibleReports", label: "Informe de Gestión de Responsables", path: "/responsible/reports", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
     { key: "validationsView", label: "Validaciones", path: "/validations", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
@@ -49,16 +54,21 @@ const viewPermissionOptions = [
     { key: "audit", label: "Historial de Trazabilidad", path: "/admin/audit", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
     { key: "templatesManagement", label: "Gestión de Plantillas con Filtros (admin)", path: "/admin/templates-management", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
     { key: "dependenciesHierarchy", label: "Jerarquía de Dependencias", path: "/admin/dependencies-hierarchy", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Administrador"] },
-    { key: "traceability", label: "Historial de Cambios", path: "/traceability", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable", "Productor"] },
-    { key: "historicoDocentes", label: "Consulta de Información", path: "/historico-docentes", module: "Gestión de reportes", group: "Consulta de información", roles: ["Administrador", "Responsable", "Productor"] },
+    { key: "traceability", label: "Historial de Cambios", path: "/traceability", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Responsable"] },
+    { key: "traceabilityProductor", label: "Historial de Cambios (Productor)", path: "/traceability", module: "Gestión de reportes", group: "Plantillas y reportes", roles: ["Productor"] },
+    { key: "historicoDocentes", label: "Consulta de Información", path: "/historico-docentes", module: "Gestión de reportes", group: "Consulta de información", roles: ["Administrador"] },
+    { key: "historicoDocentesResponsable", label: "Consulta de Información (Responsable)", path: "/historico-docentes", module: "Gestión de reportes", group: "Consulta de información", roles: ["Responsable"] },
+    { key: "historicoDocentesProductor", label: "Consulta de Información (Productor)", path: "/historico-docentes", module: "Gestión de reportes", group: "Consulta de información", roles: ["Productor"] },
     { key: "snies", label: "SNIES", path: "/snies/templates", module: "Gestión de reportes", group: "SNIES", roles: ["Administrador"] },
+    { key: "sniesProductor", label: "SNIES (productor encargado)", path: "/snies/templates", module: "Gestión de reportes", group: "SNIES", roles: ["Productor"] },
     { key: "cna", label: "CNA", path: "/cna/templates", module: "Gestión de reportes", group: "CNA", roles: ["Administrador"] },
 
     { key: "supportTemplates", label: "Cruce de apoyos SIGA/Iceberg", path: "/apoyos-plantillas", module: "Cruce de apoyos SIGA/Iceberg", group: "Cruce de apoyos", roles: ["Administrador"] },
 
     { key: "dateReview", label: "Gestión de procesos MEN (RC, AV, Plan de mejoramiento)", path: "/processes-MEN", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
     { key: "dateReviewComunicaciones", label: "Comunicaciones MEN", path: "/processes-MEN?modulo=comunicaciones", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
-    { key: "dateReviewResponsible", label: "Estado de procesos MEN (mi facultad)", path: "/processes-MEN/responsible", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Responsable", "Productor"] },
+    { key: "dateReviewResponsible", label: "Estado de procesos MEN (mi facultad)", path: "/processes-MEN/responsible", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Responsable"] },
+    { key: "dateReviewResponsibleProductor", label: "Estado de procesos MEN (mi facultad) — Productor", path: "/processes-MEN/responsible", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Productor"] },
     { key: "dateReviewDashboard", label: "Estadísticas y tablero de procesos MEN", path: "/processes-MEN", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
     { key: "dateReviewAlerts", label: "Alertas de procesos MEN", path: "/processes-MEN?section=alertas", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
     { key: "dateReviewHistory", label: "Historial de procesos MEN", path: "/processes-MEN?section=historial", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
@@ -68,11 +78,16 @@ const viewPermissionOptions = [
     { key: "dateReviewAv", label: "Procesos de Acreditación Voluntaria", path: "/processes-MEN?tipo=acreditacion-voluntaria", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
     { key: "dateReviewAdmin", label: "Administrar importación de procesos MEN", path: "/processes-MEN/admin", module: "Procesos de calidad MEN", group: "Gestion de procesos", roles: ["Administrador"] },
 
-    { key: "pdi", label: "PDI - Vista principal", path: "/pdi", module: "PDI", group: "PDI", roles: ["Administrador", "Responsable"] },
-    { key: "pdiMine", label: "Proyectos PDI (mis indicadores)", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Administrador", "Responsable"] },
-    { key: "pdiDashboard", label: "Tablero de control PDI", path: "/pdi/dashboard", module: "PDI", group: "PDI", roles: ["Administrador", "Responsable"] },
-    { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", module: "PDI", group: "PDI", roles: ["Administrador", "Responsable"] },
-    { key: "pdiCharts", label: "Gráficas PDI", path: "/pdi/graficas", module: "PDI", group: "PDI", roles: ["Administrador", "Responsable"] },
+    { key: "pdi", label: "PDI - Vista principal", path: "/pdi", module: "PDI", group: "PDI", roles: ["Administrador"] },
+    { key: "pdiResponsable", label: "PDI - Vista principal (Responsable)", path: "/pdi", module: "PDI", group: "PDI", roles: ["Responsable"] },
+    { key: "pdiMine", label: "Proyectos PDI (mis indicadores)", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Administrador"] },
+    { key: "pdiMineResponsable", label: "Proyectos PDI (mis indicadores) — Responsable", path: "/pdi/mis-indicadores", module: "PDI", group: "PDI", roles: ["Responsable"] },
+    { key: "pdiDashboard", label: "Tablero de control PDI", path: "/pdi/dashboard", module: "PDI", group: "PDI", roles: ["Administrador"] },
+    { key: "pdiDashboardResponsable", label: "Tablero de control PDI (Responsable)", path: "/pdi/dashboard", module: "PDI", group: "PDI", roles: ["Responsable"] },
+    { key: "pdiForms", label: "Formularios PDI", path: "/pdi/formularios", module: "PDI", group: "PDI", roles: ["Administrador"] },
+    { key: "pdiFormsResponsable", label: "Formularios PDI (Responsable)", path: "/pdi/formularios", module: "PDI", group: "PDI", roles: ["Responsable"] },
+    { key: "pdiCharts", label: "Gráficas PDI", path: "/pdi/graficas", module: "PDI", group: "PDI", roles: ["Administrador"] },
+    { key: "pdiChartsResponsable", label: "Gráficas PDI (Responsable)", path: "/pdi/graficas", module: "PDI", group: "PDI", roles: ["Responsable"] },
 
     { key: "periods", label: "Gestionar Periodos", path: "/admin/periods", module: "Configuración", group: "Administración", roles: ["Administrador"] },
     { key: "dimensions", label: "Gestionar Ámbitos", path: "/admin/dimensions", module: "Configuración", group: "Administración", roles: ["Administrador"] },
@@ -83,9 +98,12 @@ const viewPermissionOptions = [
     { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", module: "Configuración", group: "Administración", roles: ["Administrador"] },
     { key: "homeSettings", label: "Ajustes Pagina Inicial", path: "/admin/homeSettings", module: "Configuración", group: "Administración", roles: ["Administrador"] },
 
-    { key: "dependency", label: "Ver Mi Dependencia", path: "/dependency", module: "Administración", group: "Administración", roles: ["Responsable", "Administrador"] },
-    { key: "childDependenciesTemplates", label: "Visualizar plantillas de dependencias hijo", path: "/dependency/children-dependencies/templates", module: "Administración", group: "Administración", roles: ["Responsable", "Administrador"] },
-    { key: "childDependenciesReports", label: "Visualizar reportes de dependencias hijo", path: "/dependency/children-dependencies/reports", module: "Administración", group: "Administración", roles: ["Responsable", "Administrador"] }
+    { key: "dependency", label: "Ver Mi Dependencia", path: "/dependency", module: "Administración", group: "Administración", roles: ["Responsable"] },
+    { key: "dependencyAdmin", label: "Ver Mi Dependencia (Administrador)", path: "/dependency", module: "Administración", group: "Administración", roles: ["Administrador"] },
+    { key: "childDependenciesTemplates", label: "Visualizar plantillas de dependencias hijo", path: "/dependency/children-dependencies/templates", module: "Administración", group: "Administración", roles: ["Responsable"] },
+    { key: "childDependenciesTemplatesAdmin", label: "Visualizar plantillas de dependencias hijo (Administrador)", path: "/dependency/children-dependencies/templates", module: "Administración", group: "Administración", roles: ["Administrador"] },
+    { key: "childDependenciesReports", label: "Visualizar reportes de dependencias hijo", path: "/dependency/children-dependencies/reports", module: "Administración", group: "Administración", roles: ["Responsable"] },
+    { key: "childDependenciesReportsAdmin", label: "Visualizar reportes de dependencias hijo (Administrador)", path: "/dependency/children-dependencies/reports", module: "Administración", group: "Administración", roles: ["Administrador"] }
 ];
 
 userController.addExternalUser = async (req, res) => {

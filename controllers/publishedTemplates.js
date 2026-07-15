@@ -1075,6 +1075,12 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       ...(periodId && { period: periodId }),
     };
     
+    // Solo para el módulo SNIES: en vez de "soy alguno de los productores
+    // asignados" (template.producers), exige "mi dependencia es el productor
+    // ENCARGADO del envío final" (responsible_producers, campo raíz de
+    // publishedTemplates) y que la plantilla sea de SNIES (template.is_snies).
+    const sniesResponsableOnly = req.query.sniesResponsableOnly === 'true';
+
     // Filtrado específico cuando filterByUserScope=true
     if (filterByUserScope === 'true') {
       if (userRole === 'Productor') {
@@ -1084,13 +1090,19 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           Dependency.find({ dep_code: { $in: allUserDependencies } }),
         ]);
 
-        if (userDependency) {
-          query['template.producers'] = userDependency._id;
-        } else if (dependenciesByCode.length > 0) {
-          const dependencyIds = dependenciesByCode.map(dep => dep._id);
-          query['template.producers'] = { $in: dependencyIds };
-        } else {
+        const dependencyIds = userDependency
+          ? [userDependency._id]
+          : dependenciesByCode.map(dep => dep._id);
+
+        if (!dependencyIds.length) {
           return res.status(200).json({ templates: [], total: 0, page, pages: 0 });
+        }
+
+        if (sniesResponsableOnly) {
+          query['template.is_snies'] = true;
+          query['responsible_producers'] = { $in: dependencyIds };
+        } else {
+          query['template.producers'] = { $in: dependencyIds };
         }
       } else if (userRole === 'Responsable') {
         const orConditions = [];
