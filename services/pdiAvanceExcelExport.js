@@ -18,6 +18,25 @@ function round2(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
 }
 
+// El formulario permite guardar meta/avance como texto con "%" literal
+// (ver IndicadorModal.tsx) cuando el indicador se mide en porcentaje, en vez
+// de un número crudo (conteo, dinero, etc.). toNumberValue() quita ese "%"
+// para poder calcular, así que hay que detectarlo aparte para saber si la
+// celda exportada debe mostrar el símbolo o no.
+function esValorPorcentual(value) {
+    return typeof value === 'string' && value.includes('%');
+}
+
+// Un indicador se considera "medido en %" si su Meta final 2029 o alguno de
+// sus periodos (meta o avance) se guardó con el "%" literal. Se usa para
+// decidir el formato de TODAS las columnas crudas de ese indicador (meta
+// final/anual, valor operativo, meta y avance por periodo), de forma
+// consistente en todo el archivo.
+function usaPorcentaje(ind, periodos = ind.periodos || []) {
+    if (esValorPorcentual(ind.meta_final_2029)) return true;
+    return periodos.some((p) => esValorPorcentual(p.meta) || esValorPorcentual(p.avance));
+}
+
 function valoresNumericos(lista = [], campo) {
     return lista
         .map((item) => toNumberValue(item[campo]))
@@ -49,46 +68,49 @@ function ultimoValorReportado(lista = []) {
     return toNumberValue(conAvance[conAvance.length - 1].avance) ?? 0;
 }
 
-// Igual que calcularIndicadorExport, pero con "Meta {año}" en vez de "Meta
-// final 2029": la meta y el avance operativo del indicador se calculan SOLO
-// con los periodos de ESE año (según su tipo de cálculo), y el % de avance
-// se compara contra esa meta anual. Replica exactamente la metodología de
-// controllers/pdiDashboard.js (cumplimientoIndicadorAnio) pero exponiendo
-// también la meta usada, para poder mostrarla como columna/fórmula en el
-// libro de memoria de cálculo enfocado en un año.
-function calcularIndicadorExportAnio(indicador, anio) {
-    const periodosAnio = ordenarPeriodos(indicador.periodos || [])
-        .filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
+// Igual que calcularIndicadorExport, pero con "Meta {alcance}" en vez de
+// "Meta final 2029": la meta y el avance operativo del indicador se calculan
+// SOLO con los periodos que cumplen `periodFilter` (según su tipo de
+// cálculo), y el % de avance se compara contra esa meta. Replica exactamente
+// la metodología de controllers/pdiDashboard.js (cumplimientoIndicadorAnio)
+// pero exponiendo también la meta usada, para poder mostrarla como
+// columna/fórmula en el libro de memoria de cálculo. `periodFilter` es lo
+// único que distingue el alcance "año completo" (prefijo, ej. slice(0,4))
+// del alcance "un periodo/semestre puntual" (coincidencia exacta): el resto
+// de la metodología (tipo de cálculo, tope 100%, etc.) es idéntico en ambos
+// casos, tal como pidió el usuario.
+function calcularIndicadorExportPorPeriodo(indicador, periodFilter) {
+    const periodosFiltrados = ordenarPeriodos(indicador.periodos || []).filter(periodFilter);
     const tipo = indicador.tipo_calculo || 'promedio';
 
     let metaAnio = 0;
     let avanceOperacion = 0;
 
-    if (periodosAnio.length) {
+    if (periodosFiltrados.length) {
         if (tipo === 'ultimo_valor') {
-            const conAvance = periodosAnio.filter((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
+            const conAvance = periodosFiltrados.filter((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
             if (conAvance.length) {
                 const ultimo = conAvance[conAvance.length - 1];
                 avanceOperacion = round2(toNumberValue(ultimo.avance) ?? 0);
                 metaAnio = round2(toNumberValue(ultimo.meta) ?? 0);
             }
         } else if (tipo === 'promedio') {
-            avanceOperacion = round2(promedioCampo(periodosAnio, 'avance') ?? 0);
-            metaAnio = round2(promedioCampo(periodosAnio, 'meta') ?? 0);
+            avanceOperacion = round2(promedioCampo(periodosFiltrados, 'avance') ?? 0);
+            metaAnio = round2(promedioCampo(periodosFiltrados, 'meta') ?? 0);
         } else {
-            avanceOperacion = round2(sumarCampo(periodosAnio, 'avance'));
-            metaAnio = round2(sumarCampo(periodosAnio, 'meta'));
+            avanceOperacion = round2(sumarCampo(periodosFiltrados, 'avance'));
+            metaAnio = round2(sumarCampo(periodosFiltrados, 'meta'));
         }
     }
 
     // Sin redondear: alimenta la Acción del archivo de año (weightedContribution).
     const porcentajeAvance = metaAnio > 0 ? Math.min(avanceOperacion / metaAnio, 1) * 100 : 0;
 
-    // "Tiene meta en el año" = al menos un periodo de ESE año con meta no
+    // "Tiene meta en el alcance" = al menos un periodo filtrado con meta no
     // nula (igual definición que indicadoresConMetaEnAnio en
     // controllers/pdiDashboard.js): una meta en 0 SÍ cuenta como definida,
-    // solo se excluyen los indicadores sin ningún dato de meta ese año.
-    const tieneMetaAnio = periodosAnio.some((p) => toNumberValue(p.meta) !== null);
+    // solo se excluyen los indicadores sin ningún dato de meta en ese alcance.
+    const tieneMetaAnio = periodosFiltrados.some((p) => toNumberValue(p.meta) !== null);
 
     return {
         tiene_meta_anio: tieneMetaAnio,
@@ -97,6 +119,10 @@ function calcularIndicadorExportAnio(indicador, anio) {
         porcentaje_avance_anio: porcentajeAvance,
         semaforo_anio: getSemaforo(porcentajeAvance),
     };
+}
+
+function calcularIndicadorExportAnio(indicador, anio) {
+    return calcularIndicadorExportPorPeriodo(indicador, (p) => String(p.periodo ?? '').slice(0, 4) === anio);
 }
 
 function calcularIndicadorExport(ind = {}) {
@@ -430,6 +456,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         ...ind,
         peso_norm: normalizePeso(ind.peso),
         periodos_marcados: marcarUltimoPeriodoConAvance(ind.periodos || []),
+        usa_porcentaje: usaPorcentaje(ind),
     }));
 
     const accionesNorm = acciones.map((a) => ({ ...a, peso_norm: normalizePeso(a.peso) }));
@@ -547,7 +574,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         const proyecto = proyectoPorId.get(String(accion?.proyecto_id?._id ?? accion?.proyecto_id ?? ''));
         const macro = macroPorId.get(String(proyecto?.macroproyecto_id?._id ?? proyecto?.macroproyecto_id ?? ''));
         for (const p of ind.periodos_marcados) {
-            wsPeriodos.addRow({
+            const rowPeriodos = wsPeriodos.addRow({
                 codigo: ind.codigo,
                 periodo: p.periodo,
                 meta: toNumberValue(p.meta),
@@ -557,7 +584,9 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
             });
-            wsConsolidado.addRow({
+            if (esValorPorcentual(p.meta)) rowPeriodos.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowPeriodos.getCell('avance').numFmt = '0.00"%"';
+            const rowConsolidado = wsConsolidado.addRow({
                 macro: macro?.codigo ?? '',
                 proyecto: proyecto?.codigo ?? '',
                 accion: accion?.codigo ?? '',
@@ -570,6 +599,8 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
             });
+            if (esValorPorcentual(p.meta)) rowConsolidado.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowConsolidado.getCell('avance').numFmt = '0.00"%"';
         }
     }
     wsConsolidado.getColumn('K').numFmt = 'yyyy-mm-dd';
@@ -643,7 +674,11 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         };
         wsInd.getCell(`L${r}`).value = FORMULA_TEXTO[tipoRaw] ?? '';
 
-        ['G', 'H', 'I', 'J'].forEach((col) => { wsInd.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsInd.getCell(`D${r}`).numFmt = '0.00"%"';
+        const formatoCrudo = ind.usa_porcentaje ? '0.00"%"' : '0.00';
+        wsInd.getCell(`F${r}`).numFmt = formatoCrudo;
+        wsInd.getCell(`G${r}`).numFmt = formatoCrudo;
+        ['H', 'I', 'J'].forEach((col) => { wsInd.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsInd.getCell(`L${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsInd.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -689,7 +724,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
             result: round2((Number(acc.avance_descarga) || 0) - (Number(acc.avance) || 0)),
         };
         wsAcc.getCell(`H${r}`).value = ACCION_FORMULA_TXT;
-        ['D', 'E', 'F', 'G'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['D', 'E', 'F', 'G'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsAcc.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsAcc.getCell(`H${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -735,7 +770,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
             result: round2((Number(p.avance_descarga) || 0) - (Number(p.avance) || 0)),
         };
         wsProy.getCell(`H${r}`).value = PROYECTO_FORMULA_TXT;
-        ['D', 'E', 'F', 'G'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['D', 'E', 'F', 'G'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsProy.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsProy.getCell(`H${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -778,7 +813,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
             result: round2((Number(m.avance_descarga) || 0) - (Number(m.avance) || 0)),
         };
         wsMacro.getCell(`G${r}`).value = MACRO_FORMULA_TXT;
-        ['C', 'D', 'E', 'F'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['C', 'D', 'E', 'F'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsMacro.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsMacro.getCell(`G${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -837,7 +872,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         wsResumen.getCell(`C${r}`).value = { formula: `Macroproyectos!C${idx + 2}`, result: m.peso_norm };
         wsResumen.getCell(`D${r}`).value = { formula: `Macroproyectos!D${idx + 2}`, result: m.avance_descarga };
         wsResumen.getCell(`E${r}`).value = { formula: `Macroproyectos!E${idx + 2}`, result: Number(m.avance) || 0 };
-        ['C', 'D', 'E'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['C', 'D', 'E'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
     });
     nextRow += macrosNorm.length;
     const lastMacroDataRow = nextRow - 1;
@@ -852,7 +887,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         result: avanceGlobalDescarga,
     };
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
-    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00';
+    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00"%"';
     nextRow += 1;
     wsResumen.getCell(`A${nextRow}`).value = 'Avance ponderado global (guardado en el sistema / mostrado en el tablero)';
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
@@ -863,7 +898,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         : 0;
     wsResumen.getCell(`D${nextRow}`).value = avanceGlobalSistema;
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13 };
-    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00';
+    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00"%"';
     nextRow += 1;
 
     nextRow += 1;
@@ -1177,10 +1212,26 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
         { header: 'Periodo usado', key: 'periodo_usado', width: 16 },
         { header: 'Avance calculado (%)', key: 'avance_pct', width: 18 },
     ];
-    const periodoColumns = periodos.flatMap((periodo) => [
-        { header: `Meta ${periodo}`, key: `meta_${periodo}`, width: 14 },
-        { header: `Avance ${periodo}`, key: `avance_${periodo}`, width: 14 },
-    ]);
+    // Periodos agrupados por año (2026A, 2026B, ... -> "2026"), para poder
+    // agregar, justo después de las columnas de cada año, el consolidado de
+    // ESE año (Meta/Avance). El consolidado NO es siempre la suma de A+B:
+    // depende del tipo de cálculo del indicador (acumulado = suma, promedio =
+    // promedio, último valor = el más reciente reportado ese año) — se
+    // calcula con la misma lógica que usa el archivo "Memoria técnica del
+    // avance {año}" (calcularIndicadorExportAnio).
+    const aniosUnicos = [...new Set(periodos.map((periodo) => periodo.slice(0, 4)))]
+        .sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+    const periodoColumns = aniosUnicos.flatMap((anio) => {
+        const periodosDelAnio = periodos.filter((periodo) => periodo.slice(0, 4) === anio);
+        return [
+            ...periodosDelAnio.flatMap((periodo) => [
+                { header: `Meta ${periodo}`, key: `meta_${periodo}`, width: 14 },
+                { header: `Avance ${periodo}`, key: `avance_${periodo}`, width: 14 },
+            ]),
+            { header: `Meta ${anio}`, key: `meta_anio_${anio}`, width: 14 },
+            { header: `Avance ${anio}`, key: `avance_anio_${anio}`, width: 14 },
+        ];
+    });
     ws.columns = [...baseColumns, ...periodoColumns];
     styleHeaderRow(ws.getRow(1));
     ws.views = [{ state: 'frozen', ySplit: 1, xSplit: 4 }];
@@ -1188,6 +1239,21 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
         from: 'A1',
         to: ws.getCell(1, ws.columnCount).address,
     };
+
+    // Formato por defecto de las columnas crudas (sin %): se sobreescribe por
+    // celda más abajo para los indicadores/periodos que sí se miden en %.
+    ['meta_final_2029', 'valor_usado'].forEach((key) => {
+        ws.getColumn(key).numFmt = '0.00';
+    });
+    ws.getColumn('avance_pct').numFmt = '0.00"%"';
+    periodos.forEach((periodo) => {
+        ws.getColumn(`meta_${periodo}`).numFmt = '0.00';
+        ws.getColumn(`avance_${periodo}`).numFmt = '0.00';
+    });
+    aniosUnicos.forEach((anio) => {
+        ws.getColumn(`meta_anio_${anio}`).numFmt = '0.00';
+        ws.getColumn(`avance_anio_${anio}`).numFmt = '0.00';
+    });
 
     filas.forEach(({ indicador, accion, proyecto, macro }) => {
         const operacion = getOperacionIndicador(indicador);
@@ -1207,11 +1273,18 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
             avance_pct: operacion.avancePct,
         };
 
+        // Celdas crudas que deben mostrar "%" porque el valor original se
+        // guardó con el símbolo literal (ver esValorPorcentual más arriba).
+        const celdasPorcentuales = [];
+        if (esValorPorcentual(indicador.meta_final_2029)) celdasPorcentuales.push('meta_final_2029');
+        if (usaPorcentaje(indicador)) celdasPorcentuales.push('valor_usado');
+
         periodos.forEach((periodo) => {
             const periodoData = periodoMap.get(periodo);
             const metaNum = toNumberValue(periodoData?.meta);
             const tieneMeta = metaNum !== null;
             row[`meta_${periodo}`] = tieneMeta ? metaNum : 'Sin meta';
+            if (tieneMeta && esValorPorcentual(periodoData?.meta)) celdasPorcentuales.push(`meta_${periodo}`);
 
             if (!tieneMeta) {
                 // Sin meta definida para este periodo: no hay nada contra qué medir avance.
@@ -1226,19 +1299,27 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
                 const yaReportado = periodoData?.estado_reporte && periodoData.estado_reporte !== 'Borrador';
                 const avanceNum = toNumberValue(periodoData?.avance);
                 row[`avance_${periodo}`] = (yaReportado && avanceNum !== null) ? avanceNum : '';
+                if (yaReportado && avanceNum !== null && esValorPorcentual(periodoData?.avance)) celdasPorcentuales.push(`avance_${periodo}`);
             }
         });
 
-        ws.addRow(row);
+        // Consolidado de cada año (justo después de sus columnas A/B): NO es
+        // siempre la suma de los periodos del año, depende del tipo de
+        // cálculo del indicador (acumulado = suma, promedio = promedio,
+        // último valor = el más reciente reportado ese año).
+        aniosUnicos.forEach((anio) => {
+            const calc = calcularIndicadorExportAnio(indicador, anio);
+            row[`meta_anio_${anio}`] = calc.tiene_meta_anio ? calc.meta_anio : 'Sin meta';
+            row[`avance_anio_${anio}`] = calc.tiene_meta_anio ? calc.avance_operacion_anio : 'No aplica';
+            if (calc.tiene_meta_anio && usaPorcentaje(indicador)) {
+                celdasPorcentuales.push(`meta_anio_${anio}`, `avance_anio_${anio}`);
+            }
+        });
+
+        const rowRef = ws.addRow(row);
+        celdasPorcentuales.forEach((key) => { rowRef.getCell(key).numFmt = '0.00"%"'; });
     });
 
-    ['meta_final_2029', 'valor_usado', 'avance_pct'].forEach((key) => {
-        ws.getColumn(key).numFmt = '0.00';
-    });
-    periodos.forEach((periodo) => {
-        ws.getColumn(`meta_${periodo}`).numFmt = '0.00';
-        ws.getColumn(`avance_${periodo}`).numFmt = '0.00';
-    });
     ws.eachRow((row, rowNumber) => {
         if (rowNumber === 1) return;
         row.eachCell((cell) => {
@@ -1250,7 +1331,7 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
     wsInfo.columns = [{ width: 28 }, { width: 90 }];
     wsInfo.addRow(['Archivo', 'Indicadores PDI - metas por periodo']);
     wsInfo.addRow(['Generado', generatedAt.toLocaleString('es-CO', { timeZone: 'America/Bogota' })]);
-    wsInfo.addRow(['Estructura', 'Las primeras cuatro columnas (códigos de macroproyecto, proyecto, acción e indicador) quedan inmovilizadas para orientarse al desplazar la tabla. Las columnas siguientes agregan los nombres, la meta final, el tipo de cálculo y todas las metas/avances por periodo disponibles en el sistema. "Sin meta" indica que ese periodo no tiene meta definida; "No aplica" indica que no hay avance evaluable; las celdas vacías corresponden a periodos futuros que aún no inician.']);
+    wsInfo.addRow(['Estructura', 'Las primeras cuatro columnas (códigos de macroproyecto, proyecto, acción e indicador) quedan inmovilizadas para orientarse al desplazar la tabla. Las columnas siguientes agregan los nombres, la meta final, el tipo de cálculo y todas las metas/avances por periodo disponibles en el sistema. Justo después de los periodos de cada año (ej. Meta/Avance 2026A y 2026B) se agrega el consolidado de ese año (Meta/Avance 2026): NO es siempre la suma de los periodos, depende del tipo de cálculo (ver filas siguientes). "Sin meta" indica que ese periodo/año no tiene meta definida; "No aplica" indica que no hay avance evaluable; las celdas vacías corresponden a periodos futuros que aún no inician.']);
     wsInfo.addRow(['Acumulado', 'Toma la suma de los avances reportados y la compara contra la Meta al año 2029.']);
     wsInfo.addRow(['Promedio', 'Toma el promedio aritmético de los avances reportados y lo compara contra la Meta al año 2029.']);
     wsInfo.addRow(['Último valor reportado', 'Toma el último periodo con avance reportado y lo compara contra la Meta al año 2029.']);
@@ -1265,20 +1346,25 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
     return workbook;
 }
 
-// Igual que marcarUltimoPeriodoConAvance, pero solo considera los periodos de
-// UN año: el "último periodo con avance" para el tipo Último valor reportado
-// debe salir de dentro del año, no de todo el histórico del indicador.
-function marcarUltimoPeriodoConAvanceAnio(periodos = [], anio) {
-    const periodosAnio = (periodos || []).filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
-    const ordenados = ordenarPeriodos(periodosAnio);
+// Igual que marcarUltimoPeriodoConAvance, pero solo considera los periodos
+// que cumplen `periodFilter`: el "último periodo con avance" para el tipo
+// Último valor reportado debe salir de dentro de ese alcance (año completo o
+// un periodo/semestre puntual), no de todo el histórico del indicador.
+function marcarUltimoPeriodoConAvancePorPeriodo(periodos = [], periodFilter) {
+    const periodosFiltrados = (periodos || []).filter(periodFilter);
+    const ordenados = ordenarPeriodos(periodosFiltrados);
     let ultimoPeriodoKey = null;
     ordenados.forEach((p) => {
         if (fueReportado(p) && toNumberValue(p.avance) !== null) ultimoPeriodoKey = p.periodo;
     });
-    return periodosAnio.map((p) => ({
+    return periodosFiltrados.map((p) => ({
         ...p,
         _es_ultimo_con_avance: ultimoPeriodoKey !== null && p.periodo === ultimoPeriodoKey,
     }));
+}
+
+function marcarUltimoPeriodoConAvanceAnio(periodos = [], anio) {
+    return marcarUltimoPeriodoConAvancePorPeriodo(periodos, (p) => String(p.periodo ?? '').slice(0, 4) === anio);
 }
 
 const FORMULA_TEXTO_ANIO = (anio) => ({
@@ -1311,6 +1397,416 @@ function validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccionAnio, anio) 
         });
     });
     return rows;
+}
+
+const FORMULA_TEXTO_PERIODO = (periodo) => ({
+    acumulado: `Se suman los valores reportados en el periodo ${periodo} del indicador. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta ${periodo}, aplicando un límite máximo del 100 %.`,
+    promedio: `Se toma (o promedia, si hubiera más de un corte reportado) el valor del periodo ${periodo} del indicador. El porcentaje de avance se obtiene dividiendo dicho valor entre la Meta ${periodo}, aplicando un límite máximo del 100 %.`,
+    ultimo_valor: `Se toma el valor reportado en el periodo ${periodo}, si tiene información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la meta de ese mismo periodo, aplicando un límite máximo del 100 %.`,
+});
+
+/**
+ * Crea, DENTRO de un workbook ya existente, un set completo de hojas
+ * (Resumen, Macroproyectos, Proyectos, Acciones, Indicadores, Periodos,
+ * Metas y Avances) para UN periodo puntual (ej. "2026A"), replicando la
+ * misma cadena de cálculo y las mismas fórmulas en cascada que el archivo
+ * anual (Periodos → Indicadores → Acciones → Proyectos → Macroproyectos →
+ * PDI). Lo único que cambia frente a buildAvanceWorkbookAnio es el filtro de
+ * periodos: aquí es una coincidencia EXACTA con `periodo` (no un prefijo de
+ * año), para poder ver el detalle semestral (2026A, 2026B, ...) sin alterar
+ * en absoluto la metodología de cálculo, tal como pidió el usuario.
+ * Devuelve el avance global del periodo y sus filas de validación propias,
+ * para que buildAvanceWorkbookAnio las enlace en el resumen anual y las
+ * agregue a la hoja de Validaciones compartida.
+ */
+function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadores, periodo }) {
+    const accionesNorm = acciones.map((a) => ({ ...a, peso_norm: normalizePeso(a.peso) }));
+    const proyectosNorm = proyectos.map((p) => ({ ...p, peso_norm: normalizePeso(p.peso) }));
+    const macrosNorm = macros.map((m) => ({ ...m, peso_norm: normalizePeso(m.peso) }));
+    const accionPorId = new Map(accionesNorm.map((a) => [String(a._id), a]));
+    const proyectoPorId = new Map(proyectosNorm.map((p) => [String(p._id), p]));
+    const macroPorId = new Map(macrosNorm.map((m) => [String(m._id), m]));
+
+    const periodFilter = (p) => String(p.periodo ?? '') === periodo;
+
+    // Solo los indicadores con meta definida en ESTE periodo quedan en el set de hojas.
+    const indicadoresPeriodo = indicadores
+        .map((ind) => ({ ...ind, peso_norm: normalizePeso(ind.peso), periodos_marcados: marcarUltimoPeriodoConAvancePorPeriodo(ind.periodos || [], periodFilter) }))
+        .map((ind) => ({ ind, calc: calcularIndicadorExportPorPeriodo(ind, periodFilter) }))
+        .filter(({ calc }) => calc.tiene_meta_anio)
+        .map(({ ind, calc }) => Object.assign(ind, {
+            meta_anio: calc.meta_anio,
+            avance_operacion_anio: calc.avance_operacion_anio,
+            avance_descarga: calc.porcentaje_avance_anio,
+            semaforo_descarga: calc.semaforo_anio,
+            usa_porcentaje: usaPorcentaje(ind, ind.periodos_marcados),
+        }));
+
+    const indicadoresPorAccion = groupBy(indicadoresPeriodo, (i) => i.accion_id?._id ?? i.accion_id);
+    accionesNorm.forEach((accion) => {
+        accion.avance_descarga = weightedContribution(
+            indicadoresPorAccion.get(String(accion._id)) || [],
+            (indicador) => indicador.avance_descarga,
+            (indicador) => indicador.peso
+        );
+    });
+
+    const accionesPorProyecto = groupBy(accionesNorm, (a) => a.proyecto_id?._id ?? a.proyecto_id);
+    proyectosNorm.forEach((proyecto) => {
+        proyecto.avance_descarga = weightedContribution(
+            accionesPorProyecto.get(String(proyecto._id)) || [],
+            (accion) => accion.avance_descarga,
+            (accion) => accion.peso
+        );
+    });
+
+    const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
+    macrosNorm.forEach((macro) => {
+        macro.avance_descarga = Math.round(weightedContribution(
+            proyectosPorMacro.get(String(macro._id)) || [],
+            (proyecto) => proyecto.avance_descarga,
+            (proyecto) => proyecto.peso
+        ));
+    });
+
+    const avanceGlobalDescarga = Math.round(weightedAverage(
+        macrosNorm,
+        (macro) => macro.avance_descarga,
+        (macro) => macro.peso
+    ));
+
+    // Solo se repiten aquí los chequeos que dependen del subconjunto de
+    // indicadores de ESTE periodo (puede variar entre 2026A y 2026B); los
+    // estructurales (pesos al 100%, códigos duplicados de macro/proyecto/
+    // acción, relaciones jerárquicas) son los mismos en todos los periodos y
+    // ya se reportan una sola vez en el set anual, para no duplicar ruido.
+    const validationRows = [
+        ...duplicateCodes(indicadoresPeriodo, 'Indicador'),
+        ...validarIndicadores(indicadoresPeriodo),
+        ...validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccion, periodo),
+    ];
+
+    const sufijo = ` ${periodo}`;
+    const wsResumen = workbook.addWorksheet(`Resumen PDI${sufijo}`);
+    const wsMacro = workbook.addWorksheet(`Macroproyectos${sufijo}`);
+    const wsProy = workbook.addWorksheet(`Proyectos${sufijo}`);
+    const wsAcc = workbook.addWorksheet(`Acciones${sufijo}`);
+    const wsInd = workbook.addWorksheet(`Indicadores${sufijo}`);
+    const wsPeriodos = workbook.addWorksheet(`Periodos${sufijo}`);
+    const wsConsolidado = workbook.addWorksheet(`Metas y Avances${sufijo}`);
+
+    // ── Hoja "Periodos {periodo}" ─────────────────────────────────────────────
+    wsPeriodos.columns = [
+        { header: 'Código indicador', key: 'codigo', width: 20 },
+        { header: 'Periodo', key: 'periodo', width: 12 },
+        { header: 'Meta del periodo', key: 'meta', width: 16 },
+        { header: 'Avance del periodo', key: 'avance', width: 18 },
+        { header: '¿Es el último periodo con avance?', key: 'ultimo', width: 26 },
+        { header: 'Estado del reporte', key: 'estado', width: 18 },
+        { header: 'Reportado por', key: 'reportado_por', width: 28 },
+        { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+    ];
+    styleHeaderRow(wsPeriodos.getRow(1));
+    wsPeriodos.autoFilter = { from: 'A1', to: 'H1' };
+
+    wsConsolidado.columns = [
+        { header: 'Macroproyecto', key: 'macro', width: 16 },
+        { header: 'Proyecto', key: 'proyecto', width: 16 },
+        { header: 'Acción', key: 'accion', width: 16 },
+        { header: 'Indicador', key: 'indicador', width: 16 },
+        { header: 'Nombre del indicador', key: 'nombre', width: 46 },
+        { header: 'Periodo', key: 'periodo', width: 12 },
+        { header: 'Meta del período', key: 'meta', width: 16 },
+        { header: 'Valor reportado del período', key: 'avance', width: 22 },
+        { header: 'Estado del reporte', key: 'estado', width: 18 },
+        { header: 'Reportado por', key: 'reportado_por', width: 28 },
+        { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+    ];
+    styleHeaderRow(wsConsolidado.getRow(1));
+    wsConsolidado.autoFilter = { from: 'A1', to: 'K1' };
+    wsConsolidado.views = [{ state: 'frozen', ySplit: 1 }];
+
+    for (const ind of indicadoresPeriodo) {
+        const accion = accionPorId.get(String(ind.accion_id?._id ?? ind.accion_id));
+        const proyecto = proyectoPorId.get(String(accion?.proyecto_id?._id ?? accion?.proyecto_id ?? ''));
+        const macro = macroPorId.get(String(proyecto?.macroproyecto_id?._id ?? proyecto?.macroproyecto_id ?? ''));
+        for (const p of ind.periodos_marcados) {
+            const rowPeriodos = wsPeriodos.addRow({
+                codigo: ind.codigo,
+                periodo: p.periodo,
+                meta: toNumberValue(p.meta),
+                avance: toNumberValue(p.avance),
+                ultimo: p._es_ultimo_con_avance,
+                estado: p.estado_reporte || '',
+                reportado_por: p.reportado_por || '',
+                fecha_envio: p.fecha_envio || null,
+            });
+            if (esValorPorcentual(p.meta)) rowPeriodos.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowPeriodos.getCell('avance').numFmt = '0.00"%"';
+            const rowConsolidado = wsConsolidado.addRow({
+                macro: macro?.codigo ?? '',
+                proyecto: proyecto?.codigo ?? '',
+                accion: accion?.codigo ?? '',
+                indicador: ind.codigo,
+                nombre: ind.nombre,
+                periodo: p.periodo,
+                meta: toNumberValue(p.meta),
+                avance: toNumberValue(p.avance),
+                estado: p.estado_reporte || '',
+                reportado_por: p.reportado_por || '',
+                fecha_envio: p.fecha_envio || null,
+            });
+            if (esValorPorcentual(p.meta)) rowConsolidado.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowConsolidado.getCell('avance').numFmt = '0.00"%"';
+        }
+    }
+    wsConsolidado.getColumn('K').numFmt = 'yyyy-mm-dd';
+    wsConsolidado.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        row.getCell(5).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastPeriodosRow = Math.max(wsPeriodos.rowCount, 2);
+    wsPeriodos.getColumn('H').numFmt = 'yyyy-mm-dd';
+    const P = {
+        codigo: `'Periodos${sufijo}'!$A$2:$A$${lastPeriodosRow}`,
+        meta: `'Periodos${sufijo}'!$C$2:$C$${lastPeriodosRow}`,
+        avance: `'Periodos${sufijo}'!$D$2:$D$${lastPeriodosRow}`,
+        ultimo: `'Periodos${sufijo}'!$E$2:$E$${lastPeriodosRow}`,
+    };
+
+    // ── Hoja "Indicadores {periodo}" ─────────────────────────────────────────
+    wsInd.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del indicador', key: 'nombre', width: 46 },
+        { header: 'Código Acción', key: 'accion', width: 16 },
+        { header: 'Peso en su Acción (%)', key: 'peso', width: 16 },
+        { header: 'Tipo de cálculo', key: 'tipo', width: 20 },
+        { header: `Meta ${periodo}`, key: 'meta_anio', width: 16 },
+        { header: 'Valor utilizado para el cálculo', key: 'avance_actual', width: 20 },
+        { header: 'Porcentaje de avance del indicador (%)', key: 'pct_avance', width: 22 },
+        { header: 'Semáforo', key: 'semaforo', width: 12 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 60 },
+    ];
+    styleHeaderRow(wsInd.getRow(1));
+    wsInd.autoFilter = { from: 'A1', to: 'J1' };
+    wsInd.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const formulaTextoPeriodo = FORMULA_TEXTO_PERIODO(periodo);
+    indicadoresPeriodo.forEach((ind, idx) => {
+        const r = idx + 2;
+        const accion = accionPorId.get(String(ind.accion_id?._id ?? ind.accion_id));
+        const tipo = ind.tipo_calculo || 'promedio';
+
+        wsInd.getCell(`A${r}`).value = ind.codigo;
+        wsInd.getCell(`B${r}`).value = ind.nombre;
+        wsInd.getCell(`C${r}`).value = accion?.codigo ?? '';
+        wsInd.getCell(`D${r}`).value = ind.peso_norm;
+        wsInd.getCell(`E${r}`).value = TIPO_LABEL[tipo] ?? tipo;
+
+        const fFormula =
+            tipo === 'acumulado'
+                ? `SUMIF(${P.codigo},$A${r},${P.meta})`
+                : tipo === 'ultimo_valor'
+                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.meta}),2),0)`;
+        wsInd.getCell(`F${r}`).value = { formula: fFormula, result: ind.meta_anio };
+
+        const gFormula =
+            tipo === 'acumulado'
+                ? `SUMIF(${P.codigo},$A${r},${P.avance})`
+                : tipo === 'ultimo_valor'
+                ? `SUMIFS(${P.avance},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.avance}),2),0)`;
+        wsInd.getCell(`G${r}`).value = { formula: gFormula, result: ind.avance_operacion_anio };
+
+        const hFormula = `IF($F${r}>0,MIN(G${r}/$F${r},1)*100,0)`;
+        wsInd.getCell(`H${r}`).value = { formula: hFormula, result: ind.avance_descarga };
+
+        wsInd.getCell(`I${r}`).value = {
+            formula: `IF(H${r}>=90,"Verde",IF(H${r}>=60,"Amarillo","Rojo"))`,
+            result: ({ verde: 'Verde', amarillo: 'Amarillo', rojo: 'Rojo' })[ind.semaforo_descarga] || '',
+        };
+        wsInd.getCell(`J${r}`).value = formulaTextoPeriodo[tipo] ?? '';
+
+        wsInd.getCell(`D${r}`).numFmt = '0.00"%"';
+        const formatoCrudo = ind.usa_porcentaje ? '0.00"%"' : '0.00';
+        wsInd.getCell(`F${r}`).numFmt = formatoCrudo;
+        wsInd.getCell(`G${r}`).numFmt = formatoCrudo;
+        wsInd.getCell(`H${r}`).numFmt = '0.00"%"';
+        wsInd.getCell(`J${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsInd.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastIndRow = Math.max(wsInd.rowCount, 2);
+    const IND = {
+        accion: `'Indicadores${sufijo}'!$C$2:$C$${lastIndRow}`,
+        pct: `'Indicadores${sufijo}'!$H$2:$H$${lastIndRow}`,
+        peso: `'Indicadores${sufijo}'!$D$2:$D$${lastIndRow}`,
+    };
+
+    // ── Hoja "Acciones {periodo}" ─────────────────────────────────────────────
+    wsAcc.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre de la acción', key: 'nombre', width: 46 },
+        { header: 'Código Proyecto', key: 'proyecto', width: 16 },
+        { header: 'Peso en su Proyecto (%)', key: 'peso', width: 18 },
+        { header: `Avance ${periodo}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsAcc.getRow(1));
+    wsAcc.autoFilter = { from: 'A1', to: 'F1' };
+    wsAcc.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const ACCION_FORMULA_TXT = `Consolidación del avance ${periodo} de la Acción Estratégica mediante la sumatoria ponderada del avance ${periodo} de los indicadores que la conforman (solo los que tienen meta ese periodo), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ 100.`;
+    accionesNorm.forEach((acc, idx) => {
+        const r = idx + 2;
+        const proyecto = proyectoPorId.get(String(acc.proyecto_id?._id ?? acc.proyecto_id));
+        wsAcc.getCell(`A${r}`).value = acc.codigo;
+        wsAcc.getCell(`B${r}`).value = acc.nombre;
+        wsAcc.getCell(`C${r}`).value = proyecto?.codigo ?? '';
+        wsAcc.getCell(`D${r}`).value = acc.peso_norm;
+        wsAcc.getCell(`E${r}`).value = {
+            formula: `SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100`,
+            result: acc.avance_descarga,
+        };
+        wsAcc.getCell(`F${r}`).value = ACCION_FORMULA_TXT;
+        ['D', 'E'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
+        wsAcc.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsAcc.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastAccRow = Math.max(wsAcc.rowCount, 2);
+    const ACC = {
+        proyecto: `'Acciones${sufijo}'!$C$2:$C$${lastAccRow}`,
+        avance: `'Acciones${sufijo}'!$E$2:$E$${lastAccRow}`,
+        peso: `'Acciones${sufijo}'!$D$2:$D$${lastAccRow}`,
+    };
+
+    // ── Hoja "Proyectos {periodo}" ────────────────────────────────────────────
+    wsProy.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del proyecto', key: 'nombre', width: 46 },
+        { header: 'Código Macroproyecto', key: 'macro', width: 18 },
+        { header: 'Peso en su Macroproyecto (%)', key: 'peso', width: 20 },
+        { header: `Avance ${periodo}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsProy.getRow(1));
+    wsProy.autoFilter = { from: 'A1', to: 'F1' };
+    wsProy.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const PROYECTO_FORMULA_TXT = `Consolidación del avance ${periodo} del proyecto mediante la sumatoria ponderada del avance ${periodo} de las acciones estratégicas que lo conforman, utilizando el peso asignado a cada una.\nFórmula aplicada: Σ (Avance de la acción estratégica × Peso de la acción estratégica) ÷ 100.`;
+    proyectosNorm.forEach((p, idx) => {
+        const r = idx + 2;
+        const macro = macroPorId.get(String(p.macroproyecto_id?._id ?? p.macroproyecto_id));
+        wsProy.getCell(`A${r}`).value = p.codigo;
+        wsProy.getCell(`B${r}`).value = p.nombre;
+        wsProy.getCell(`C${r}`).value = macro?.codigo ?? '';
+        wsProy.getCell(`D${r}`).value = p.peso_norm;
+        wsProy.getCell(`E${r}`).value = {
+            formula: `SUMPRODUCT((${ACC.proyecto}=$A${r})*${ACC.avance}*${ACC.peso})/100`,
+            result: p.avance_descarga,
+        };
+        wsProy.getCell(`F${r}`).value = PROYECTO_FORMULA_TXT;
+        ['D', 'E'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
+        wsProy.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsProy.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+    const lastProyRow = Math.max(wsProy.rowCount, 2);
+    const PROY = {
+        macro: `'Proyectos${sufijo}'!$C$2:$C$${lastProyRow}`,
+        avance: `'Proyectos${sufijo}'!$E$2:$E$${lastProyRow}`,
+        peso: `'Proyectos${sufijo}'!$D$2:$D$${lastProyRow}`,
+    };
+
+    // ── Hoja "Macroproyectos {periodo}" ──────────────────────────────────────
+    wsMacro.columns = [
+        { header: 'Código', key: 'codigo', width: 16 },
+        { header: 'Nombre del macroproyecto', key: 'nombre', width: 46 },
+        { header: 'Peso (para el ponderado global)', key: 'peso', width: 20 },
+        { header: `Avance ${periodo}\n(calculado con fórmula)`, key: 'avance_calc', width: 18 },
+        { header: 'Fórmula aplicada', key: 'formula_texto', width: 70 },
+    ];
+    styleHeaderRow(wsMacro.getRow(1));
+    wsMacro.autoFilter = { from: 'A1', to: 'E1' };
+    wsMacro.views = [{ state: 'frozen', ySplit: 1 }];
+
+    const MACRO_FORMULA_TXT = `El avance ${periodo} del macroproyecto se obtiene mediante la sumatoria ponderada del avance ${periodo} de los proyectos asociados, utilizando el peso definido para cada proyecto (Σ Avance × Peso ÷ 100).`;
+    macrosNorm.forEach((m, idx) => {
+        const r = idx + 2;
+        wsMacro.getCell(`A${r}`).value = m.codigo;
+        wsMacro.getCell(`B${r}`).value = m.nombre;
+        wsMacro.getCell(`C${r}`).value = m.peso_norm;
+        wsMacro.getCell(`D${r}`).value = {
+            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
+            result: m.avance_descarga,
+        };
+        wsMacro.getCell(`E${r}`).value = MACRO_FORMULA_TXT;
+        ['C', 'D'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
+        wsMacro.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
+        wsMacro.getCell(`E${r}`).alignment = { wrapText: true, vertical: 'top' };
+    });
+
+    // ── Hoja "Resumen PDI {periodo}" ──────────────────────────────────────────
+    wsResumen.columns = [
+        { width: 22 }, { width: 46 }, { width: 16 }, { width: 18 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 12 },
+    ];
+    wsResumen.mergeCells('A1:H1');
+    wsResumen.getCell('A1').value = `Tablero de control PDI — Memoria de cálculo del avance ${periodo}`;
+    wsResumen.getCell('A1').font = { bold: true, size: 16, color: { argb: 'FF4C1D95' } };
+    wsResumen.mergeCells('A2:H2');
+    wsResumen.getCell('A2').value = `Detalle del periodo ${periodo}, dentro de la memoria de cálculo anual. Datos consultados y recalculados al momento de la descarga.`;
+    wsResumen.getCell('A2').font = { italic: true, color: { argb: 'FF6B7280' } };
+
+    let nextRow = addExplanationBlock(wsResumen, 4, [
+        'Cómo leer esta hoja:',
+        `• Esta hoja es el detalle del periodo ${periodo}: usa la misma cadena de cálculo Periodos → Indicadores → Acciones → Proyectos → Macroproyectos → PDI que el resto del archivo, pero cada nivel se calcula SOLO con el periodo ${periodo} (no con todo el año ni con la Meta final 2029).`,
+        `• Solo se incluyen los indicadores que tienen meta definida en ${periodo}.`,
+        `• La metodología de cálculo es idéntica a la del resumen anual: lo único que cambia es el alcance de datos considerado (un periodo puntual en vez del año completo).`,
+    ]);
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado ${periodo}`;
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
+    nextRow += 1;
+
+    const tablaMacrosHeaderRow = nextRow;
+    wsResumen.getCell(`A${tablaMacrosHeaderRow}`).value = 'Código';
+    wsResumen.getCell(`B${tablaMacrosHeaderRow}`).value = 'Macroproyecto';
+    wsResumen.getCell(`C${tablaMacrosHeaderRow}`).value = 'Peso (%)';
+    wsResumen.getCell(`D${tablaMacrosHeaderRow}`).value = `Avance ${periodo} calculado (%)`;
+    wsResumen.getRow(tablaMacrosHeaderRow).eachCell((cell, colNumber) => {
+        if (colNumber > 4) return;
+        cell.font = { bold: true };
+        cell.fill = SUBHEADER_FILL;
+    });
+    nextRow += 1;
+    const firstMacroDataRow = nextRow;
+    macrosNorm.forEach((m, idx) => {
+        const r = nextRow + idx;
+        wsResumen.getCell(`A${r}`).value = m.codigo;
+        wsResumen.getCell(`B${r}`).value = m.nombre;
+        wsResumen.getCell(`C${r}`).value = { formula: `'Macroproyectos${sufijo}'!C${idx + 2}`, result: m.peso_norm };
+        wsResumen.getCell(`D${r}`).value = { formula: `'Macroproyectos${sufijo}'!D${idx + 2}`, result: m.avance_descarga };
+        ['C', 'D'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
+    });
+    nextRow += macrosNorm.length;
+    const lastMacroDataRow = nextRow - 1;
+
+    nextRow += 1;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado global ${periodo} (calculado con fórmula)`;
+    wsResumen.getCell(`A${nextRow}`).font = { bold: true };
+    wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
+    wsResumen.getCell(`D${nextRow}`).value = {
+        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),0),0)`,
+        result: avanceGlobalDescarga,
+    };
+    wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
+    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00"%"';
+    nextRow += 2;
+
+    wsResumen.getCell(`A${nextRow}`).value = `Indicadores con meta en ${periodo}`;
+    wsResumen.getCell(`B${nextRow}`).value = indicadoresPeriodo.length;
+
+    return { avanceGlobalDescarga, validationRows, totalIndicadores: indicadoresPeriodo.length };
 }
 
 /**
@@ -1352,6 +1848,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
             avance_operacion_anio: calc.avance_operacion_anio,
             avance_descarga: calc.porcentaje_avance_anio,
             semaforo_descarga: calc.semaforo_anio,
+            usa_porcentaje: usaPorcentaje(ind, ind.periodos_marcados),
         }));
 
     const indicadoresPorAccion = groupBy(indicadoresAnio, (i) => i.accion_id?._id ?? i.accion_id);
@@ -1389,6 +1886,15 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
     ));
+
+    // Periodos (semestres) distintos dentro de este año, presentes en los
+    // indicadores con meta ese año. Se usan más abajo para agregar, en el
+    // mismo archivo, el detalle por periodo (2026A, 2026B, ...) con la misma
+    // metodología de cálculo de arriba, sin modificarla — solo cambia el
+    // alcance de datos considerado.
+    const periodosDelAnio = [...new Set(
+        indicadoresAnio.flatMap((ind) => (ind.periodos_marcados || []).map((p) => p.periodo))
+    )].sort();
 
     const validationRows = [
         ...duplicateCodes(macrosNorm, 'Macroproyecto'),
@@ -1449,7 +1955,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         const proyecto = proyectoPorId.get(String(accion?.proyecto_id?._id ?? accion?.proyecto_id ?? ''));
         const macro = macroPorId.get(String(proyecto?.macroproyecto_id?._id ?? proyecto?.macroproyecto_id ?? ''));
         for (const p of ind.periodos_marcados) {
-            wsPeriodos.addRow({
+            const rowPeriodos = wsPeriodos.addRow({
                 codigo: ind.codigo,
                 periodo: p.periodo,
                 meta: toNumberValue(p.meta),
@@ -1459,7 +1965,9 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
             });
-            wsConsolidado.addRow({
+            if (esValorPorcentual(p.meta)) rowPeriodos.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowPeriodos.getCell('avance').numFmt = '0.00"%"';
+            const rowConsolidado = wsConsolidado.addRow({
                 macro: macro?.codigo ?? '',
                 proyecto: proyecto?.codigo ?? '',
                 accion: accion?.codigo ?? '',
@@ -1472,6 +1980,8 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
             });
+            if (esValorPorcentual(p.meta)) rowConsolidado.getCell('meta').numFmt = '0.00"%"';
+            if (esValorPorcentual(p.avance)) rowConsolidado.getCell('avance').numFmt = '0.00"%"';
         }
     }
     wsConsolidado.getColumn('K').numFmt = 'yyyy-mm-dd';
@@ -1546,7 +2056,11 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         };
         wsInd.getCell(`J${r}`).value = formulaTextoAnio[tipo] ?? '';
 
-        ['F', 'G', 'H'].forEach((col) => { wsInd.getCell(`${col}${r}`).numFmt = '0.00'; });
+        wsInd.getCell(`D${r}`).numFmt = '0.00"%"';
+        const formatoCrudo = ind.usa_porcentaje ? '0.00"%"' : '0.00';
+        wsInd.getCell(`F${r}`).numFmt = formatoCrudo;
+        wsInd.getCell(`G${r}`).numFmt = formatoCrudo;
+        wsInd.getCell(`H${r}`).numFmt = '0.00"%"';
         wsInd.getCell(`J${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsInd.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -1584,7 +2098,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
             result: acc.avance_descarga,
         };
         wsAcc.getCell(`F${r}`).value = ACCION_FORMULA_TXT;
-        ['D', 'E'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['D', 'E'].forEach((col) => { wsAcc.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsAcc.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsAcc.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -1622,7 +2136,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
             result: p.avance_descarga,
         };
         wsProy.getCell(`F${r}`).value = PROYECTO_FORMULA_TXT;
-        ['D', 'E'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['D', 'E'].forEach((col) => { wsProy.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsProy.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsProy.getCell(`F${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -1657,7 +2171,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
             result: m.avance_descarga,
         };
         wsMacro.getCell(`E${r}`).value = MACRO_FORMULA_TXT;
-        ['C', 'D'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['C', 'D'].forEach((col) => { wsMacro.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
         wsMacro.getCell(`B${r}`).alignment = { wrapText: true, vertical: 'top' };
         wsMacro.getCell(`E${r}`).alignment = { wrapText: true, vertical: 'top' };
     });
@@ -1705,7 +2219,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         wsResumen.getCell(`B${r}`).value = m.nombre;
         wsResumen.getCell(`C${r}`).value = { formula: `Macroproyectos!C${idx + 2}`, result: m.peso_norm };
         wsResumen.getCell(`D${r}`).value = { formula: `Macroproyectos!D${idx + 2}`, result: m.avance_descarga };
-        ['C', 'D'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00'; });
+        ['C', 'D'].forEach((col) => { wsResumen.getCell(`${col}${r}`).numFmt = '0.00"%"'; });
     });
     nextRow += macrosNorm.length;
     const lastMacroDataRow = nextRow - 1;
@@ -1719,7 +2233,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         result: avanceGlobalDescarga,
     };
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
-    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00';
+    wsResumen.getCell(`D${nextRow}`).numFmt = '0.00"%"';
     nextRow += 1;
 
     nextRow += 1;
@@ -1751,6 +2265,9 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         `Indicadores — avance ${anioStr} de cada indicador con meta ese año, su tipo de cálculo y su fórmula detallada.`,
         `Periodos — meta y avance reportados en los cortes de ${anioStr} que alimentan las fórmulas anteriores (no editar: es la base técnica de los cálculos).`,
         `Metas y Avances por Periodo — la misma información de "Periodos", pero en formato consolidado y legible, con la jerarquía completa (Macroproyecto, Proyecto, Acción, Indicador). Es solo de consulta, no alimenta fórmulas.`,
+        ...(periodosDelAnio.length
+            ? [`Además, por cada periodo dentro de ${anioStr} (${periodosDelAnio.join(', ')}) el archivo agrega su propio set de hojas ("Resumen PDI {periodo}", "Macroproyectos {periodo}", "Proyectos {periodo}", "Acciones {periodo}", "Indicadores {periodo}", "Periodos {periodo}", "Metas y Avances {periodo}"), con la MISMA metodología de cálculo de arriba aplicada solo a ese periodo — ver la tabla "Detalle por periodo" más abajo.`]
+            : []),
     ].forEach((line) => {
         wsResumen.getCell(`A${nextRow}`).value = `• ${line}`;
         wsResumen.mergeCells(`A${nextRow}:H${nextRow}`);
@@ -1852,6 +2369,51 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         guiaRow
     );
     wsGuia.views = [{ state: 'frozen', ySplit: 1 }];
+
+    // ── Detalle por periodo (2026A, 2026B, ...) ──────────────────────────────
+    // Mismas hojas y misma metodología que arriba (Periodos → Indicadores →
+    // Acciones → Proyectos → Macroproyectos → PDI), pero cada set se calcula
+    // SOLO con un periodo puntual. El cálculo anual de arriba NO cambia: esto
+    // solo agrega el desglose semestral solicitado, en hojas nuevas.
+    const periodDetails = periodosDelAnio.map((periodo) => ({
+        periodo,
+        ...buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadores, periodo }),
+    }));
+    periodDetails.forEach((detail) => validationRows.push(...detail.validationRows));
+
+    if (periodDetails.length) {
+        nextRow += 1;
+        wsResumen.getCell(`A${nextRow}`).value = `Detalle por periodo dentro de ${anioStr}`;
+        wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
+        nextRow += 1;
+
+        const detalleHeaderRow = nextRow;
+        wsResumen.getCell(`A${detalleHeaderRow}`).value = 'Periodo';
+        wsResumen.getCell(`B${detalleHeaderRow}`).value = 'Avance ponderado global (%)';
+        wsResumen.getCell(`C${detalleHeaderRow}`).value = 'Indicadores con meta';
+        wsResumen.getCell(`D${detalleHeaderRow}`).value = 'Ver detalle en la hoja';
+        wsResumen.getRow(detalleHeaderRow).eachCell((cell, colNumber) => {
+            if (colNumber > 4) return;
+            cell.font = { bold: true };
+            cell.fill = SUBHEADER_FILL;
+        });
+        nextRow += 1;
+
+        periodDetails.forEach((detail) => {
+            wsResumen.getCell(`A${nextRow}`).value = detail.periodo;
+            wsResumen.getCell(`B${nextRow}`).value = detail.avanceGlobalDescarga;
+            wsResumen.getCell(`B${nextRow}`).numFmt = '0.00"%"';
+            wsResumen.getCell(`C${nextRow}`).value = detail.totalIndicadores;
+            wsResumen.getCell(`D${nextRow}`).value = `Resumen PDI ${detail.periodo}`;
+            nextRow += 1;
+        });
+
+        nextRow += 1;
+        wsResumen.getCell(`A${nextRow}`).value = `• Nota: el avance ${anioStr} calculado arriba usa TODOS los periodos del año en conjunto (no cambia con este detalle). Las filas de esta tabla muestran el mismo cálculo aplicado por separado a cada periodo, con sus propias hojas, pensadas para el seguimiento intra-anual.`;
+        wsResumen.mergeCells(`A${nextRow}:H${nextRow}`);
+        wsResumen.getCell(`A${nextRow}`).alignment = { wrapText: true, vertical: 'top' };
+        nextRow += 1;
+    }
 
     // ── Hoja "Validaciones" ───────────────────────────────────────────────────
     wsValidaciones.columns = [

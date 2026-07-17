@@ -446,9 +446,91 @@ const buildPeopleMap = async (identifications) => {
   return people;
 };
 
+const normalizeEmailValue = (value) => cellToText(value).trim().toLowerCase();
+
+// Documento asignado cuando la persona se identifica por correo (no por
+// numero de documento): SIGA/Iceberg no entregan el tipo de documento, solo
+// el numero — pero practicamente toda la poblacion (estudiantes, egresados y
+// administrativos) se identifica con cedula de ciudadania en Colombia.
+const DEFAULT_DOCUMENT_TYPE_BY_EMAIL = "CC";
+
+const normalizeCodeValue = (value) => cellToText(value).trim().toLowerCase();
+
+// Igual que putPerson, pero indexando por una clave arbitraria (correo o
+// codigo de usuario/estudiante, no por identificacion): se usa para resolver
+// filas de plantillas donde "No de documento"/"Tipo de documento" llegan
+// vacios y solo se tiene el correo y/o el codigo del usuario (ej. exportes de
+// la plataforma Bookeau).
+const putPersonByKey = (map, key, payload, priority, dependencyByCode = new Map()) => {
+  const normalizedKey = normalizeCodeValue(key);
+  const identification = normalizeId(payload.identification);
+  const name = getPersonName(payload);
+  if (!normalizedKey || !identification || !name) return;
+
+  const current = map.get(normalizedKey);
+  if (!current || priority > current.priority) {
+    const personType = payload.personType || "";
+    map.set(normalizedKey, {
+      identification,
+      name,
+      personType,
+      programaDependencia:
+        personType === "student"
+          ? getPersonProgram(payload)
+          : getFuncionarioContext(payload, dependencyByCode),
+      priority,
+    });
+  }
+};
+
+// Trae UNA sola vez los datos de estudiantes y funcionarios (bases locales +
+// API en vivo de SIGA) y arma dos indices — por correo y por codigo de
+// usuario/estudiante — para resolver filas cuyo numero de documento llego
+// vacio. Cubre ambas poblaciones (estudiantes Y funcionarios) siempre, sin
+// importar el "Tipo de usuario" de la fila.
+const buildUnresolvedPeopleIndex = async (emails, codes) => {
+  const rawEmails = [...new Set(emails.map((value) => cellToText(value).trim()).filter(Boolean))];
+  const rawCodes = [...new Set(codes.map((value) => cellToText(value).trim()).filter(Boolean))];
+
+  const byEmail = new Map();
+  const byCode = new Map();
+  if (rawEmails.length === 0 && rawCodes.length === 0) return { byEmail, byCode };
+
+  const [studentsDbByEmail, usersDbByEmail, usersApi, studentsApi] = await Promise.all([
+    rawEmails.length ? Student.find({ email: { $in: rawEmails } }).lean() : [],
+    rawEmails.length ? User.find({ email: { $in: rawEmails } }).lean() : [],
+    safeGetEndpoint(process.env.USERS_ENDPOINT, 15000),
+    safeGetEndpoint(process.env.STUDENTS_ENDPOINT, 20000),
+  ]);
+  const dependencyByCode = await buildDependencyByCode();
+
+  studentsDbByEmail.forEach((student) => putPersonByKey(byEmail, student.email, { ...student, personType: "student" }, 40, dependencyByCode));
+  usersDbByEmail.forEach((user) => putPersonByKey(byEmail, user.email, { ...user, personType: "funcionario" }, 30, dependencyByCode));
+
+  studentsApi.forEach((student) => {
+    putPersonByKey(byEmail, student.email, { ...student, personType: "student" }, 35, dependencyByCode);
+    putPersonByKey(byCode, student.code_student, { ...student, personType: "student" }, 35, dependencyByCode);
+  });
+  usersApi.forEach((user) => {
+    putPersonByKey(byEmail, user.email, { ...user, personType: "funcionario" }, 25, dependencyByCode);
+    putPersonByKey(byCode, user.code_user, { ...user, personType: "funcionario" }, 25, dependencyByCode);
+  });
+
+  return { byEmail, byCode };
+};
+
 const getFieldKind = (fieldName) => {
   const normalized = normalizeHeader(fieldName);
-  if (normalized.includes("TIPO_DOCUMENTO") || normalized.includes("TIPO_DE_DOCUMENTO")) return null;
+  // "Tipo de documento" no se usa para localizar a la persona (eso lo hace la
+  // columna de No de documento / identificación); se detecta aparte solo para
+  // poder rellenarla cuando se resuelve la persona por correo (ver
+  // buildPeopleMapByEmail / resolveRowIdentification).
+  if (normalized.includes("TIPO_DOCUMENTO") || normalized.includes("TIPO_DE_DOCUMENTO")) return "documentTypeOutput";
+  if (normalized.includes("CORREO") || normalized === "EMAIL" || normalized.includes("E_MAIL")) return "email";
+  // Respaldo cuando el correo de la plantilla no coincide con el correo
+  // "oficial" de SIGA (ej. alias con nombre.apellido en vez del correo con
+  // codigo): el codigo de usuario/estudiante permite resolver igual.
+  if (normalized.includes("CODIGO") && normalized.includes("USUARIO")) return "userCode";
   if (ID_ALIASES.has(normalized)) return "identification";
   if (normalized.includes("IDENTIFICACION") || normalized.includes("CEDULA") || normalized.includes("DOCUMENTO")) {
     return "identification";
@@ -492,9 +574,6 @@ const outputText = (value, fallback = EMPTY_OUTPUT_VALUE) => {
   const text = cellToText(value).trim();
   return text || fallback;
 };
-
-const getGeneratedColumnLabel = (key) =>
-  GENERATED_COLUMN_DEFINITIONS.find((column) => column.key === key)?.label || key;
 
 const buildSupportHistory = async (periodId) => {
   const query = {
@@ -562,9 +641,38 @@ const buildSupportHistory = async (periodId) => {
   return history;
 };
 
+// Algunas plantillas (ej. exportes de Bookeau) traen una fila de titulo antes
+// de los encabezados reales ("REPETIDOS PRESTAMOS PLATAFORMA BOOKEAU" en la
+// fila 1, encabezados de columna en la fila 2). Buscar siempre en la fila 1
+// hacia que esas hojas nunca detectaran ninguna columna (todo quedaba SIN
+// identificar). Se busca entre las primeras filas la que tenga mas celdas no
+// vacias: una fila de titulo tipicamente solo tiene 1 celda con contenido,
+// mientras que la fila de encabezados tiene una por cada columna.
+const HEADER_SCAN_MAX_ROW = 10;
+
+const findHeaderRowNumber = (worksheet) => {
+  let bestRow = 1;
+  let bestCount = -1;
+  const maxRow = Math.min(worksheet.rowCount, HEADER_SCAN_MAX_ROW);
+
+  for (let rowNumber = 1; rowNumber <= maxRow; rowNumber += 1) {
+    let count = 0;
+    worksheet.getRow(rowNumber).eachCell({ includeEmpty: false }, (cell) => {
+      if (cellToText(cell.value).trim()) count += 1;
+    });
+    if (count > bestCount) {
+      bestCount = count;
+      bestRow = rowNumber;
+    }
+  }
+
+  return bestRow;
+};
+
 const parseWorksheet = (worksheet) => {
   try {
-    const headerRow = worksheet.getRow(1);
+    const headerRowNumber = findHeaderRowNumber(worksheet);
+    const headerRow = worksheet.getRow(headerRowNumber);
     const headers = [];
     headerRow.eachCell({ includeEmpty: false }, (cell, column) => {
       const name = cellToText(cell.value).trim();
@@ -572,8 +680,11 @@ const parseWorksheet = (worksheet) => {
     });
 
     if (headers.length === 0) {
-      console.warn(`[supportTemplates] Hoja "${worksheet.name}": sin encabezados en fila 1, se omite.`);
+      console.warn(`[supportTemplates] Hoja "${worksheet.name}": sin encabezados (fila ${headerRowNumber}), se omite.`);
       return null;
+    }
+    if (headerRowNumber > 1) {
+      console.log(`[supportTemplates] Hoja "${worksheet.name}": encabezados detectados en fila ${headerRowNumber} (no en la fila 1).`);
     }
 
     // Intentar detectar columna de identificación (no obligatorio)
@@ -583,7 +694,7 @@ const parseWorksheet = (worksheet) => {
       // Fallback: columna cuyos primeros valores sean cédulas numéricas (5-12 dígitos)
       idHeader = headers.find((h) => {
         const samples = [];
-        for (let r = 2; r <= Math.min(worksheet.rowCount, 20); r++) {
+        for (let r = headerRowNumber + 1; r <= Math.min(worksheet.rowCount, headerRowNumber + 19); r++) {
           const v = cellToText(worksheet.getRow(r).getCell(h.column).value).trim();
           if (v) samples.push(v);
         }
@@ -605,10 +716,17 @@ const parseWorksheet = (worksheet) => {
       supportName: findHeaderByKind(headers, "supportName"),
       supportDescription: findHeaderByKind(headers, "supportDescription"),
       supportValue: findHeaderByKind(headers, "supportValue"),
+      // Para hojas donde "No de documento"/"Tipo de documento" llegan vacías
+      // (ej. exportes de Bookeau): se resuelven buscando a la persona por
+      // correo o por código de usuario/estudiante (ver resolveRowIdentification
+      // en buildEnrichedRows).
+      email: findHeaderByKind(headers, "email"),
+      userCode: findHeaderByKind(headers, "userCode"),
+      documentTypeOutput: findHeaderByKind(headers, "documentTypeOutput"),
     };
 
     const rows = [];
-    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    for (let rowNumber = headerRowNumber + 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
       const excelRow = worksheet.getRow(rowNumber);
       const valuesByColumn = {};
       let hasValue = false;
@@ -719,7 +837,42 @@ const buildValidatorColumns = async (headers, rows, periodId = null) => {
 };
 
 const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns }) => {
-  const identifications = rows.map((row) => normalizeId(getRecordValue(row, fieldMap.identification))).filter(Boolean);
+  // Filas sin numero de documento pero con correo y/o codigo de usuario (ej.
+  // exportes de la plataforma Bookeau, con "No de documento"/"Tipo de
+  // documento" vacios): se resuelve la identificacion buscando a la persona
+  // por correo (o, si el correo no coincide, por codigo de usuario/estudiante)
+  // en SIGA (via API en vivo, estudiantes Y funcionarios) y en las bases
+  // locales, ANTES de armar la lista de identificaciones — asi el resto del
+  // cruce (personas, historial de apoyos) funciona igual que si el numero de
+  // documento ya viniera en la plantilla. Las filas que ya traen numero de
+  // documento no se tocan.
+  const needsEmailResolution = Boolean(fieldMap.identification && (fieldMap.email || fieldMap.userCode));
+  const blankIdRows = needsEmailResolution
+    ? rows.filter((row) => !normalizeId(getRecordValue(row, fieldMap.identification)))
+    : [];
+  const emailsToResolve = blankIdRows.map((row) => getRecordValue(row, fieldMap.email)).filter(Boolean);
+  const codesToResolve = blankIdRows.map((row) => getRecordValue(row, fieldMap.userCode)).filter(Boolean);
+  const { byEmail: emailPeopleMap, byCode: codePeopleMap } = needsEmailResolution
+    ? await buildUnresolvedPeopleIndex(emailsToResolve, codesToResolve)
+    : { byEmail: new Map(), byCode: new Map() };
+
+  const resolveRowIdentification = (row) => {
+    const direct = normalizeId(getRecordValue(row, fieldMap.identification));
+    if (direct) return { identification: direct, resolvedByEmail: false };
+    if (!needsEmailResolution) return { identification: "", resolvedByEmail: false };
+
+    const email = getRecordValue(row, fieldMap.email);
+    const byEmailPerson = email ? emailPeopleMap.get(normalizeEmailValue(email)) : null;
+    if (byEmailPerson) return { identification: byEmailPerson.identification, resolvedByEmail: true };
+
+    const code = getRecordValue(row, fieldMap.userCode);
+    const byCodePerson = code ? codePeopleMap.get(normalizeCodeValue(code)) : null;
+    if (byCodePerson) return { identification: byCodePerson.identification, resolvedByEmail: true };
+
+    return { identification: "", resolvedByEmail: false };
+  };
+
+  const identifications = rows.map((row) => resolveRowIdentification(row).identification).filter(Boolean);
   const [peopleMap, supportHistory] = await Promise.all([
     buildPeopleMap(identifications),
     buildSupportHistory(periodId),
@@ -727,9 +880,10 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
 
   let personsFound = 0;
   let withPreviousSupport = 0;
+  let resolvedByEmailCount = 0;
 
   const enrichedRows = rows.map((row) => {
-    const identification = normalizeId(getRecordValue(row, fieldMap.identification));
+    const { identification, resolvedByEmail } = resolveRowIdentification(row);
     const person = identification ? peopleMap.get(identification) : null;
     const history = identification ? supportHistory.get(identification) || [] : [];
 
@@ -750,6 +904,7 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
 
     if (person) personsFound += 1;
     if (history.length > 0) withPreviousSupport += 1;
+    if (resolvedByEmail && identification) resolvedByEmailCount += 1;
 
     let status = "SIN_CEDULA";
     if (identification) {
@@ -762,6 +917,12 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
     return {
       row_number: row.rowNumber,
       identificacion: identification,
+      // Solo true cuando el numero de documento se resolvio por correo
+      // (celda de "No de documento" venia vacia): applyGeneratedColumns usa
+      // esto para rellenar UNICAMENTE esas celdas vacias, sin tocar filas
+      // que ya traian su propio numero de documento.
+      resolved_by_email: Boolean(resolvedByEmail && identification),
+      assigned_document_type: resolvedByEmail && identification ? DEFAULT_DOCUMENT_TYPE_BY_EMAIL : "",
       nombre_identificado: outputText(person?.name || getRecordValue(row, fieldMap.personName), "NO IDENTIFICADO"),
       programa_dependencia: outputText(person?.programaDependencia, "NO IDENTIFICADO"),
       apoyos_otros_periodos: outputText(compactUnique(history.map((item) => item.supportName || item.supportType)).join(" | "), "SIN HISTORIAL"),
@@ -790,6 +951,7 @@ const buildEnrichedRows = async ({ rows, fieldMap, periodId, validatorColumns })
       withIdentification: identifications.length,
       personsFound,
       withPreviousSupport,
+      resolvedByEmail: resolvedByEmailCount,
       withoutMatches: enrichedRows.filter((row) => row.estado_cruce === "NO_IDENTIFICADO").length,
       validatorColumns: (validatorColumns || []).length,
       resolvedValidatorValues,
@@ -832,101 +994,48 @@ const removeBlankRows = (worksheet) => {
 };
 
 const applyGeneratedColumns = (worksheet, enrichedRows, validatorColumns = [], fieldMap = null) => {
+  // No se agregan columnas nuevas (ni "Nombre identificado" ni "Programa o
+  // dependencia"): solo se limpian columnas de ese tipo si vienen de una
+  // descarga previa de esta misma funcionalidad (compatibilidad hacia atras).
   removeDeprecatedGeneratedColumns(worksheet);
 
-  const existingHeaders = new Map();
-  worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell, column) => {
-    existingHeaders.set(normalizeHeader(cellToText(cell.value)), column);
-  });
-
-  // Only insert new columns for nombre/dependencia; validators overwrite their own source column
-  const toInsert = [];
-  const columnByName = {};
-
-  GENERATED_COLUMN_DEFINITIONS.forEach((col) => {
-    const existing = existingHeaders.get(normalizeHeader(col.label)) || existingHeaders.get(normalizeHeader(col.key));
-    if (existing) {
-      columnByName[col.key] = existing;
-      worksheet.getRow(1).getCell(existing).value = col.label;
-      worksheet.getRow(1).getCell(existing).font = OUTPUT_HEADER_FONT;
-      worksheet.getRow(1).getCell(existing).fill = OUTPUT_HEADER_FILL;
-    } else {
-      toInsert.push(col);
-    }
-  });
-
-  // Determine if we splice after cedula or append at end
-  const cedulaColIdx = fieldMap?.identification?.column || null;
-  let spliceOffset = 0;
-  let insertAt = null;
-
-  if (toInsert.length > 0) {
-    if (cedulaColIdx) {
-      insertAt = cedulaColIdx + 1;
-      spliceOffset = toInsert.length;
-      worksheet.spliceColumns(insertAt, 0, ...toInsert.map(() => []));
-      // Adjust already-mapped columns that shifted right
-      for (const key of Object.keys(columnByName)) {
-        if (columnByName[key] >= insertAt) columnByName[key] += spliceOffset;
-      }
-      toInsert.forEach((col, i) => {
-        const colIdx = insertAt + i;
-        columnByName[col.key] = colIdx;
-        const cell = worksheet.getRow(1).getCell(colIdx);
-        cell.value = col.label;
-        cell.font = OUTPUT_HEADER_FONT;
-        cell.fill = OUTPUT_HEADER_FILL;
-      });
-    } else {
-      let nextColumn = worksheet.columnCount + 1;
-      toInsert.forEach((col) => {
-        columnByName[col.key] = nextColumn;
-        worksheet.getRow(1).getCell(nextColumn).value = col.label;
-        worksheet.getRow(1).getCell(nextColumn).font = OUTPUT_HEADER_FONT;
-        worksheet.getRow(1).getCell(nextColumn).fill = OUTPUT_HEADER_FILL;
-        nextColumn += 1;
-      });
-    }
-  }
-
-  // Adjust validator source column indices if they shifted due to splice
-  const adjustedValidatorCols = validatorColumns.map((vc) => ({
-    ...vc,
-    adjustedSourceColumn: (insertAt != null && vc.sourceColumn >= insertAt)
-      ? vc.sourceColumn + spliceOffset
-      : vc.sourceColumn,
-  }));
-
-  // Style validator headers (overwrite in place)
-  adjustedValidatorCols.forEach((vc) => {
-    const cell = worksheet.getRow(1).getCell(vc.adjustedSourceColumn);
+  // Los validadores siguen resolviendo su propia columna de origen (no crean
+  // columnas nuevas: sobreescriben el codigo por su descripcion en el mismo sitio).
+  validatorColumns.forEach((vc) => {
+    const cell = worksheet.getRow(1).getCell(vc.sourceColumn);
     cell.font = OUTPUT_HEADER_FONT;
     cell.fill = OUTPUT_HEADER_FILL;
   });
 
+  // Unicas columnas propias de la plantilla que se tocan: "No de documento"
+  // (fieldMap.identification, la misma que ya se usa para buscar a la
+  // persona) y, si existe, "Tipo de documento". Solo se escriben cuando
+  // enriched.resolved_by_email es true — es decir, solo en las celdas que
+  // llegaron vacias y se resolvieron por correo — el resto de la plantilla
+  // no se toca.
+  const identificationColumn = fieldMap?.identification?.column || null;
+  const documentTypeColumn = fieldMap?.documentTypeOutput?.column || null;
+
   enrichedRows.forEach((enriched) => {
     const row = worksheet.getRow(enriched.row_number);
-    if (columnByName.NOMBRE_IDENTIFICADO != null)
-      row.getCell(columnByName.NOMBRE_IDENTIFICADO).value = outputText(enriched.nombre_identificado, "NO IDENTIFICADO");
-    if (columnByName.PROGRAMA_DEPENDENCIA != null)
-      row.getCell(columnByName.PROGRAMA_DEPENDENCIA).value = outputText(enriched.programa_dependencia, "NO IDENTIFICADO");
     // Overwrite validator source column with the resolved description
-    adjustedValidatorCols.forEach((vc) => {
+    validatorColumns.forEach((vc) => {
       const description = enriched.validadores_resueltos?.[vc.outputColumn];
       if (description != null)
-        row.getCell(vc.adjustedSourceColumn).value = outputText(description);
+        row.getCell(vc.sourceColumn).value = outputText(description);
     });
+    if (enriched.resolved_by_email) {
+      if (identificationColumn != null) row.getCell(identificationColumn).value = enriched.identificacion;
+      if (documentTypeColumn != null && enriched.assigned_document_type)
+        row.getCell(documentTypeColumn).value = enriched.assigned_document_type;
+    }
     row.commit();
   });
 
   removeBlankRows(worksheet);
 
-  Object.values(columnByName).forEach((columnIndex) => {
-    if (typeof columnIndex === 'number')
-      worksheet.getColumn(columnIndex).width = Math.max(22, worksheet.getColumn(columnIndex).width || 0);
-  });
-  adjustedValidatorCols.forEach((vc) => {
-    worksheet.getColumn(vc.adjustedSourceColumn).width = Math.max(30, worksheet.getColumn(vc.adjustedSourceColumn).width || 0);
+  validatorColumns.forEach((vc) => {
+    worksheet.getColumn(vc.sourceColumn).width = Math.max(30, worksheet.getColumn(vc.sourceColumn).width || 0);
   });
 
   worksheet.getRow(1).commit();
@@ -1014,10 +1123,7 @@ controller.preview = async (req, res) => {
     const { sheets } = await processFile(req);
     res.json(sheets.map((sheet) => ({
       sheetName: sheet.worksheet.name,
-      columnsAdded: [
-        ...GENERATED_COLUMNS.map(getGeneratedColumnLabel),
-        ...sheet.validatorColumns.map((item) => item.outputLabel || item.outputColumn),
-      ],
+      columnsAdded: sheet.validatorColumns.map((item) => item.outputLabel || item.outputColumn),
       validatorColumns: sheet.validatorColumns.map((item) => ({
         sourceField: item.sourceField,
         outputColumn: item.outputColumn,

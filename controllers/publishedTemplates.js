@@ -1056,7 +1056,12 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const search = req.query.search || '';
-  const periodId = req.query.periodId || null;
+  // Un periodId invalido (ej. un valor viejo en localStorage que ya no
+  // corresponde a un ObjectId real) hacia que Mongoose lanzara un CastError y
+  // toda la lista fallara con 500 - aqui se ignora en vez de reventar la
+  // consulta completa.
+  const rawPeriodId = req.query.periodId || null;
+  const periodId = rawPeriodId && mongoose.Types.ObjectId.isValid(rawPeriodId) ? rawPeriodId : null;
   const filterByUserScope = req.query.filterByUserScope;
   const userRole = req.query.userRole;
   const summaryOnly = req.query.summary === 'true';
@@ -1069,6 +1074,14 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
     }
 
     const activeRole = user.activeRole;
+
+    // IDs de las dependencias que este usuario supervisa (responsable o
+    // visualizador) — se usan más abajo para calcular, por plantilla, si
+    // ALGUNA de esas dependencias es la encargada del envío final
+    // (isEncargado), y así poder mostrarle al Responsable la fecha límite
+    // correcta (de encargados o de productores normales) en vez de una
+    // fecha genérica única para todos.
+    let userDependencyIdsForEncargadoCheck = [];
 
     let query = {
       name: { $regex: search, $options: 'i' },
@@ -1112,6 +1125,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           Dependency.find({ $or: [{ responsible: email }, { visualizers: email }] }),
         ]);
         const userDependencyIds = userDependencies.map(dep => dep._id);
+        userDependencyIdsForEncargadoCheck = allUserDependencies.map(dep => dep._id.toString());
         const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
 
         if (dimensions.length > 0) {
@@ -1123,7 +1137,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           const dependencyIds = allUserDependencies.map(dep => dep._id);
           orConditions.push({ 'template.producers': { $in: dependencyIds } });
         }
-        
+
         if (orConditions.length > 0) {
           query.$or = orConditions;
         } else {
@@ -1139,6 +1153,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         Dependency.find({ $or: [{ responsible: email }, { visualizers: email }] }),
       ]);
       const userDependencyIds = userDependencies.map(dep => dep._id);
+      userDependencyIdsForEncargadoCheck = allUserDependencies.map(dep => dep._id.toString());
 
       const dimensions = await Dimension.find({ responsible: { $in: userDependencyIds } });
       if (dimensions.length > 0) {
@@ -1201,20 +1216,42 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
 
     if (summaryOnly) {
       // Modo liviano: solo lo necesario para listados tipo "nombre + estado"
-      // (evita poblar/transformar loaded_data completo, que es costoso en CPU y DB
-      // cuando hay muchas plantillas con muchos registros cargados).
+      // (evita poblar/transformar loaded_data completo -incluye validators,
+      // resolución de dependencias y conversión de valores por campo-, que es
+      // costoso en CPU y DB cuando hay muchas plantillas con muchos registros
+      // cargados). Trae solo los campos que la tabla de listado realmente usa:
+      // nombre, fechas, período, conteo de productores/enviados para el
+      // progreso ("X de Y") y el _id de cada envío (loaded_data.dependency)
+      // sin traer el contenido pesado de filled_data.
       const [summary_templates, total] = await Promise.all([
         PublishedTemplate.find(query)
           .collation({ locale: 'es', strength: 1 })
           .skip(skip)
           .limit(limit)
-          .select('name final_submitted template.name period')
+          .select('name final_submitted fecha_final fecha_final_productores fecha_final_responsables responsible_producers deadline updatedAt template.name template.producers template.responsible_producers loaded_data.dependency')
+          .populate('period', 'name producer_end_date')
           .lean(),
         PublishedTemplate.countDocuments(query),
       ]);
 
+      // Igual que en la respuesta completa: marcar isEncargado por plantilla
+      // (si alguna dependencia supervisada por este Responsable es la
+      // encargada del envío final), para que el frontend muestre la fecha
+      // límite correcta según el rol, no una genérica única para todos.
+      const summaryWithEncargado = summary_templates.map((template) => {
+        const rawResponsible = template.responsible_producers?.length > 0
+          ? template.responsible_producers
+          : template.template?.responsible_producers;
+        const responsibleIds = (rawResponsible || []).map((id) => String(id));
+        return {
+          ...template,
+          isEncargado: responsibleIds.length > 0 &&
+            userDependencyIdsForEncargadoCheck.some((id) => responsibleIds.includes(id)),
+        };
+      });
+
       return res.status(200).json({
-        templates: summary_templates,
+        templates: summaryWithEncargado,
         total,
         page,
         pages: Math.ceil(total / limit),
@@ -1244,6 +1281,17 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
         template.template,
         template.period?._id || template.period
       );
+
+      // Para el Responsable: si ALGUNA de las dependencias que supervisa es
+      // la encargada del envío final de esta plantilla, se marca isEncargado
+      // para que el frontend muestre la fecha límite de encargados en vez de
+      // la de productores normales.
+      const rawResponsible = template.responsible_producers?.length > 0
+        ? template.responsible_producers
+        : template.template?.responsible_producers;
+      const responsibleIds = (rawResponsible || []).map(id => String(id));
+      template.isEncargado = responsibleIds.length > 0 &&
+        userDependencyIdsForEncargadoCheck.some(id => responsibleIds.includes(id));
 
       const dependencies = await Dependency.find(
         { dep_code: { $in: template.producers_dep_code } },
@@ -2479,7 +2527,7 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
 
 
 publTempController.getFilledDataMergedForDimension = async (req, res) => {
-  const { pubTem_id, email, filterByUserDependency, userRole } = req.query;
+  const { pubTem_id, email, filterByUserDependency, userRole, sheetName } = req.query;
 
   const user = await User.findOne({ email });
 
@@ -2497,7 +2545,13 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     if (!template) {
       return res.status(404).json({ status: 'Published template not found' });
     }
-    
+
+    // Refresca el snapshot embebido de la plantilla si la plantilla base fue
+    // editada después de publicarla (mismo mecanismo que getTemplateById):
+    // sin esto, los campos usados para armar la descarga podían quedar
+    // desactualizados hasta que otra ruta disparara el refresh.
+    await refreshPublishedTemplateSnapshot(template);
+
     // Audit log para descarga de datos combinados
     await auditLogger.logRead(req, user, 'publishedTemplateMergedData', {
       publishedTemplateId: pubTem_id,
@@ -2509,18 +2563,68 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
     // Filtrar datos por dependencia del usuario si se solicita. Incluye borradores QR
     // sin carga confirmada para que tambien aparezcan en las descargas.
     let filteredLoadedData = getLoadedDataIncludingQrDrafts(template);
-    
-    if (filterByUserDependency === 'true' && (userRole === 'Productor' || userRole === 'Responsable')) {
+
+    if (userRole === 'Productor') {
+      // El "encargado" se calcula SIEMPRE en el servidor (responsible_producers
+      // de la plantilla vs. las dependencias reales del usuario) — nunca se
+      // confía en filterByUserDependency del cliente para esta decisión, para
+      // que un productor normal no pueda ver datos de otras dependencias con
+      // solo cambiar el parámetro en la URL. Solo el encargado ve lo enviado
+      // por todas las dependencias; cualquier otro productor queda restringido
+      // a la(s) suya(s).
+      const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+      const userDeps = await Dependency.find({ dep_code: { $in: allUserDependencies } }).select('_id').lean();
+      const userDepIds = userDeps.map(d => d._id.toString());
+
+      const rawResponsible = template.responsible_producers?.length > 0
+        ? template.responsible_producers
+        : template.template?.responsible_producers;
+      const responsibleIds = (rawResponsible || []).map(id => id.toString());
+      const isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
+
+      if (!isEncargado) {
+        filteredLoadedData = filteredLoadedData.filter(data => allUserDependencies.includes(data.dependency));
+      }
+    } else if (filterByUserDependency === 'true' && userRole === 'Responsable') {
       // Obtener todas las dependencias del usuario
       const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
-      
+
       // Filtrar solo los datos de las dependencias del usuario
-      filteredLoadedData = filteredLoadedData.filter(data => 
+      filteredLoadedData = filteredLoadedData.filter(data =>
         allUserDependencies.includes(data.dependency)
       );
     }
 
     filteredLoadedData = filteredLoadedData.filter(hasLoadedDataValues);
+
+    // Mantener el orden configurado en la plantilla y agregar cualquier hoja
+    // antigua que solo exista en los datos enviados. Las cargas anteriores a
+    // workbook_sheets no tienen sheet_name y siguen funcionando como antes.
+    const configuredSheetNames = (template.template?.workbook_sheets || [])
+      .map(sheet => sheet?.name)
+      .filter(Boolean);
+    const loadedSheetNames = filteredLoadedData.flatMap(entry =>
+      (entry.filled_data || [])
+        .filter(fieldData =>
+          Array.isArray(fieldData?.values) &&
+          fieldData.values.some(value => isMeaningfulMergedValue(value))
+        )
+        .map(getFieldDataSheetName)
+        .filter(Boolean)
+    );
+    const sheets = Array.from(new Set([...configuredSheetNames, ...loadedSheetNames]))
+      .filter(name => loadedSheetNames.includes(name));
+
+    if (sheetName) {
+      filteredLoadedData = filteredLoadedData
+        .map(entry => ({
+          ...entry,
+          filled_data: (entry.filled_data || []).filter(
+            fieldData => getFieldDataSheetName(fieldData) === sheetName
+          ),
+        }))
+        .filter(hasLoadedDataValues);
+    }
 
     const dependencies = await Dependency.find({ dep_code: { $in: filteredLoadedData.map(data => data.dependency) } });
 
@@ -2608,7 +2712,11 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       console.log(`📄 Plantilla regular: "${template.name}" - sin enriquecimiento`);
     }
 
-    res.status(200).json({ data });
+    res.status(200).json({
+      data,
+      sheets,
+      selectedSheet: sheetName || null,
+    });
   } catch (error) {
      console.log('LA PLANTILLA', error);
     res.status(500).json({ error: 'Error al obtener los datos de la plantilla' });
@@ -3474,27 +3582,42 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     pubTem.final_submitted_date = datetime_now();
     await pubTem.save();
 
-    // Guardar automáticamente en Consulta de Información > Plantillas (fire-and-forget)
+    // Guardar automáticamente en Consulta de Información > Plantillas (fire-and-forget).
+    // Se excluyen los campos de cédula/documento (dato personal sensible: no
+    // debe quedar visible en esta copia de consulta) y se etiqueta con TODOS
+    // los ámbitos de la plantilla, para que aparezca en la carpeta de cada
+    // uno. Un reenvío final (misma plantilla publicada) reemplaza la copia
+    // anterior en vez de acumular una nueva.
+    const isIdentificationFieldName = (fieldName = '') => {
+      const normalized = normalizeFieldName(fieldName);
+      return (
+        normalized.includes('CEDULA') ||
+        normalized.includes('DOCUMENTO') ||
+        normalized.includes('IDENTIFICACION') ||
+        /^(NUM|NUMERO|NRO|NO|N)_?DOC$/.test(normalized)
+      );
+    };
+
     const saveToHistorico = async () => {
       try {
         const sheetMap = new Map();
         (pubTem.loaded_data || []).forEach((loadedEntry) => {
           (loadedEntry.filled_data || []).forEach((fieldData) => {
+            const fieldName = fieldData.field_name;
+            if (!fieldName || isIdentificationFieldName(fieldName)) return;
+
             const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
             if (!sheetMap.has(sheetName)) {
               sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {} });
             }
             const info = sheetMap.get(sheetName);
-            const fieldName = fieldData.field_name;
-            if (fieldName && !info.colMap[fieldName]) {
+            if (!info.colMap[fieldName]) {
               info.colMap[fieldName] = true;
               info.headers.push(fieldName);
               info.valueArrays[fieldName] = [];
             }
-            if (fieldName) {
-              const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
-              info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
-            }
+            const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
+            info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
           });
         });
 
@@ -3514,22 +3637,35 @@ publTempController.confirmFinalSubmit = async (req, res) => {
 
         const fileName = `${pubTem.name || "plantilla"}.xlsx`;
         const periodId = pubTem.period?._id || pubTem.period;
+        const uploadedBy = { full_name: user.full_name || user.name || email, email };
 
-        await HistoricoDocentes.findOneAndUpdate(
-          { category: "plantillas", period: periodId, file_name: fileName },
-          {
-            $set: {
-              file_name: fileName,
-              uploaded_by: { full_name: user.full_name || user.name || email, email },
-              file_type: "excel",
-              sheets,
-              category: "plantillas",
-              period: periodId,
-              active: true,
+        // Ámbitos de la plantilla: puede venir como ObjectId crudo o ya
+        // poblado ({_id, name, ...}) según cómo haya quedado el snapshot.
+        const dimensionIds = (pubTem.template?.dimensions || [])
+          .map((d) => (d && typeof d === 'object' ? d._id : d))
+          .filter(Boolean)
+          .map((id) => String(id));
+        const targets = dimensionIds.length > 0 ? dimensionIds : [null];
+
+        await Promise.all(targets.map((dimensionId) =>
+          HistoricoDocentes.findOneAndUpdate(
+            { source_published_template: pubTem._id, dimension: dimensionId },
+            {
+              $set: {
+                file_name: fileName,
+                uploaded_by: uploadedBy,
+                file_type: "excel",
+                sheets,
+                category: "plantillas",
+                period: periodId,
+                dimension: dimensionId,
+                source_published_template: pubTem._id,
+                active: true,
+              },
             },
-          },
-          { upsert: true, new: true }
-        );
+            { upsert: true, new: true }
+          )
+        ));
       } catch (err) {
         console.error("[HistoricoDocentes] Error guardando en consulta de información:", err.message);
       }

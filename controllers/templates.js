@@ -330,6 +330,37 @@ templateController.getPlantilla = async (req, res) => {
   }
 };
 
+// Agrega una plantilla EXISTENTE a un ámbito/dimensión, sin tocar el resto de
+// la configuración de la plantilla (fields, workbook_sheets, etc.) — usado
+// por la carpeta de "Información enviada por Ámbitos" para poder asignar
+// plantillas ya creadas a un ámbito, sin pasar por el formulario completo de
+// edición de plantilla.
+templateController.addDimension = async (req, res) => {
+  const { id } = req.params;
+  const { dimensionId } = req.body;
+
+  if (!dimensionId) {
+    return res.status(400).json({ error: "dimensionId es requerido" });
+  }
+
+  try {
+    const template = await Template.findByIdAndUpdate(
+      id,
+      { $addToSet: { dimensions: dimensionId } },
+      { new: true }
+    ).populate('dimensions', 'name');
+
+    if (!template) {
+      return res.status(404).json({ error: "Plantilla no encontrada" });
+    }
+
+    res.status(200).json({ template });
+  } catch (error) {
+    console.error('Error agregando ámbito a la plantilla:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 templateController.createPlantilla = async (req, res) => {
   try {
     const sanitizedBody = await sanitizeTemplateDropdownPayload(req.body);

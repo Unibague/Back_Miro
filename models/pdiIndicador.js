@@ -48,6 +48,7 @@ const pdiIndicadorSchema = new mongoose.Schema({
     tipo_calculo:        { type: String, enum: TIPOS_CALCULO, default: 'promedio' },
     meta_final_2029:     { type: mongoose.Schema.Types.Mixed, default: null },
     entregable:          { type: String, default: '' },
+    formula:             { type: String, default: '' },
     presupuesto:         { type: Number, default: 0, min: 0 },
     presupuesto_ejecutado: { type: Number, default: 0, min: 0 },
     responsable:         { type: String, default: '' },

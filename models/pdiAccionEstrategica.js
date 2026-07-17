@@ -23,6 +23,10 @@ const pdiAccionEstrategicaSchema = new mongoose.Schema({
     inversion:                      { type: Number, default: 0 },
     presupuesto_por_anio:           { type: Map, of: Number, default: {} },
     presupuesto_ejecutado_por_anio: { type: Map, of: Number, default: {} },
+    // Notas/actividades a las que se destina el presupuesto de cada año
+    // (ej. "Compra de equipos", "Capacitación docente"), visibles al pasar
+    // el mouse sobre el presupuesto del año en las tarjetas de la acción.
+    notas_presupuesto_por_anio:     { type: Map, of: [String], default: {} },
     proyecto_id: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'pdiProyecto',

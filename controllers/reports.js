@@ -39,6 +39,35 @@ reportController.getReport = async (req, res) => {
   }
 }
 
+// Agrega un informe EXISTENTE a un ámbito/dimensión adicional, sin tocar el
+// resto de su configuración — usado por la carpeta de "Información enviada
+// por Ámbitos" para asignar informes ya creados a un ámbito.
+reportController.addDimension = async (req, res) => {
+  const { id } = req.params;
+  const { dimensionId } = req.body;
+
+  if (!dimensionId) {
+    return res.status(400).json({ error: "dimensionId es requerido" });
+  }
+
+  try {
+    const report = await Report.findByIdAndUpdate(
+      id,
+      { $addToSet: { dimensions: dimensionId } },
+      { new: true }
+    ).populate('dimensions', 'name');
+
+    if (!report) {
+      return res.status(404).json({ error: "Informe no encontrado" });
+    }
+
+    res.status(200).json({ report });
+  } catch (error) {
+    console.error('Error agregando ámbito al informe:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 reportController.getReports = async (req, res) => {
   try {
     const { email, page = 1, limit = 10, search = "" } = req.query;

@@ -7,6 +7,7 @@ router.get("/data", controller.getData);
 router.get("/download", controller.downloadFile);
 router.post("/upload", upload.single("excel_file"), controller.upload);
 router.patch("/:id/rename", controller.renameFile);
+router.post("/:id/clone-to-dimension", controller.cloneToDimension);
 router.delete("/:id", controller.deleteFile);
 
 // PDF principal

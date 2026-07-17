@@ -15,4 +15,6 @@ router.get("/:id", controller.getReport)
 
 router.put("/:id", upload.single('report_example'), auditMiddleware('report'), controller.updateReport)
 
+router.put("/:id/add-dimension", auditMiddleware('report'), controller.addDimension)
+
 module.exports = router

@@ -144,9 +144,9 @@ const getCellText = (value) => {
   return "";
 };
 
-// GET /historico-docentes/list?category=&email=&periodId=
+// GET /historico-docentes/list?category=&email=&periodId=&dimensionId=
 controller.listFiles = async (req, res) => {
-  const { category = 'snies', email, periodId } = req.query;
+  const { category = 'snies', email, periodId, dimensionId } = req.query;
 
   if (!email) return res.status(400).json({ message: "El email es requerido." });
 
@@ -164,8 +164,15 @@ controller.listFiles = async (req, res) => {
       query.period = periodId;
     }
 
+    // Filtrar por ámbito/dimensión (vista "Información enviada por Ámbitos").
+    // Si no se pide, se mantiene el comportamiento anterior (todos los
+    // archivos de la categoría, sin importar el ámbito).
+    if (dimensionId) {
+      query.dimension = dimensionId;
+    }
+
     const files = await HistoricoDocentes.find(query)
-      .select('_id file_name uploaded_by updatedAt createdAt category file_type sheets anexos')
+      .select('_id file_name uploaded_by updatedAt createdAt category file_type sheets anexos dimension cloned_from')
       .sort({ createdAt: -1 });
 
     return res.status(200).json({
@@ -177,6 +184,8 @@ controller.listFiles = async (req, res) => {
         createdAt: f.createdAt,
         category: f.category || 'snies',
         file_type: f.file_type || 'excel',
+        dimension: f.dimension || null,
+        cloned_from: f.cloned_from || null,
         anexosCount: (f.anexos || []).length,
         anexosNames: (f.anexos || []).map(a => a.file_name),
         sheetsInfo: (f.sheets || []).map((s, i) => ({
@@ -189,6 +198,60 @@ controller.listFiles = async (req, res) => {
   } catch (error) {
     console.error("Error listando archivos:", error);
     return res.status(500).json({ message: "Error al listar los archivos.", error: error.message });
+  }
+};
+
+// POST /historico-docentes/:id/clone-to-dimension
+// Copia un archivo existente (ej. el Histórico Docentes SNIES) dentro de un
+// ámbito, con la categoría indicada (por defecto "plantillas"). Si ya se
+// habia agregado antes a ese mismo ámbito, REEMPLAZA la copia en vez de
+// duplicarla (idéntico criterio que el envío final a SNIES).
+controller.cloneToDimension = async (req, res) => {
+  const { id } = req.params;
+  const { dimensionId, category = "plantillas", email, periodId } = req.body;
+
+  if (!dimensionId) return res.status(400).json({ message: "dimensionId es requerido." });
+  if (!VALID_CATEGORIES.includes(category)) return res.status(400).json({ message: "Categoría no válida." });
+
+  try {
+    const source = await HistoricoDocentes.findById(id);
+    if (!source) return res.status(404).json({ message: "Archivo de origen no encontrado." });
+
+    let user = null;
+    if (email) {
+      try { user = await UserService.findUserByEmail(email, null); } catch {}
+    }
+
+    const clone = await HistoricoDocentes.findOneAndUpdate(
+      { cloned_from: source._id, dimension: dimensionId },
+      {
+        $set: {
+          file_name: source.file_name,
+          uploaded_by: user ? { full_name: user.full_name || user.name, email: user.email } : source.uploaded_by,
+          file_type: source.file_type,
+          excel_data: source.excel_data,
+          pdf_data: source.pdf_data,
+          sheets: source.sheets,
+          category,
+          // El listado de un ámbito filtra por período seleccionado (igual
+          // que las demás plantillas): sin esto, la copia quedaba con
+          // period=null y no aparecía en el listado del período activo.
+          period: periodId || null,
+          dimension: dimensionId,
+          cloned_from: source._id,
+          active: true,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    return res.status(200).json({
+      message: "Archivo agregado al ámbito correctamente.",
+      registro: { _id: clone._id, file_name: clone.file_name },
+    });
+  } catch (error) {
+    console.error("Error clonando archivo al ámbito:", error);
+    return res.status(500).json({ message: "No se pudo agregar el archivo al ámbito.", error: error.message });
   }
 };
 
@@ -267,6 +330,7 @@ controller.upload = async (req, res) => {
       sheets,
       category,
       period: (category !== 'snies' && req.body.periodId) ? req.body.periodId : null,
+      dimension: (category !== 'snies' && req.body.dimensionId) ? req.body.dimensionId : null,
       active: true,
     });
 
