@@ -58,6 +58,23 @@ const producersData = new Schema({
     _id: false
 })
 
+const dataConfirmation = new Schema({
+  email: {
+    type: String,
+    required: true
+  },
+  dependency: {
+    type: String,
+    required: true
+  },
+  confirmed_date: {
+    type: Date,
+    required: true
+  }
+}, {
+  _id: false
+});
+
 const publishedTemplateSchema = new Schema({
   name: String,
   published_by: {
@@ -82,6 +99,10 @@ const publishedTemplateSchema = new Schema({
   },
   qr_draft_data: {
     type: [producersData],
+    default: []
+  },
+  data_confirmations: {
+    type: [dataConfirmation],
     default: []
   },
   deadline: {

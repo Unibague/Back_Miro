@@ -131,7 +131,12 @@ const getCellText = (value) => {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value instanceof Date) return value.toLocaleDateString("es-CO");
+  if (value instanceof Date) {
+    const dd = String(value.getUTCDate()).padStart(2, "0");
+    const mm = String(value.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = value.getUTCFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
   if (Array.isArray(value)) return value.map(getCellText).join(", ");
   if (typeof value === "object") {
     if (Array.isArray(value.richText))

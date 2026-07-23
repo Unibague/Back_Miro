@@ -228,13 +228,16 @@ const findGlobalValidatorByName = async (validatorName = '') => {
     return validators.find((validator) => normalizeValidatorNameKey(validator?.name) === normalizedLookup) || null;
 };
 
-validatorController.findValidatorByName = async (name, periodId = null) => {
+// periodDocOverride: documento de period ya cargado (con screenshot.validators),
+// para evitar volver a consultarlo por cada campo cuando se enriquecen muchos
+// campos con el mismo periodId (ver getTemplateById en publishedTemplates.js).
+validatorController.findValidatorByName = async (name, periodId = null, periodDocOverride = null) => {
     const validatorName = String(name || '').trim();
     if (!validatorName) return null;
 
     if (hasPeriodId(periodId)) {
         if (!mongoose.Types.ObjectId.isValid(String(periodId))) return null;
-        const period = await Period.findById(periodId).select('screenshot.validators');
+        const period = periodDocOverride || await Period.findById(periodId).select('screenshot.validators');
         const periodValidator = toPlainValidator(findValidatorInPeriod(period, validatorName));
         if (periodValidator) return periodValidator;
     }

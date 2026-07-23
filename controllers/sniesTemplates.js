@@ -2579,6 +2579,33 @@ const injectPeriodFields = (rows, year, semester, periodName) => {
   });
 };
 
+const filterSourceRowsForSnies = (sourceTemplateName, rows = []) => {
+  if (normalizeFieldName(sourceTemplateName) !== "CONVENIOS_INTERNACIONALES") {
+    return rows;
+  }
+
+  const originFieldAliases = new Set([
+    "TIPO_ORIGEN_CONVENIO",
+    "TIPO_ORIGEN",
+    "ORIGEN_CONVENIO",
+  ]);
+
+  const filteredRows = rows.filter((row) => {
+    const originEntry = Object.entries(row || {}).find(([key]) =>
+      originFieldAliases.has(normalizeFieldName(key))
+    );
+    if (!originEntry) return false;
+
+    const normalizedOrigin = normalizeFieldName(originEntry[1]);
+    return normalizedOrigin.includes("INTERNACIONAL") || /^2(?:_|$)/.test(normalizedOrigin);
+  });
+
+  console.log(
+    `[SNIES-Dataset] Convenios_internacionales: ${filteredRows.length} de ${rows.length} filas internacionales.`
+  );
+  return filteredRows;
+};
+
 const buildSniesDataset = async (template, fallbackPubTemId = null) => {
   // Cargar período para inyectar año y semestre en las filas
   let periodYear = null;
@@ -2634,9 +2661,10 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
 
   // Inyectar año y semestre del período en cada fila
   const enrichedSourceDatasets = sourceDatasets.map((sourceTemplate) => {
+    const sourceRows = filterSourceRowsForSnies(sourceTemplate.template_name, sourceTemplate.rows);
     const rows = periodYear
-      ? injectPeriodFields(sourceTemplate.rows, periodYear, periodSemester, periodName)
-      : sourceTemplate.rows;
+      ? injectPeriodFields(sourceRows, periodYear, periodSemester, periodName)
+      : sourceRows;
     return {
       ...sourceTemplate,
       rows,
