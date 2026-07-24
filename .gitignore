@@ -1,5 +1,6 @@
 node_modules
 .env
+.env.production
 package-lock.json
 .idx
 google-credentials.json
