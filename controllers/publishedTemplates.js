@@ -1678,6 +1678,16 @@ publTempController.loadProducerData = async (req, res) => {
       });
     }
 
+    // Determinar si el usuario es "encargado" (responsible_producer) — aplica tanto si carga datos propios como ajenos
+    const rawResponsible = pubTem.responsible_producers?.length > 0
+      ? pubTem.responsible_producers
+      : pubTem.template?.responsible_producers;
+    const responsibleIds = (rawResponsible || []).map(id => id.toString());
+    const isUserEncargado = responsibleIds.length > 0 && userDependencyIds.some(id => responsibleIds.includes(id));
+    if (isUserEncargado) {
+      isActingAsResponsible = true;
+    }
+
     if (!isOwnDependency) {
       const responsibleDepIds = (
         pubTem.responsible_producers?.length ? pubTem.responsible_producers : pubTem.template?.responsible_producers
@@ -1707,9 +1717,16 @@ publTempController.loadProducerData = async (req, res) => {
       }
 
       // Verificar fecha límite para productores (fecha_final_productores > fecha_final > deadline)
-      const fechaLimiteProductores = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
+      // Si el usuario es encargado, usar fecha_final_responsables; sino, usar fecha_final_productores
+      let fechaLimite_a_usar;
+      if (isActingAsResponsible && pubTem.fecha_final_responsables) {
+        fechaLimite_a_usar = pubTem.fecha_final_responsables;
+      } else {
+        fechaLimite_a_usar = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
+      }
+
       // Fin del día en Colombia (UTC-5): medianoche UTC + 28h59m59s999ms = 23:59:59 hora Colombia
-      const fechaLimite = new Date(new Date(fechaLimiteProductores).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
+      const fechaLimite = new Date(new Date(fechaLimite_a_usar).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
       if (fechaLimite < now) {
         return res.status(403).json({ status: 'The period is closed' });
       }
@@ -1993,7 +2010,6 @@ publTempController.loadProducerData = async (req, res) => {
           values: sheetRows.map(row => normalizeProducerValue(row[field.name], field)),
         };
       });
-      __debugLog({ stage: 'result_computed', result });
 
       const validations = result.map(async fieldData => {
         const templateField = fieldsForLoad.find(field => (
@@ -2057,10 +2073,8 @@ publTempController.loadProducerData = async (req, res) => {
           errors: sanitizedErrors
         });
 
-        __debugLog({ stage: 'validation_error_400', sanitizedErrors });
         return res.status(400).json({ status: 'Validation error', details: sanitizedErrors });
       }
-      __debugLog({ stage: 'validation_passed' });
 
       // Determinar origen: 'excel' si bypassValidation, 'qr' si hasQrOrigin/isFromPublicQr, 'online' si formulario en línea
       let sheetsDataSource = 'online';
@@ -2632,24 +2646,43 @@ publTempController.confirmDraftData = async (req, res) => {
       return res.status(403).json({ status: 'Esta plantilla ya fue enviada al SNIES y no admite mas cambios' });
     }
 
-    const fechaLimiteProductores = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
-    if (fechaLimiteProductores) {
-      const fechaLimite = new Date(new Date(fechaLimiteProductores).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
-      if (fechaLimite < new Date(datetime_now())) {
-        return res.status(403).json({ status: 'El periodo ya se encuentra cerrado' });
-      }
-    }
-
     // La pertenencia efectiva tambien vive en dependencies.members. Usar solo
     // dep_code/additional_dependencies deja por fuera usuarios correctamente
     // asignados cuya ficha aun no esta sincronizada, y el boton termina
     // recibiendo 404 aunque si exista un borrador suyo.
-    const memberDependencies = await Dependency.find({ members: email }).select('dep_code');
+    const memberDependencies = await Dependency.find({ members: email }).select('dep_code _id');
     const allUserDependencies = Array.from(new Set([
       user.dep_code,
       ...(user.additional_dependencies || []),
       ...memberDependencies.map((dep) => dep.dep_code),
     ].filter(Boolean)));
+
+    // Obtener IDs de dependencias del usuario para calcular si es encargado
+    const userDeps = await Dependency.find({ dep_code: { $in: allUserDependencies } }).select('_id').lean();
+    const userDepIds = userDeps.map(d => d._id.toString());
+
+    // Determinar si el usuario es "encargado" (responsible_producer)
+    const rawResponsible = pubTem.responsible_producers?.length > 0
+      ? pubTem.responsible_producers
+      : pubTem.template?.responsible_producers;
+
+    const responsibleIds = (rawResponsible || []).map(id => id.toString());
+    const isEncargado = responsibleIds.length > 0 && userDepIds.some(id => responsibleIds.includes(id));
+
+    // Usar la fecha límite correcta según el rol del usuario
+    let fechaLimite_a_usar;
+    if (isEncargado && pubTem.fecha_final_responsables) {
+      fechaLimite_a_usar = pubTem.fecha_final_responsables;
+    } else {
+      fechaLimite_a_usar = pubTem.fecha_final_productores || pubTem.fecha_final || pubTem.deadline;
+    }
+
+    if (fechaLimite_a_usar) {
+      const fechaLimite = new Date(new Date(fechaLimite_a_usar).getTime() + (28 * 3600 + 59 * 60 + 59) * 1000 + 999);
+      if (fechaLimite < new Date(datetime_now())) {
+        return res.status(403).json({ status: 'El periodo ya se encuentra cerrado' });
+      }
+    }
 
     if (dependency && !allUserDependencies.includes(dependency)) {
       return res.status(403).json({ status: 'No tienes permiso para confirmar la informacion de esta dependencia' });
