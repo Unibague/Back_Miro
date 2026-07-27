@@ -2760,11 +2760,6 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
     const userDependencyIds = userDependencies.map(dep => dep._id.toString());
-    
-    const canDelete = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
-    if (!canDelete) {
-      return res.status(403).json({ status: 'User is not assigned to this published template' })
-    }
 
     // Buscar datos propios o una confirmacion de informacion compartida.
     const index = pubTem.loaded_data.findIndex(data => allUserDependencies.includes(data.dependency))
@@ -2773,6 +2768,23 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
         confirmation.email === email ||
         allUserDependencies.includes(confirmation.dependency)
       ));
+    const hasOwnData = index > -1 || confirmationIndex > -1;
+
+    // Chequeo normal: el usuario esta asignado como productor de la
+    // plantilla base. Se protege contra `pubTem.template` quedando null/sin
+    // `producers` (plantilla base eliminada o con una referencia rota) para
+    // no tumbar la peticion con un error 500 -- en ese caso se cae al
+    // fallback de abajo.
+    const isAssignedProducer = (pubTem.template?.producers || [])
+      .some(p => userDependencyIds.includes(p._id.toString()));
+
+    // Si no aparece como productor asignado pero SI tiene datos/confirmacion
+    // propios ahi (ej. la plantilla base se reasigno despues de la carga),
+    // igual se le permite eliminar su propia informacion.
+    if (!isAssignedProducer && !hasOwnData) {
+      return res.status(403).json({ status: 'User is not assigned to this published template' })
+    }
+
     if (index === -1 && confirmationIndex === -1) {
       return res.status(404).json({ status: 'Data not found' });
     }
@@ -2781,20 +2793,43 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     const deletedConfirmation = confirmationIndex > -1
       ? pubTem.data_confirmations[confirmationIndex]
       : null;
-    if (index > -1) pubTem.loaded_data.splice(index, 1);
-    if (confirmationIndex > -1) pubTem.data_confirmations.splice(confirmationIndex, 1);
 
     // NO eliminar borradores - el usuario debería poder seguir editando sus datos
     // Los borradores se conservan en qr_draft_data para continuar la edición
 
-    // Si estaba enviado al SNIES, resetear el estado para que vuelva a ser enviado
-    if (pubTem.final_submitted) {
-      pubTem.final_submitted = false;
-      pubTem.final_submitted_by = null;
-      pubTem.final_submitted_date = null;
+    // Se usa una actualizacion atomica ($pull/$set) en vez de mutar el
+    // documento en memoria y hacer pubTem.save(): asi la eliminacion no
+    // puede fallar por un error de validacion de Mongoose en OTRA parte del
+    // documento (ej. datos legados de otra dependencia con un campo
+    // faltante), que con save() completo tumbaria TODO el guardado aunque
+    // no tenga nada que ver con lo que se esta borrando.
+    const pullOps = {};
+    if (index > -1) pullOps.loaded_data = { dependency: { $in: allUserDependencies } };
+    if (confirmationIndex > -1) {
+      pullOps.data_confirmations = {
+        $or: [{ email }, { dependency: { $in: allUserDependencies } }],
+      };
     }
 
-    await pubTem.save();
+    const setOps = {};
+    // Si estaba enviado al SNIES, resetear el estado para que vuelva a ser enviado
+    if (pubTem.final_submitted) {
+      setOps.final_submitted = false;
+      setOps.final_submitted_by = null;
+      setOps.final_submitted_date = null;
+    }
+
+    const updateQuery = {};
+    if (Object.keys(pullOps).length) updateQuery.$pull = pullOps;
+    if (Object.keys(setOps).length) updateQuery.$set = setOps;
+
+    const updateResult = await PublishedTemplate.updateOne({ _id: pubTem._id }, updateQuery);
+    if (updateResult.matchedCount === 0) {
+      return res.status(500).json({ status: 'No se pudo guardar la eliminacion: la plantilla publicada no se encontro al actualizar.' });
+    }
+    if (updateResult.modifiedCount === 0) {
+      return res.status(500).json({ status: 'No se pudo guardar la eliminacion: la base de datos no registro ningun cambio.' });
+    }
 
     // Audit log
     console.log('🔍 Executing audit log for publishedTemplateData deletion');

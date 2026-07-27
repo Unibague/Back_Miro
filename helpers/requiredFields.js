@@ -32,6 +32,11 @@ const isRequiredComment = (comment) => {
 };
 
 const getEffectiveRequired = (field = {}) => {
+  // Override manual del admin (ver Campos base en el editor de plantilla):
+  // gana siempre, sin importar el flag `required` ni la palabra "obligatorio"
+  // en el comentario.
+  if (Boolean(field?.required_override)) return false;
+
   const comment = field?.comment;
   const hasComment = typeof comment === 'string' && comment.trim();
   const isWorkbookField = Boolean(field?.locked)
