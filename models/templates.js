@@ -34,6 +34,15 @@ const fieldSchema = new Schema({
         type: Boolean,
         required: true
     },
+    // Override manual del admin: cuando es true, este campo NUNCA se trata
+    // como obligatorio (ni por el flag `required` ni por la palabra
+    // "obligatorio" en el comentario), para que el productor pueda subir la
+    // plantilla aunque el campo aparezca marcado como obligatorio.
+    required_override: {
+        type: Boolean,
+        required: false,
+        default: false
+    },
     validate_with: {
         type: String,
         required: false
