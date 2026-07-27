@@ -466,6 +466,12 @@ const parseBudgetDetailsRows = (rows, systemIndex) => {
   return detailsByProject;
 };
 
+// Años futuros cuyo presupuesto (gasto/inversion/total) ya viene detallado
+// en columnas propias de la hoja "Proyecto 2026" (ej. "Presupuesto Gasto
+// 2027", "Presupuesto inversion 2027", "Total Presupuesto 2027"). La
+// ejecucion de esos años todavia no se lee de la hoja.
+const PRESUPUESTO_ANIOS_EXTRA = ['2027', '2028', '2029'];
+
 const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject, ejecutadoByProject = new Map()) => {
   const colCentro        = findCol(headers, ['centro de costo'], 0);
   const colMacro         = findCol(headers, ['macroproyecto'], 1, { exact: true });
@@ -481,6 +487,15 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject, e
   const colCausGasto     = findCol(headers, ['causado gasto'], 18);
   const colCausInv       = findCol(headers, ['causado inversion'], 19);
   const colCausTotal     = findCol(headers, ['total causado'], 20);
+
+  const colsPresupuestoPorAnio = PRESUPUESTO_ANIOS_EXTRA.reduce((acc, anio) => {
+    acc[anio] = {
+      gasto:     findCol(headers, [`presupuesto gasto ${anio}`], -1, { exact: true }),
+      inversion: findCol(headers, [`presupuesto inversion ${anio}`], -1, { exact: true }),
+      total:     findCol(headers, [`total presupuesto ${anio}`], -1, { exact: true }),
+    };
+    return acc;
+  }, {});
 
   return rows.slice(1).map((row = [], index) => {
     const rawMacro = String(row[colCentro] || '').trim();
@@ -513,6 +528,16 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject, e
     const ejecutadoInversion = execution.inversion || (useLegacyExecution ? legacyExecution.inversion || 0 : 0);
     const ejecutado = execution.ejecutado || (useLegacyExecution ? legacyExecution.ejecutado || 0 : 0);
 
+    const presupuestoPorAnio = {};
+    for (const anio of PRESUPUESTO_ANIOS_EXTRA) {
+      const cols = colsPresupuestoPorAnio[anio];
+      if (cols.gasto === -1 && cols.inversion === -1 && cols.total === -1) continue;
+      const gastoAnio = cols.gasto !== -1 ? normalizeNum(row[cols.gasto]) : 0;
+      const inversionAnio = cols.inversion !== -1 ? normalizeNum(row[cols.inversion]) : 0;
+      const totalAnio = cols.total !== -1 ? valueOrSplit(row[cols.total], gastoAnio, inversionAnio) : gastoAnio + inversionAnio;
+      presupuestoPorAnio[anio] = { gasto: gastoAnio, inversion: inversionAnio, total: totalAnio };
+    }
+
     return {
       macroproyecto: macroSystemLabel(macro, rawMacro),
       proyecto: proyecto?.nombre || rawProject,
@@ -534,6 +559,7 @@ const parseProjectSummaryRows = (rows, headers, systemIndex, detailsByProject, e
       autorizaciones: normalizeNum(row[colAutorizacion]),
       rowIndex: index + 2,
       detalles: actionDetails,
+      presupuestoPorAnio,
     };
   }).filter(Boolean);
 };

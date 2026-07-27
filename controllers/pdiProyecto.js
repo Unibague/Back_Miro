@@ -33,8 +33,9 @@ function syncResponsablesLegacy(payload) {
 
 // Recalcula el avance del macroproyecto como suma de contribucion ponderada de sus proyectos.
 // Macroproyecto es un valor final que se muestra en el tablero, así que aquí
-// SÍ se redondea (a diferencia de Acción/Proyecto, que se guardan sin
-// redondear para no acumular error a lo largo de la cadena de cálculo).
+// SÍ se redondea, pero solo a 2 decimales (a diferencia de Acción/Proyecto,
+// que se guardan sin redondear para no acumular error a lo largo de la
+// cadena de cálculo).
 async function recalcularMacroproyecto(macroproyecto_id) {
     const proyectos = await Proyecto.find({ macroproyecto_id });
     if (!proyectos.length) return;
@@ -43,7 +44,7 @@ async function recalcularMacroproyecto(macroproyecto_id) {
         proyectos,
         (proyecto) => proyecto.avance,
         (proyecto) => proyecto.peso
-    ));
+    ) * 100) / 100;
     const presupuesto = proyectos.reduce((acc, p) => acc + (p.presupuesto || 0), 0);
     const presupuesto_ejecutado = proyectos.reduce((acc, p) => acc + (p.presupuesto_ejecutado || 0), 0);
 

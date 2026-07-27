@@ -494,17 +494,18 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
 
     const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
     macrosNorm.forEach((macro) => {
-        // Macroproyecto es un valor final que se muestra: sí se redondea, a
-        // diferencia de Indicador/Acción/Proyecto.
-        macro.avance_descarga = Math.round(weightedContribution(
+        // Macroproyecto es un valor final que se muestra: se redondea a 2
+        // decimales (no a entero), a diferencia de Indicador/Acción/Proyecto
+        // que se dejan sin redondear.
+        macro.avance_descarga = round2(weightedContribution(
             proyectosPorMacro.get(String(macro._id)) || [],
             (proyecto) => proyecto.avance_descarga,
             (proyecto) => proyecto.peso
         ));
     });
 
-    // PDI global también es un valor final: se redondea aquí.
-    const avanceGlobalDescarga = Math.round(weightedAverage(
+    // PDI global también es un valor final: se redondea a 2 decimales aquí.
+    const avanceGlobalDescarga = round2(weightedAverage(
         macrosNorm,
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
@@ -804,7 +805,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         // Macroproyecto SÍ se redondea a entero (valor final que se muestra),
         // igual que recalcularMacroproyecto en controllers/pdiProyecto.js.
         wsMacro.getCell(`D${r}`).value = {
-            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
+            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,2)`,
             result: m.avance_descarga,
         };
         wsMacro.getCell(`E${r}`).value = Number(m.avance) || 0;
@@ -881,9 +882,9 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsResumen.getCell(`A${nextRow}`).value = 'Avance ponderado global (calculado con fórmula)';
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
-    // Redondeada a entero, igual que ctrl.resumen en controllers/pdiDashboard.js
+    // Redondeada a 2 decimales, sin truncar a entero.
     wsResumen.getCell(`D${nextRow}`).value = {
-        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),0),0)`,
+        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),2),0)`,
         result: avanceGlobalDescarga,
     };
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
@@ -894,7 +895,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     const totalPesoMacro = macrosNorm.reduce((acc, m) => acc + (Number(m.peso_norm) || 0), 0);
     const avanceGlobalSistema = totalPesoMacro > 0
-        ? Math.round(macrosNorm.reduce((acc, m) => acc + (Number(m.avance) || 0) * (Number(m.peso_norm) || 0), 0) / totalPesoMacro)
+        ? round2(macrosNorm.reduce((acc, m) => acc + (Number(m.avance) || 0) * (Number(m.peso_norm) || 0), 0) / totalPesoMacro)
         : 0;
     wsResumen.getCell(`D${nextRow}`).value = avanceGlobalSistema;
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13 };
@@ -1206,6 +1207,7 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
         { header: 'Proyecto', key: 'proyecto', width: 36 },
         { header: 'Acción estratégica', key: 'accion', width: 42 },
         { header: 'Indicador de resultado', key: 'indicador_resultado', width: 62 },
+        { header: 'Fórmula', key: 'formula', width: 40 },
         { header: 'Meta al año 2029', key: 'meta_final_2029', width: 18 },
         { header: 'Tipo de cálculo', key: 'tipo_calculo', width: 22 },
         { header: 'Valor final usado', key: 'valor_usado', width: 18 },
@@ -1266,6 +1268,7 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
             proyecto: proyecto?.nombre || '',
             accion: accion?.nombre || '',
             indicador_resultado: indicador.indicador_resultado || indicador.nombre || '',
+            formula: String(indicador.formula || '').trim() || 'No aplica',
             meta_final_2029: toNumberValue(indicador.meta_final_2029) ?? indicador.meta_final_2029 ?? 'Sin meta',
             tipo_calculo: operacion.tipoLabel,
             valor_usado: operacion.valorUsado,
@@ -1331,7 +1334,7 @@ async function buildIndicadoresMetasWorkbook({ macros, proyectos, acciones, indi
     wsInfo.columns = [{ width: 28 }, { width: 90 }];
     wsInfo.addRow(['Archivo', 'Indicadores PDI - metas por periodo']);
     wsInfo.addRow(['Generado', generatedAt.toLocaleString('es-CO', { timeZone: 'America/Bogota' })]);
-    wsInfo.addRow(['Estructura', 'Las primeras cuatro columnas (códigos de macroproyecto, proyecto, acción e indicador) quedan inmovilizadas para orientarse al desplazar la tabla. Las columnas siguientes agregan los nombres, la meta final, el tipo de cálculo y todas las metas/avances por periodo disponibles en el sistema. Justo después de los periodos de cada año (ej. Meta/Avance 2026A y 2026B) se agrega el consolidado de ese año (Meta/Avance 2026): NO es siempre la suma de los periodos, depende del tipo de cálculo (ver filas siguientes). "Sin meta" indica que ese periodo/año no tiene meta definida; "No aplica" indica que no hay avance evaluable; las celdas vacías corresponden a periodos futuros que aún no inician.']);
+    wsInfo.addRow(['Estructura', 'Las primeras cuatro columnas (códigos de macroproyecto, proyecto, acción e indicador) quedan inmovilizadas para orientarse al desplazar la tabla. Las columnas siguientes agregan los nombres, la fórmula del indicador, la meta final, el tipo de cálculo y todas las metas/avances por periodo disponibles en el sistema. Justo después de los periodos de cada año (ej. Meta/Avance 2026A y 2026B) se agrega el consolidado de ese año (Meta/Avance 2026): NO es siempre la suma de los periodos, depende del tipo de cálculo (ver filas siguientes). "Sin meta" indica que ese periodo/año no tiene meta definida; "No aplica" indica que no hay avance evaluable (o, en la columna Fórmula, que el indicador no tiene una fórmula registrada); las celdas vacías corresponden a periodos futuros que aún no inician.']);
     wsInfo.addRow(['Acumulado', 'Toma la suma de los avances reportados y la compara contra la Meta al año 2029.']);
     wsInfo.addRow(['Promedio', 'Toma el promedio aritmético de los avances reportados y lo compara contra la Meta al año 2029.']);
     wsInfo.addRow(['Último valor reportado', 'Toma el último periodo con avance reportado y lo compara contra la Meta al año 2029.']);
@@ -1462,14 +1465,14 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
 
     const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
     macrosNorm.forEach((macro) => {
-        macro.avance_descarga = Math.round(weightedContribution(
+        macro.avance_descarga = round2(weightedContribution(
             proyectosPorMacro.get(String(macro._id)) || [],
             (proyecto) => proyecto.avance_descarga,
             (proyecto) => proyecto.peso
         ));
     });
 
-    const avanceGlobalDescarga = Math.round(weightedAverage(
+    const avanceGlobalDescarga = round2(weightedAverage(
         macrosNorm,
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
@@ -1736,7 +1739,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
         wsMacro.getCell(`B${r}`).value = m.nombre;
         wsMacro.getCell(`C${r}`).value = m.peso_norm;
         wsMacro.getCell(`D${r}`).value = {
-            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
+            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,2)`,
             result: m.avance_descarga,
         };
         wsMacro.getCell(`E${r}`).value = MACRO_FORMULA_TXT;
@@ -1796,7 +1799,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     wsResumen.getCell(`D${nextRow}`).value = {
-        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),0),0)`,
+        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),2),0)`,
         result: avanceGlobalDescarga,
     };
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
@@ -1871,17 +1874,18 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
 
     const proyectosPorMacro = groupBy(proyectosNorm, (p) => p.macroproyecto_id?._id ?? p.macroproyecto_id);
     macrosNorm.forEach((macro) => {
-        // Macroproyecto es un valor final que se muestra: sí se redondea, a
-        // diferencia de Indicador/Acción/Proyecto.
-        macro.avance_descarga = Math.round(weightedContribution(
+        // Macroproyecto es un valor final que se muestra: se redondea a 2
+        // decimales (no a entero), a diferencia de Indicador/Acción/Proyecto
+        // que se dejan sin redondear.
+        macro.avance_descarga = round2(weightedContribution(
             proyectosPorMacro.get(String(macro._id)) || [],
             (proyecto) => proyecto.avance_descarga,
             (proyecto) => proyecto.peso
         ));
     });
 
-    // PDI global también es un valor final: se redondea aquí.
-    const avanceGlobalDescarga = Math.round(weightedAverage(
+    // PDI global también es un valor final: se redondea a 2 decimales aquí.
+    const avanceGlobalDescarga = round2(weightedAverage(
         macrosNorm,
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
@@ -2167,7 +2171,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         wsMacro.getCell(`C${r}`).value = m.peso_norm;
         // Macroproyecto SÍ se redondea a entero (valor final que se muestra).
         wsMacro.getCell(`D${r}`).value = {
-            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,0)`,
+            formula: `ROUND(SUMPRODUCT((${PROY.macro}=$A${r})*${PROY.avance}*${PROY.peso})/100,2)`,
             result: m.avance_descarga,
         };
         wsMacro.getCell(`E${r}`).value = MACRO_FORMULA_TXT;
@@ -2229,7 +2233,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     wsResumen.getCell(`D${nextRow}`).value = {
-        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),0),0)`,
+        formula: `IFERROR(ROUND(SUMPRODUCT(D${firstMacroDataRow}:D${lastMacroDataRow},C${firstMacroDataRow}:C${lastMacroDataRow})/SUM(C${firstMacroDataRow}:C${lastMacroDataRow}),2),0)`,
         result: avanceGlobalDescarga,
     };
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };

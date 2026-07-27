@@ -244,12 +244,12 @@ ctrl.resumen = async (req, res) => {
 
         // Avance ponderado global (promedio ponderado de macroproyectos). Es
         // el otro valor "final" que se muestra (junto con Macroproyecto), así
-        // que se redondea aquí explícitamente.
+        // que se redondea aquí explícitamente, pero solo a 2 decimales.
         const avanceGlobal = Math.round(weightedAverage(
             macros,
             (macro) => macro.avance,
             (macro) => macro.peso
-        ));
+        ) * 100) / 100;
 
         // Avance real del año en curso: promedio simple del % de cumplimiento
         // individual de los indicadores con meta en ese año (ver calcularAvanceGlobalAnio).
