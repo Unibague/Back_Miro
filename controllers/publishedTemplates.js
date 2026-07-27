@@ -2762,7 +2762,12 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     const userDependencyIds = userDependencies.map(dep => dep._id.toString());
 
     // Buscar datos propios o una confirmacion de informacion compartida.
-    const index = pubTem.loaded_data.findIndex(data => allUserDependencies.includes(data.dependency))
+    // Igual que isEntryVisibleToProducer (usado para LISTAR estas filas): un
+    // registro tambien es "propio" si el usuario lo diligencio/corrigio en
+    // nombre de otra dependencia (send_by.email/sender_email), no solo si
+    // coincide con su(s) dependencia(s) -- si no, una fila visible en la
+    // lista no se encontraba nunca al eliminar ("Data not found").
+    const index = pubTem.loaded_data.findIndex(data => isEntryVisibleToProducer(data, allUserDependencies, email))
     const confirmationIndex = (pubTem.data_confirmations || [])
       .findIndex((confirmation) => (
         confirmation.email === email ||
@@ -2786,6 +2791,16 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     }
 
     if (index === -1 && confirmationIndex === -1) {
+      // Log de diagnostico: si esto vuelve a pasar, aca queda registrado
+      // exactamente que trae loaded_data/data_confirmations vs. lo que se
+      // esta buscando, para no tener que adivinar de nuevo.
+      console.log('[deleteLoadedDataDependency] Data not found', {
+        pubTem_id,
+        email,
+        allUserDependencies,
+        loaded_data: pubTem.loaded_data.map(d => ({ dependency: d.dependency, send_by_email: d.send_by?.email, sender_email: d.sender_email })),
+        data_confirmations: (pubTem.data_confirmations || []).map(c => ({ dependency: c.dependency, email: c.email })),
+      });
       return res.status(404).json({ status: 'Data not found' });
     }
 
@@ -2794,20 +2809,37 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
       ? pubTem.data_confirmations[confirmationIndex]
       : null;
 
-    // NO eliminar borradores - el usuario debería poder seguir editando sus datos
-    // Los borradores se conservan en qr_draft_data para continuar la edición
-
+    // "Eliminar informacion" NO borra los datos ya diligenciados: solo
+    // retira el envio (loaded_data) para que la plantilla vuelva a aparecer
+    // en Pendientes, y guarda esos mismos datos como borrador en
+    // qr_draft_data para que el productor pueda seguir editando/reenviar
+    // sin volver a escribir todo desde cero.
+    //
     // Se usa una actualizacion atomica ($pull/$set) en vez de mutar el
-    // documento en memoria y hacer pubTem.save(): asi la eliminacion no
-    // puede fallar por un error de validacion de Mongoose en OTRA parte del
+    // documento en memoria y hacer pubTem.save(): asi la operacion no puede
+    // fallar por un error de validacion de Mongoose en OTRA parte del
     // documento (ej. datos legados de otra dependencia con un campo
     // faltante), que con save() completo tumbaria TODO el guardado aunque
-    // no tenga nada que ver con lo que se esta borrando.
+    // no tenga nada que ver con lo que se esta retirando.
+    //
+    // IMPORTANTE: el criterio amplio de isEntryVisibleToProducer (dependencia
+    // O send_by.email/sender_email) solo se usa para ENCONTRAR cual entrada
+    // retirar (arriba). El $pull real debe apuntar a esa UNICA entrada por su
+    // propio `dependency` -- si se usara ese mismo criterio amplio como
+    // filtro, alguien que subio/corrigio datos de VARIAS dependencias
+    // (send_by.email = su email en todas) las retiraria TODAS de un solo
+    // boton, no solo la que estaba viendo.
     const pullOps = {};
-    if (index > -1) pullOps.loaded_data = { dependency: { $in: allUserDependencies } };
+    if (index > -1) {
+      // Tambien se quita cualquier borrador previo de esa misma dependencia
+      // para no acumular duplicados en qr_draft_data.
+      pullOps.loaded_data = { dependency: deletedData.dependency };
+      pullOps.qr_draft_data = { dependency: deletedData.dependency };
+    }
     if (confirmationIndex > -1) {
       pullOps.data_confirmations = {
-        $or: [{ email }, { dependency: { $in: allUserDependencies } }],
+        email: deletedConfirmation.email,
+        dependency: deletedConfirmation.dependency,
       };
     }
 
@@ -2829,6 +2861,14 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     }
     if (updateResult.modifiedCount === 0) {
       return res.status(500).json({ status: 'No se pudo guardar la eliminacion: la base de datos no registro ningun cambio.' });
+    }
+
+    // Guardar los datos retirados como borrador (segunda operacion atomica,
+    // separada porque Mongo no permite $pull y $push sobre el mismo path
+    // qr_draft_data en la misma actualizacion).
+    if (deletedData) {
+      const draftEntry = typeof deletedData.toObject === 'function' ? deletedData.toObject() : deletedData;
+      await PublishedTemplate.updateOne({ _id: pubTem._id }, { $push: { qr_draft_data: draftEntry } });
     }
 
     // Audit log
