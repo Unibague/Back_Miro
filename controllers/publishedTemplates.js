@@ -2130,6 +2130,8 @@ publTempController.loadProducerData = async (req, res) => {
       }
 
       const existingDataIndex = pubTem.loaded_data.findIndex(d => d.dependency === targetDepCode);
+      const existingDraftIndex = (pubTem.qr_draft_data || [])
+        .findIndex(d => d.dependency === targetDepCode);
       if (existingDataIndex > -1) {
         // Si ya existe información, preservar el origen original
         const existingData = pubTem.loaded_data[existingDataIndex];
@@ -2159,6 +2161,30 @@ publTempController.loadProducerData = async (req, res) => {
           source: preservedSource, // Mantener origen original
           ...(preservedSenderInfo.sender_email && preservedSenderInfo.sender_name ? preservedSenderInfo : {}),
         };
+      } else if (existingDraftIndex > -1) {
+        // "Eliminar informacion" mueve la entrada completa a qr_draft_data.
+        // Si otro productor reenvia solo las hojas que puede editar, se deben
+        // recuperar del borrador las demas hojas (por ejemplo DOCENTE_IES) en
+        // vez de crear una entrada parcial y perderlas al limpiar el borrador.
+        const existingDraft = pubTem.qr_draft_data[existingDraftIndex];
+        const mergedFilledData = [
+          ...(existingDraft.filled_data || []).filter(
+            (fd) => !incomingSheetsData.some(({ name }) => name === fd.sheet_name)
+          ),
+          ...producersData.filled_data,
+        ];
+
+        pubTem.loaded_data.push({
+          ...producersData,
+          filled_data: mergedFilledData,
+          source: existingDraft.source || producersData.source,
+          ...(existingDraft.sender_email && existingDraft.sender_name
+            ? {
+                sender_email: existingDraft.sender_email,
+                sender_name: existingDraft.sender_name,
+              }
+            : {}),
+        });
       } else {
         pubTem.loaded_data.push(producersData);
       }
