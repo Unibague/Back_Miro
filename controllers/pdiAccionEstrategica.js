@@ -4,6 +4,31 @@ const { withSemaforo } = require('../helpers/pdiSemaforo');
 const { recalcularMacroproyecto } = require('./pdiProyecto');
 const { weightedContribution } = require('../services/pdiAvanceCalculator');
 
+const toBudgetCents = (value) => Math.round((Number(value) || 0) * 100);
+
+const getAnnualBudgetValues = (budgetByYear) => {
+    if (budgetByYear instanceof Map) return [...budgetByYear.values()];
+    if (budgetByYear && typeof budgetByYear === 'object') return Object.values(budgetByYear);
+    return [];
+};
+
+const validateGlobalBudgetAllocation = ({ presupuesto, presupuesto_por_anio }) => {
+    const globalBudget = toBudgetCents(presupuesto);
+    const annualBudget = getAnnualBudgetValues(presupuesto_por_anio)
+        .reduce((total, value) => total + toBudgetCents(value), 0);
+    const difference = annualBudget - globalBudget;
+
+    if (difference === 0) return;
+
+    const formattedDifference = (Math.abs(difference) / 100).toLocaleString('es-CO');
+    const detail = difference > 0
+        ? `La asignacion anual supera el presupuesto global por $ ${formattedDifference}.`
+        : `Faltan asignar $ ${formattedDifference} del presupuesto global.`;
+    const error = new Error(`${detail} La suma de los presupuestos por año debe ser exactamente igual al presupuesto global.`);
+    error.status = 422;
+    throw error;
+};
+
 // Recalcula el avance y los presupuestos del proyecto a partir de sus acciones
 async function recalcularProyecto(proyecto_id) {
     const acciones = await AccionEstrategica.find({ proyecto_id });
@@ -53,11 +78,12 @@ ctrl.getById = async (req, res) => {
 
 ctrl.create = async (req, res) => {
     try {
+        validateGlobalBudgetAllocation(req.body);
         const doc = await AccionEstrategica.create(req.body);
         await recalcularProyecto(doc.proyecto_id);
         res.status(201).json(withSemaforo(doc));
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(e.status || 400).json({ error: e.message });
     }
 };
 
@@ -66,8 +92,18 @@ ctrl.update = async (req, res) => {
         const { num_indicadores, ...updateData } = req.body;
         if (num_indicadores !== undefined) updateData.num_indicadores = Number(num_indicadores) || 0;
 
+        const currentDoc = await AccionEstrategica.findById(req.params.id).lean();
+        if (!currentDoc) return res.status(404).json({ error: 'No encontrado' });
+        validateGlobalBudgetAllocation({
+            presupuesto: updateData.presupuesto !== undefined
+                ? updateData.presupuesto
+                : currentDoc.presupuesto,
+            presupuesto_por_anio: updateData.presupuesto_por_anio !== undefined
+                ? updateData.presupuesto_por_anio
+                : currentDoc.presupuesto_por_anio,
+        });
+
         const doc = await AccionEstrategica.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
-        if (!doc) return res.status(404).json({ error: 'No encontrado' });
 
         if (num_indicadores !== undefined && Number(num_indicadores) > 0) {
             const Indicador = require('../models/pdiIndicador');
@@ -78,7 +114,7 @@ ctrl.update = async (req, res) => {
         await recalcularProyecto(doc.proyecto_id);
         res.json(withSemaforo(doc));
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(e.status || 400).json({ error: e.message });
     }
 };
 
