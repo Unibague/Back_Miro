@@ -4,7 +4,7 @@ const AuditLogger = require('../services/auditLogger');
 const User = require('../models/users');
 const Template = require('../models/templates');
 const PublishedTemplate = require('../models/publishedTemplates');
-const Report = require('../models/reports');
+const Validator = require('../models/validators');
 
 const dimensionController = {};
 
@@ -29,88 +29,567 @@ const countRecordsInLoadedEntry = (entry) => {
   }, 0);
 };
 
-// Estadisticas por ambito para el Tablero: no cuenta "cuantos enviaron" sino
-// el volumen real de informacion reportada (numero de registros) en las
-// plantillas de cada ambito, ademas de cuantas plantillas/informes tiene
-// asignados. Se calcula para todos los ambitos en una sola pasada para no
-// pagar N consultas por ambito.
-dimensionController.getTableroStats = async (req, res) => {
-  const periodId = req.query.periodId || null;
+const NUMERIC_DATATYPES = new Set(['Entero', 'Decimal', 'Porcentaje']);
+// Campos de identificacion/metadata (año, semestre, documento, telefono,
+// codigos, etc.): sumarlos o promediarlos no significa nada, se excluyen del
+// resumen numerico automatico. Coincide por substring en cualquier parte del
+// nombre del campo (case/acentos insensible).
+const NUMERIC_EXCLUDE_KEYWORDS = [
+  'ANO', 'SEMESTRE', 'DOCUMENTO', 'CODIGO', 'COD_', 'TELEFONO', 'CELULAR',
+  'FAX', 'CONTACTO', 'NIT', 'ID_', '_ID', 'CORREO', 'EMAIL', 'FECHA',
+];
+const ACCENTED_CHAR_MAP = { 'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', 'Ñ': 'N' };
+const normalizeFieldNameForMatch = (name) => {
+  const upper = String(name || '').toUpperCase();
+  let result = '';
+  for (const char of upper) result += ACCENTED_CHAR_MAP[char] || char;
+  return result;
+};
+const isIdentityLikeNumericField = (name) => {
+  const normalized = normalizeFieldNameForMatch(name);
+  return NUMERIC_EXCLUDE_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
+const stringifyRawValue = (value) => {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object' && 'text' in value) return String(value.text ?? '').trim();
+  return String(value).trim();
+};
+
+// Distintas plantillas (o incluso distintas filas de la misma) a veces
+// guardan el mismo valor de una lista controlada con distinto nivel de
+// detalle: "CC" en una y "CC - Cédula de ciudadanía" en otra. Se agrupan por
+// el codigo (lo que va antes de " - "), y se muestra la version con
+// descripcion cuando exista, para no duplicar el mismo valor en la lista.
+const categoryGroupKey = (text) => {
+  const dashIndex = text.indexOf(' - ');
+  const code = dashIndex >= 0 ? text.slice(0, dashIndex) : text;
+  return normalizeFieldNameForMatch(code.trim());
+};
+const preferMoreDescriptiveLabel = (current, candidate) =>
+  candidate.length > current.length ? candidate : current;
+
+// Normalizador "duro": mayusculas, sin acentos, sin espacios/guiones/guion
+// bajo. Se usa para comparar nombres de plantillas y de campos sin
+// preocuparse por como los haya escrito quien armo la plantilla.
+const normKey = (value) => normalizeFieldNameForMatch(value).replace(/[^A-Z0-9]/g, '');
+
+// "ValidatorName - NombreColumnaId" -> { validatorName, idColumnName }
+const parseValidateWith = (validateWith) => {
+  const text = String(validateWith || '').trim();
+  if (!text) return null;
+  const parts = text.split(' - ');
+  const validatorName = parts[0]?.trim();
+  const idColumnName = parts.slice(1).join(' - ').trim();
+  if (!validatorName) return null;
+  return { validatorName, idColumnName };
+};
+
+// A partir de los validadores (tablas id -> descripcion) guardados en Mongo,
+// arma un mapa validador -> (codigo -> nombre descriptivo), para poder
+// mostrar "Bienestar - Salud" en vez de "1" en los resumenes.
+const buildValidatorResolvers = (validatorDocs) => {
+  const resolversByValidator = new Map();
+  (validatorDocs || []).forEach((doc) => {
+    const columns = doc.columns || [];
+    if (columns.length < 2) return;
+    const idColumn = columns.find((c) => c.is_validator) || columns[0];
+    const descColumn = columns.find((c) => c !== idColumn && /DESCRIP|NOMBRE/i.test(c.name))
+      || columns.find((c) => c !== idColumn);
+    if (!idColumn || !descColumn) return;
+
+    const lookup = new Map();
+    (idColumn.values || []).forEach((rawId, idx) => {
+      const key = normKey(stringifyRawValue(rawId));
+      const label = stringifyRawValue(descColumn.values ? descColumn.values[idx] : '');
+      if (key && label) lookup.set(key, label);
+    });
+    resolversByValidator.set(normKey(doc.name), lookup);
+  });
+  return resolversByValidator;
+};
+
+const resolveValidatorValue = (validateWith, rawText, resolversByValidator) => {
+  const parsed = parseValidateWith(validateWith);
+  if (!parsed || !rawText) return rawText;
+  const lookup = resolversByValidator.get(normKey(parsed.validatorName));
+  if (!lookup) return rawText;
+  const resolved = lookup.get(normKey(rawText));
+  return resolved || rawText;
+};
+
+// A partir de las definiciones de campos de una plantilla y los valores
+// realmente reportados (values por field_name, ya aplanados de todas las
+// dependencias/filas), arma un resumen automatico: para campos numericos, el
+// total y el promedio; para campos con lista controlada de valores (dropdown
+// o True/False), el valor mas frecuente y cuantas veces se reporto.
+const buildFieldSummary = (fields, valuesByFieldName, resolversByValidator) => {
+  const numeric = [];
+  const categorical = [];
+
+  (fields || []).forEach((field) => {
+    if (!field?.name) return;
+    const rawValues = valuesByFieldName.get(field.name);
+    if (!rawValues || rawValues.length === 0) return;
+
+    // Un campo numerico con validador (dropdown codificado como numero, ej.
+    // "1 - Financiero") no es una cantidad real: sumarlo/promediarlo no dice
+    // nada, se trata mejor como categorico mas abajo.
+    const isRealNumericField = NUMERIC_DATATYPES.has(field.datatype)
+      && !field.validate_with
+      && !isIdentityLikeNumericField(field.name);
+
+    if (isRealNumericField) {
+      const numbers = rawValues
+        .map((value) => parseFloat(stringifyRawValue(value)))
+        .filter((value) => !Number.isNaN(value));
+      if (numbers.length === 0) return;
+      const total = numbers.reduce((sum, value) => sum + value, 0);
+      numeric.push({
+        name: field.name,
+        total,
+        average: total / numbers.length,
+        count: numbers.length,
+      });
+      return;
+    }
+
+    const isControlledVocabulary = Boolean(field.validate_with) || field.datatype === 'True/False';
+    if (!isControlledVocabulary) return;
+
+    const frequency = new Map();
+    let totalNonBlank = 0;
+    rawValues.forEach((value) => {
+      const rawText = stringifyRawValue(value);
+      if (!rawText) return;
+      // La clave de agrupacion SIEMPRE sale del texto crudo (antes de
+      // resolver el validador): asi "CC" y "CC - Cedula de ciudadania" caen
+      // en la misma clave ("CC"), sin importar que una ya traiga el nombre y
+      // la otra se resuelva ahora al nombre real (ej. "Bienestar - Salud").
+      const key = categoryGroupKey(rawText);
+      const text = field.validate_with
+        ? resolveValidatorValue(field.validate_with, rawText, resolversByValidator)
+        : rawText;
+      totalNonBlank += 1;
+      const existing = frequency.get(key);
+      if (!existing) {
+        frequency.set(key, { label: text, count: 1 });
+      } else {
+        existing.count += 1;
+        existing.label = preferMoreDescriptiveLabel(existing.label, text);
+      }
+    });
+    if (frequency.size === 0) return;
+
+    const distribution = Array.from(frequency.entries())
+      .map(([key, entry]) => ({ value: entry.label, count: entry.count, groupKey: key }))
+      .sort((a, b) => b.count - a.count);
+
+    categorical.push({
+      name: field.name,
+      topValue: distribution[0].value,
+      topCount: distribution[0].count,
+      totalValues: totalNonBlank,
+      distribution: distribution.slice(0, 5),
+    });
+  });
+
+  numeric.sort((a, b) => b.total - a.total);
+  categorical.sort((a, b) => b.topCount - a.topCount);
+
+  // Sin recortar aqui: esto se calcula por plantilla y luego se agrupa a
+  // nivel de ambito (varias plantillas aportan candidatos); el recorte final
+  // a "top N" se hace alla, sobre el conjunto ya agrupado.
+  return { numeric, categorical };
+};
+
+// Resumen "curado" a la medida, SOLO para el ambito Bienestar Institucional
+// (a pedido explicito, no es el resumen generico de arriba): cuenta
+// actividades/eventos/estrategias unicas (codigo + descripcion), personas
+// beneficiadas/impactadas y participantes, y arma el desglose de actividades
+// por dependencia. La plantilla de "Recurso Humano" queda excluida a
+// proposito (no aporta informacion relevante para este resumen).
+const BIENESTAR_DIMENSION_KEY = normKey('Bienestar Institucional');
+const BIENESTAR_ACTIVITY_TEMPLATE_KEYS = new Set([
+  'ACTIVIDADESBIENESTAR', 'ACTIVIDADESCULTURAL', 'EVENTOCULTURAL',
+  'ACTIVIDADDEBIENESTAR', 'ACTIVIDADCULTURAL', 'OTRASESTRATEGIAS',
+].map(normKey));
+const BIENESTAR_PARTICIPANT_TEMPLATE_KEYS = new Set([
+  'BENEFICIARIOBIENESTARCULTURAL', 'PARTICIPANTEOTRASESTRATEGIAS',
+].map(normKey));
+
+const findFieldByPredicate = (fields, predicate) => (fields || []).find(
+  (field) => field?.name && predicate(normKey(field.name), field)
+);
+
+const getFieldValuesForEntry = (entry, fieldDef) => {
+  if (!fieldDef) return [];
+  const filled = entry.filled_data || [];
+  const match = filled.find((f) => f && f.field_name === fieldDef.name);
+  return match && Array.isArray(match.values) ? match.values : [];
+};
+
+const buildBienestarCurado = (templateIds, templateInfoById, publishedTemplates, dependencyNameByCode) => {
+  const activityTemplateIds = [];
+  const participantTemplateIds = [];
+  templateIds.forEach((tId) => {
+    const info = templateInfoById.get(tId);
+    if (!info) return;
+    const key = normKey(info.name);
+    if (BIENESTAR_ACTIVITY_TEMPLATE_KEYS.has(key)) activityTemplateIds.push(tId);
+    else if (BIENESTAR_PARTICIPANT_TEMPLATE_KEYS.has(key)) participantTemplateIds.push(tId);
+    // Cualquier otra plantilla del ambito (ej. "Recurso Humano") no se usa aqui.
+  });
+
+  const entriesByTemplateId = (ids) => {
+    const idSet = new Set(ids);
+    const byId = new Map();
+    publishedTemplates.forEach((published) => {
+      const tId = String((published.template && published.template._id) || '');
+      if (!idSet.has(tId)) return;
+      const entries = (published.loaded_data || []).filter((entry) => countRecordsInLoadedEntry(entry) > 0);
+      byId.set(tId, (byId.get(tId) || []).concat(entries));
+    });
+    return byId;
+  };
+
+  const activitiesByCodigo = new Map(); // codigo -> descripcion
+  const dependencyActivityCodes = new Map(); // depCode -> Set(codigo)
+  let totalBeneficiarios = 0;
+  let totalPersonasImpactadas = 0;
+
+  const activityEntriesByTemplateId = entriesByTemplateId(activityTemplateIds);
+  activityTemplateIds.forEach((tId) => {
+    const info = templateInfoById.get(tId) || { fields: [] };
+    const codigoField = findFieldByPredicate(info.fields, (k) => (
+      k.indexOf('CODIGOACTIVIDAD') === 0 || k.indexOf('CODIGOEVENTO') === 0 || k === 'IDESTRATEGIA'
+    ));
+    const descField = findFieldByPredicate(info.fields, (k) => k.indexOf('DESCRIPCION') === 0);
+    const beneficiarioFields = (info.fields || []).filter(
+      (f) => NUMERIC_DATATYPES.has(f.datatype) && normKey(f.name).indexOf('BENEFICIARIO') !== -1
+    );
+    const impactadaFields = (info.fields || []).filter(
+      (f) => NUMERIC_DATATYPES.has(f.datatype) && normKey(f.name).indexOf('IMPACTAD') !== -1
+    );
+
+    const entries = activityEntriesByTemplateId.get(tId) || [];
+    entries.forEach((entry) => {
+      const depCode = entry.dependency;
+      const codigoValues = getFieldValuesForEntry(entry, codigoField);
+      const descValues = getFieldValuesForEntry(entry, descField);
+      const rowCount = countRecordsInLoadedEntry(entry);
+
+      for (let r = 0; r < rowCount; r += 1) {
+        const codigoRaw = stringifyRawValue(codigoValues[r]);
+        if (!codigoRaw) continue;
+        const descRaw = stringifyRawValue(descValues[r]);
+        const existingDesc = activitiesByCodigo.get(codigoRaw);
+        if (!existingDesc && descRaw) activitiesByCodigo.set(codigoRaw, descRaw);
+        else if (!activitiesByCodigo.has(codigoRaw)) activitiesByCodigo.set(codigoRaw, descRaw);
+
+        if (depCode) {
+          if (!dependencyActivityCodes.has(depCode)) dependencyActivityCodes.set(depCode, new Set());
+          dependencyActivityCodes.get(depCode).add(codigoRaw);
+        }
+      }
+
+      beneficiarioFields.forEach((bf) => {
+        getFieldValuesForEntry(entry, bf).forEach((v) => {
+          const n = parseFloat(stringifyRawValue(v));
+          if (!Number.isNaN(n)) totalBeneficiarios += n;
+        });
+      });
+      impactadaFields.forEach((imf) => {
+        getFieldValuesForEntry(entry, imf).forEach((v) => {
+          const n = parseFloat(stringifyRawValue(v));
+          if (!Number.isNaN(n)) totalPersonasImpactadas += n;
+        });
+      });
+    });
+  });
+
+  let totalParticipantes = 0;
+  const participantEntriesByTemplateId = entriesByTemplateId(participantTemplateIds);
+  participantTemplateIds.forEach((tId) => {
+    (participantEntriesByTemplateId.get(tId) || []).forEach((entry) => {
+      totalParticipantes += countRecordsInLoadedEntry(entry);
+    });
+  });
+
+  const actividades = Array.from(activitiesByCodigo.entries())
+    .map(([codigo, descripcion]) => ({ codigo, descripcion: descripcion || '(sin descripción)' }))
+    .sort((a, b) => a.codigo.localeCompare(b.codigo));
+
+  const porDependencia = Array.from(dependencyActivityCodes.entries())
+    .map(([depCode, codigos]) => ({
+      dependencia: dependencyNameByCode.get(depCode) || depCode,
+      totalActividades: codigos.size,
+    }))
+    .sort((a, b) => b.totalActividades - a.totalActividades);
+
+  return {
+    totalActividades: activitiesByCodigo.size,
+    totalParticipantes,
+    totalBeneficiarios: Math.round(totalBeneficiarios),
+    totalPersonasImpactadas: Math.round(totalPersonasImpactadas),
+    actividades,
+    porDependencia,
+  };
+};
+
+// Estadisticas por AMBITO para el Tablero: agrupa el contenido real
+// reportado (no conteos de plantillas/informes/dependencias) en un resumen
+// por ambito — campos numericos (total/promedio) y categoricos (distribucion
+// de valores, para graficar como dona) tomados de TODAS las plantillas de
+// ese ambito, mas su volumen de registros y evolucion mensual.
+dimensionController.getTableroStats = async function getTableroStats(req, res) {
+  var periodId = req.query.periodId || null;
 
   try {
-    const [dimensions, templates, reports] = await Promise.all([
+    var results = await Promise.all([
       Dimension.find().select('_id name').lean(),
-      Template.find().select('_id dimensions').lean(),
-      Report.find().select('_id dimensions').lean(),
+      Template.find().select('_id name dimensions fields').lean(),
+      Validator.find().select('name columns').lean(),
+      Dependency.find().select('dep_code name').lean(),
     ]);
+    var dimensions = results[0];
+    var templates = results[1];
+    var resolversByValidator = buildValidatorResolvers(results[2]);
+    var dependencyNameByCode = new Map(
+      results[3].map(function (dep) { return [dep.dep_code, dep.name]; })
+    );
 
-    const templateIdsByDimension = new Map();
-    templates.forEach((template) => {
-      (template.dimensions || []).forEach((dimId) => {
-        const key = String(dimId);
+    var templateIdsByDimension = new Map();
+    var dimIdsByTemplateId = new Map();
+    // templateId -> { name, fields }
+    var templateInfoById = new Map();
+
+    for (var t = 0; t < templates.length; t++) {
+      var template = templates[t];
+      var templateIdStr = String(template._id);
+      templateInfoById.set(templateIdStr, {
+        name: template.name || 'Sin nombre',
+        fields: template.fields || [],
+      });
+
+      var dimIdsForTemplate = (template.dimensions || []).map(function (id) { return String(id); });
+      dimIdsByTemplateId.set(templateIdStr, dimIdsForTemplate);
+      for (var d = 0; d < dimIdsForTemplate.length; d++) {
+        var key = dimIdsForTemplate[d];
         if (!templateIdsByDimension.has(key)) templateIdsByDimension.set(key, []);
-        templateIdsByDimension.get(key).push(String(template._id));
-      });
-    });
+        templateIdsByDimension.get(key).push(templateIdStr);
+      }
+    }
 
-    const reportsCountByDimension = new Map();
-    reports.forEach((report) => {
-      (report.dimensions || []).forEach((dimId) => {
-        const key = String(dimId);
-        reportsCountByDimension.set(key, (reportsCountByDimension.get(key) || 0) + 1);
-      });
-    });
-
-    const publishedQuery = periodId ? { period: periodId } : {};
-    const publishedTemplates = await PublishedTemplate.find(publishedQuery)
+    var publishedQuery = periodId ? { period: periodId } : {};
+    var publishedTemplates = await PublishedTemplate.find(publishedQuery)
       .select('template._id loaded_data')
       .lean();
 
-    const recordsByTemplateId = new Map();
-    const dependenciesByTemplateId = new Map();
-    publishedTemplates.forEach((published) => {
-      const templateId = String(published.template?._id || '');
-      if (!templateId) return;
+    var recordsByTemplateId = new Map();
+    // "YYYY-MM" -> total de registros reportados ese mes (todas las plantillas, global).
+    var recordsByMonth = new Map();
+    // dimId -> Map<"YYYY-MM", total de registros ese mes, solo ese ambito>
+    var recordsByMonthByDim = new Map();
+    // templateId -> Map<fieldName, valores reportados (todas las filas/dependencias)>
+    var fieldValuesByTemplateId = new Map();
 
-      let totalRecords = 0;
-      const dependencies = new Set();
-      (published.loaded_data || []).forEach((entry) => {
-        const recordCount = countRecordsInLoadedEntry(entry);
+    for (var pt = 0; pt < publishedTemplates.length; pt++) {
+      var published = publishedTemplates[pt];
+      var templateId = String((published.template && published.template._id) || '');
+      if (!templateId) continue;
+
+      var totalRecords = 0;
+      var loadedEntries = published.loaded_data || [];
+      var dimIdsForThisTemplate = dimIdsByTemplateId.get(templateId) || [];
+
+      if (!fieldValuesByTemplateId.has(templateId)) fieldValuesByTemplateId.set(templateId, new Map());
+      var valuesByFieldName = fieldValuesByTemplateId.get(templateId);
+
+      for (var le = 0; le < loadedEntries.length; le++) {
+        var entry = loadedEntries[le];
+        var recordCount = countRecordsInLoadedEntry(entry);
         if (recordCount > 0) {
           totalRecords += recordCount;
-          if (entry.dependency) dependencies.add(entry.dependency);
+
+          var loadedDate = entry.loaded_date ? new Date(entry.loaded_date) : null;
+          if (loadedDate && !Number.isNaN(loadedDate.getTime())) {
+            var monthKey = loadedDate.getFullYear() + '-' + String(loadedDate.getMonth() + 1).padStart(2, '0');
+            recordsByMonth.set(monthKey, (recordsByMonth.get(monthKey) || 0) + recordCount);
+
+            for (var dm = 0; dm < dimIdsForThisTemplate.length; dm++) {
+              var dimKeyForMonth = dimIdsForThisTemplate[dm];
+              if (!recordsByMonthByDim.has(dimKeyForMonth)) recordsByMonthByDim.set(dimKeyForMonth, new Map());
+              var dimMonthMap = recordsByMonthByDim.get(dimKeyForMonth);
+              dimMonthMap.set(monthKey, (dimMonthMap.get(monthKey) || 0) + recordCount);
+            }
+          }
+
+          var entryFilledData = entry.filled_data || [];
+          for (var ff = 0; ff < entryFilledData.length; ff++) {
+            var fieldEntry = entryFilledData[ff];
+            if (!fieldEntry || !fieldEntry.field_name) continue;
+            var existingValues = valuesByFieldName.get(fieldEntry.field_name) || [];
+            var rowValues = Array.isArray(fieldEntry.values) ? fieldEntry.values : [];
+            for (var rv = 0; rv < rowValues.length; rv++) existingValues.push(rowValues[rv]);
+            valuesByFieldName.set(fieldEntry.field_name, existingValues);
+          }
         }
-      });
+      }
 
       recordsByTemplateId.set(templateId, (recordsByTemplateId.get(templateId) || 0) + totalRecords);
-      const existingDeps = dependenciesByTemplateId.get(templateId) || new Set();
-      dependencies.forEach((dep) => existingDeps.add(dep));
-      dependenciesByTemplateId.set(templateId, existingDeps);
-    });
+    }
 
-    const stats = dimensions.map((dimension) => {
-      const dimId = String(dimension._id);
-      const templateIds = templateIdsByDimension.get(dimId) || [];
-      const totalRegistrosReportados = templateIds.reduce(
-        (sum, templateId) => sum + (recordsByTemplateId.get(templateId) || 0),
-        0
-      );
-      const dependenciasQueReportaron = new Set();
-      templateIds.forEach((templateId) => {
-        (dependenciesByTemplateId.get(templateId) || new Set()).forEach((dep) => dependenciasQueReportaron.add(dep));
+    var stats = dimensions.map(function (dimension) {
+      var dimId = String(dimension._id);
+      var templateIds = templateIdsByDimension.get(dimId) || [];
+
+      var totalRegistrosReportados = 0;
+      // Candidatos de resumen recolectados de TODAS las plantillas de este
+      // ambito, para agruparlos y presentarlos como si fueran del ambito.
+      var numericCandidates = [];
+      var categoricalCandidates = [];
+
+      for (var i = 0; i < templateIds.length; i++) {
+        var tId = templateIds[i];
+        totalRegistrosReportados += (recordsByTemplateId.get(tId) || 0);
+
+        var info = templateInfoById.get(tId) || { name: 'Sin nombre', fields: [] };
+        var valuesByFieldName = fieldValuesByTemplateId.get(tId) || new Map();
+        var resumen = buildFieldSummary(info.fields, valuesByFieldName, resolversByValidator);
+
+        resumen.numeric.forEach(function (field) {
+          numericCandidates.push({
+            name: field.name,
+            total: field.total,
+            average: field.average,
+            count: field.count,
+            plantilla: info.name,
+          });
+        });
+        resumen.categorical.forEach(function (field) {
+          categoricalCandidates.push({
+            name: field.name,
+            distribution: field.distribution,
+            topValue: field.topValue,
+            topCount: field.topCount,
+            totalValues: field.totalValues,
+            plantilla: info.name,
+          });
+        });
+      }
+
+      // Varias plantillas del mismo ambito suelen compartir el mismo campo
+      // (ej. "ID_TIPO_DOCUMENTO"); en vez de mostrarlo repetido una vez por
+      // plantilla, se fusiona en un solo dato combinado del ambito.
+      var mergedNumericByName = new Map();
+      numericCandidates.forEach(function (field) {
+        var key = field.name.trim().toUpperCase();
+        var existing = mergedNumericByName.get(key);
+        if (!existing) {
+          mergedNumericByName.set(key, {
+            name: field.name,
+            total: field.total,
+            count: field.count,
+            plantillas: [field.plantilla],
+          });
+        } else {
+          existing.total += field.total;
+          existing.count += field.count;
+          if (existing.plantillas.indexOf(field.plantilla) === -1) existing.plantillas.push(field.plantilla);
+        }
       });
+      var mergedNumeric = Array.from(mergedNumericByName.values()).map(function (field) {
+        return {
+          name: field.name,
+          total: field.total,
+          average: field.count > 0 ? field.total / field.count : 0,
+          count: field.count,
+          plantilla: field.plantillas.join(', '),
+        };
+      });
+
+      // La clave de agrupacion viene del groupKey ya calculado en
+      // buildFieldSummary (a partir del texto crudo, antes de resolver el
+      // validador). Si por algun motivo no viene (datos viejos en cache), se
+      // recalcula a partir del valor mostrado como respaldo.
+      var addDistributionEntry = function (valueCounts, distributionEntry) {
+        var groupKey = distributionEntry.groupKey || categoryGroupKey(distributionEntry.value);
+        var existingEntry = valueCounts.get(groupKey);
+        if (!existingEntry) {
+          valueCounts.set(groupKey, { label: distributionEntry.value, count: distributionEntry.count });
+        } else {
+          existingEntry.count += distributionEntry.count;
+          existingEntry.label = preferMoreDescriptiveLabel(existingEntry.label, distributionEntry.value);
+        }
+      };
+
+      var mergedCategoricalByName = new Map();
+      categoricalCandidates.forEach(function (field) {
+        var key = field.name.trim().toUpperCase();
+        var existing = mergedCategoricalByName.get(key);
+        if (!existing) {
+          var valueCounts = new Map();
+          field.distribution.forEach(function (d) { addDistributionEntry(valueCounts, d); });
+          mergedCategoricalByName.set(key, {
+            name: field.name,
+            valueCounts: valueCounts,
+            totalValues: field.totalValues,
+            plantillas: [field.plantilla],
+          });
+        } else {
+          field.distribution.forEach(function (d) { addDistributionEntry(existing.valueCounts, d); });
+          existing.totalValues += field.totalValues;
+          if (existing.plantillas.indexOf(field.plantilla) === -1) existing.plantillas.push(field.plantilla);
+        }
+      });
+      var mergedCategorical = Array.from(mergedCategoricalByName.values()).map(function (field) {
+        var distribution = Array.from(field.valueCounts.values())
+          .map(function (entry) { return { value: entry.label, count: entry.count }; })
+          .sort(function (a, b) { return b.count - a.count; });
+        return {
+          name: field.name,
+          distribution: distribution.slice(0, 5),
+          topValue: distribution.length > 0 ? distribution[0].value : null,
+          topCount: distribution.length > 0 ? distribution[0].count : 0,
+          totalValues: field.totalValues,
+          plantilla: field.plantillas.join(', '),
+        };
+      });
+
+      mergedNumeric.sort(function (a, b) { return b.total - a.total; });
+      mergedCategorical.sort(function (a, b) { return b.topCount - a.topCount; });
+
+      var dimMonthMap = recordsByMonthByDim.get(dimId) || new Map();
+      var timeline = Array.from(dimMonthMap.entries())
+        .map(function (pair) { return { month: pair[0], totalRegistros: pair[1] }; })
+        .sort(function (a, b) { return a.month.localeCompare(b.month); });
+
+      // Resumen a la medida SOLO para Bienestar Institucional (ver
+      // buildBienestarCurado): actividades, beneficiarios, participantes,
+      // personas impactadas y desglose por dependencia.
+      var curado = normKey(dimension.name) === BIENESTAR_DIMENSION_KEY
+        ? buildBienestarCurado(templateIds, templateInfoById, publishedTemplates, dependencyNameByCode)
+        : null;
 
       return {
         _id: dimension._id,
         name: dimension.name,
-        totalPlantillas: templateIds.length,
-        totalInformes: reportsCountByDimension.get(dimId) || 0,
-        totalRegistrosReportados,
-        totalDependenciasReportando: dependenciasQueReportaron.size,
+        totalRegistrosReportados: totalRegistrosReportados,
+        resumen: {
+          numeric: mergedNumeric.slice(0, 6),
+          categorical: mergedCategorical.slice(0, 4),
+        },
+        timeline: timeline,
+        curado: curado,
       };
     });
 
-    res.status(200).json({ stats });
+    var globalTimeline = Array.from(recordsByMonth.entries())
+      .map(function (pair) { return { month: pair[0], totalRegistros: pair[1] }; })
+      .sort(function (a, b) { return a.month.localeCompare(b.month); });
+
+    res.status(200).json({ stats: stats, timeline: globalTimeline });
   } catch (error) {
     console.error('Error building tablero stats:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -131,10 +610,10 @@ dimensionController.getDimensionsPagination = async (req, res) => {
 
   try {
     let query = {};
-    
+
     // Si hay email, filtrar por dimensiones donde el usuario es visualizer
     if (email) {
-      
+
       // Buscar el usuario
       const user = await User.findOne({ email, isActive: true });
       if (!user) {
@@ -146,10 +625,10 @@ dimensionController.getDimensionsPagination = async (req, res) => {
         // No agregar filtro, mostrar todas
       } else {
         // Buscar las dependencias donde el usuario es visualizer
-        const leaderDependencies = await Dependency.find({ 
+        const leaderDependencies = await Dependency.find({
           visualizers: { $in: [email] }
         });
-        
+
         if (leaderDependencies.length === 0) {
           return res.status(200).json({
             dimensions: [],
@@ -160,17 +639,17 @@ dimensionController.getDimensionsPagination = async (req, res) => {
         }
 
         const dependencyIds = leaderDependencies.map(dep => dep._id);
-        
+
         // Filtrar dimensiones por dependencias del usuario
         query.responsible = { $in: dependencyIds };
       }
     }
-    
+
     // Agregar filtro de búsqueda si existe
     if (search) {
       query.name = { $regex: search, $options: 'i' };
     }
-    
+
     const dimensions = await Dimension
       .find(query)
       .populate('responsible')
@@ -195,7 +674,7 @@ dimensionController.getDimensionsByResponsible = async (req, res) => {
   const email = req.query.email;
   try {
     const User = require('../models/users');
-    
+
     // Buscar el usuario
     const user = await User.findOne({ email, isActive: true });
     if (!user) {
@@ -203,10 +682,10 @@ dimensionController.getDimensionsByResponsible = async (req, res) => {
     }
 
     // Buscar las dependencias donde el usuario es visualizer
-    const leaderDependencies = await Dependency.find({ 
+    const leaderDependencies = await Dependency.find({
       visualizers: { $in: [email] }
     });
-    
+
     if (leaderDependencies.length === 0) {
       return res.status(200).json([]);
     }
@@ -230,7 +709,7 @@ dimensionController.createDimension = async (req, res) => {
     const name = req.body.name;
     const nameLowerCase = req.body.name.toLowerCase();
     const existingDimension = await Dimension.findOne({ name: { $regex: new RegExp(`^${nameLowerCase}$`, 'i') } });
-    
+
     if (existingDimension) {
       return res.status(400).json({ error: "La dimensión con ese nombre ya existe" });
     }
@@ -241,7 +720,7 @@ dimensionController.createDimension = async (req, res) => {
     });
 
     await dimension.save();
-    
+
     // Registrar en auditoría (non-blocking)
     try {
       const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
@@ -265,7 +744,7 @@ dimensionController.createDimension = async (req, res) => {
     } catch (auditError) {
       console.error('❌ Audit logging failed:', auditError);
     }
-    
+
     res.status(200).json({ status: "Dimension created" });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -303,12 +782,12 @@ dimensionController.deleteDimension = async (req, res) => {
     if (!dimension) {
       return res.status(404).json({ error: "Dimension not found" });
     }
-    
+
     const dimensionName = dimension.name;
     const dependencyName = dimension.responsible?.name || 'dependencia desconocida';
-    
+
     await Dimension.findByIdAndDelete(id);
-    
+
     // Registrar en auditoría (non-blocking)
     try {
       const userEmail = req.body.userEmail || req.query.email || req.headers['user-email'];
@@ -330,7 +809,7 @@ dimensionController.deleteDimension = async (req, res) => {
     } catch (auditError) {
       console.error('❌ Audit logging failed:', auditError);
     }
-    
+
     res.status(200).json({ status: "Dimension deleted" });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -363,7 +842,9 @@ dimensionController.getDimensionsByUser = async (req, res) => {
 
     let dimensions;
 
-    if (user.activeRole === 'Administrador') {
+    // Administrador y Usuario (rol base, sin ambito propio que consultar)
+    // ven siempre todos los ambitos.
+    if (user.activeRole === 'Administrador' || user.activeRole === 'Usuario') {
       dimensions = await Dimension.find({}, '_id name');
     } else {
       const userDependencies = await Dependency.find({
@@ -371,14 +852,24 @@ dimensionController.getDimensionsByUser = async (req, res) => {
       });
 
       if (userDependencies.length === 0) {
-        return res.status(200).json([]);
+        // Sin ambito asignado como visualizador: en vez de dejarlo sin nada
+        // que consultar, se le muestran todos los ambitos (misma logica que
+        // Administrador). Si el usuario SI tiene al menos un ambito asignado,
+        // se mantiene la restriccion de abajo.
+        dimensions = await Dimension.find({}, '_id name');
+      } else {
+        const dependencyIds = userDependencies.map(dep => dep._id);
+        dimensions = await Dimension.find(
+          { responsible: { $in: dependencyIds } },
+          '_id name'
+        );
+        // Si tiene dependencia(s) asignadas pero ninguna es responsable de un
+        // ambito, tambien se cae al listado completo (mismo criterio: mejor
+        // mostrar todo que dejarlo sin nada que consultar).
+        if (dimensions.length === 0) {
+          dimensions = await Dimension.find({}, '_id name');
+        }
       }
-
-      const dependencyIds = userDependencies.map(dep => dep._id);
-      dimensions = await Dimension.find(
-        { responsible: { $in: dependencyIds } },
-        '_id name'
-      );
     }
 
     res.status(200).json(dimensions);
