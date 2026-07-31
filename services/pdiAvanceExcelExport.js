@@ -103,7 +103,7 @@ function calcularIndicadorExportPorPeriodo(indicador, periodFilter) {
         }
     }
 
-    // Sin redondear: alimenta la Acción del archivo de año (weightedContribution).
+    // Sin redondear: alimenta la Acción del archivo de vigencia (weightedAverage).
     const porcentajeAvance = metaAnio > 0 ? Math.min(avanceOperacion / metaAnio, 1) * 100 : 0;
 
     // "Tiene meta en el alcance" = al menos un periodo filtrado con meta no
@@ -182,7 +182,11 @@ function duplicateCodes(items = [], level) {
         }));
 }
 
-function validarPesos({ macros, proyectos, acciones, indicadores }) {
+// `skipIndicadorPesoCheck` se usa desde los archivos de vigencia (año/periodo):
+// ahí `indicadores` ya viene filtrado a los que tienen meta en ese año/periodo,
+// así que es esperado (y correcto, no un error) que su peso no sume 100% por
+// Acción — lo reporta, con el detalle correcto, `validarCoberturaPesoAnio`.
+function validarPesos({ macros, proyectos, acciones, indicadores, skipIndicadorPesoCheck = false }) {
     const rows = [];
     const tolerancia = 0.01;
 
@@ -240,12 +244,14 @@ function validarPesos({ macros, proyectos, acciones, indicadores }) {
         accionesPorProyecto.get(String(proyecto._id)) || [],
         `Proyecto ${proyecto.codigo}`
     ));
-    acciones.forEach((accion) => addWeightCheck(
-        'Acción → Indicadores',
-        accion.codigo,
-        indicadoresPorAccion.get(String(accion._id)) || [],
-        `Acción ${accion.codigo}`
-    ));
+    if (!skipIndicadorPesoCheck) {
+        acciones.forEach((accion) => addWeightCheck(
+            'Acción → Indicadores',
+            accion.codigo,
+            indicadoresPorAccion.get(String(accion._id)) || [],
+            `Acción ${accion.codigo}`
+        ));
+    }
 
     return rows;
 }
@@ -1376,12 +1382,14 @@ const FORMULA_TEXTO_ANIO = (anio) => ({
     ultimo_valor: `Se toma el valor reportado en el último período de ${anio} con información registrada. El porcentaje de avance se obtiene dividiendo dicho valor entre la meta de ese mismo período, aplicando un límite máximo del 100 %.`,
 });
 
-// Detecta, por cada Acción, si el peso de sus indicadores CON meta en el año
-// no suma 100% (porque otros indicadores de esa acción no tienen meta ese
-// año). Como el avance de la acción se calcula dividiendo entre 100 (no entre
-// el peso realmente cubierto — igual que en el archivo general), cuando eso
-// pasa el avance del año puede quedar subestimado; se deja como advertencia
-// explícita en vez de un cálculo silencioso.
+// Informa, por cada Acción, cuándo el peso de sus indicadores CON meta en el
+// año no suma 100% (porque otros indicadores de esa acción no tienen meta ese
+// año — aplican a 2027, 2028 o 2029). No es un error: para el archivo de
+// vigencia el avance de la Acción se consolida dividiendo entre el peso
+// realmente cubierto ese año (ver weightedAverage en accion.avance_descarga),
+// no entre el 100% de la estructura completa del PDI, para que el resultado
+// represente el cumplimiento de lo programado en esa vigencia sin redistribuir
+// ni modificar los pesos originales del PDI.
 function validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccionAnio, anio) {
     const rows = [];
     const tolerancia = 0.01;
@@ -1394,9 +1402,9 @@ function validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccionAnio, anio) 
             categoria: `Peso cubierto en ${anio}`,
             nivel: 'Acción → Indicadores',
             codigo: accion.codigo,
-            estado: 'Advertencia',
-            detalle: `Los indicadores con meta en ${anio} de esta acción suman ${total}% de peso (no 100%): el resto de sus indicadores no tiene meta definida en ${anio}.`,
-            accion: `El avance ${anio} de esta acción (y de su proyecto/macroproyecto) puede estar subestimado, porque se divide entre 100 y no entre el ${total}% realmente cubierto ese año.`,
+            estado: 'OK',
+            detalle: `Los indicadores con meta en ${anio} de esta acción suman ${total}% de peso (no 100%): el resto de sus indicadores no tiene meta definida en ${anio} y no participa del cálculo de esta vigencia.`,
+            accion: `El avance ${anio} de esta acción se calculó dividiendo entre el ${total}% de peso realmente cubierto ese año (no entre 100), para que refleje el cumplimiento de lo programado en ${anio} y no el avance acumulado del PDI. No se requiere ajustar pesos.`,
         });
     });
     return rows;
@@ -1447,7 +1455,10 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
 
     const indicadoresPorAccion = groupBy(indicadoresPeriodo, (i) => i.accion_id?._id ?? i.accion_id);
     accionesNorm.forEach((accion) => {
-        accion.avance_descarga = weightedContribution(
+        // weightedAverage (no weightedContribution): el denominador es el peso
+        // realmente cubierto por indicadores con meta en este periodo, no el
+        // 100% de la estructura completa del PDI.
+        accion.avance_descarga = weightedAverage(
             indicadoresPorAccion.get(String(accion._id)) || [],
             (indicador) => indicador.avance_descarga,
             (indicador) => indicador.peso
@@ -1659,7 +1670,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
     wsAcc.autoFilter = { from: 'A1', to: 'F1' };
     wsAcc.views = [{ state: 'frozen', ySplit: 1 }];
 
-    const ACCION_FORMULA_TXT = `Consolidación del avance ${periodo} de la Acción Estratégica mediante la sumatoria ponderada del avance ${periodo} de los indicadores que la conforman (solo los que tienen meta ese periodo), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ 100.`;
+    const ACCION_FORMULA_TXT = `Consolidación del avance ${periodo} de la Acción Estratégica mediante la sumatoria ponderada del avance ${periodo} de los indicadores que la conforman (solo los que tienen meta ese periodo), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ Σ (Peso del Indicador), considerando solo los indicadores con meta en ${periodo} (no se divide entre 100, para no distorsionar el resultado con el peso de indicadores que no aplican a este periodo).`;
     accionesNorm.forEach((acc, idx) => {
         const r = idx + 2;
         const proyecto = proyectoPorId.get(String(acc.proyecto_id?._id ?? acc.proyecto_id));
@@ -1668,7 +1679,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
         wsAcc.getCell(`C${r}`).value = proyecto?.codigo ?? '';
         wsAcc.getCell(`D${r}`).value = acc.peso_norm;
         wsAcc.getCell(`E${r}`).value = {
-            formula: `SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100`,
+            formula: `IFERROR(SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/SUMPRODUCT((${IND.accion}=$A${r})*${IND.peso}),0)`,
             result: acc.avance_descarga,
         };
         wsAcc.getCell(`F${r}`).value = ACCION_FORMULA_TXT;
@@ -1823,25 +1834,24 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
  * (solo el avance por periodo de cada indicador), así que no hay con qué
  * compararlas.
  */
-async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadores, anio }) {
+// Calcula el avance ponderado de una vigencia (año) completa: Indicador →
+// Acción → Proyecto → Macroproyecto → PDI, usando siempre el peso asignado en
+// el PDI en cada nivel, y — únicamente para Indicador → Acción — dividiendo
+// entre el peso realmente cubierto por los indicadores con meta en ese año
+// (no entre el 100% de la estructura completa), sin redistribuir ni modificar
+// los pesos originales del PDI. Es la única implementación de este cálculo:
+// la usan tanto este archivo (buildAvanceWorkbookAnio, para el Excel) como
+// controllers/pdiDashboard.js (para la tarjeta "Avance del año" del tablero),
+// para que ambos muestren siempre el mismo número.
+function calcularAvanceVigencia({ macros, proyectos, acciones, indicadores, anio }) {
     const anioStr = String(anio);
-    const workbook = new ExcelJS.Workbook();
-    const generatedAt = new Date();
-    workbook.creator = 'MIRÓ - Tablero de control PDI';
-    workbook.created = generatedAt;
-    workbook.modified = generatedAt;
-    workbook.calcProperties = workbook.calcProperties || {};
-    workbook.calcProperties.fullCalcOnLoad = true;
 
     const accionesNorm = acciones.map((a) => ({ ...a, peso_norm: normalizePeso(a.peso) }));
     const proyectosNorm = proyectos.map((p) => ({ ...p, peso_norm: normalizePeso(p.peso) }));
     const macrosNorm = macros.map((m) => ({ ...m, peso_norm: normalizePeso(m.peso) }));
-    const accionPorId = new Map(accionesNorm.map((a) => [String(a._id), a]));
-    const proyectoPorId = new Map(proyectosNorm.map((p) => [String(p._id), p]));
-    const macroPorId = new Map(macrosNorm.map((m) => [String(m._id), m]));
 
-    // Solo los indicadores con meta definida en el año quedan en el libro:
-    // los demás no "aplican" a ${anioStr} y distorsionarían el cálculo.
+    // Solo los indicadores con meta definida en el año quedan incluidos: los
+    // demás no "aplican" a ${anioStr} y distorsionarían el cálculo.
     const indicadoresAnio = indicadores
         .map((ind) => ({ ...ind, peso_norm: normalizePeso(ind.peso), periodos_marcados: marcarUltimoPeriodoConAvanceAnio(ind.periodos || [], anioStr) }))
         .map((ind) => ({ ind, calc: calcularIndicadorExportAnio(ind, anioStr) }))
@@ -1856,7 +1866,12 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
 
     const indicadoresPorAccion = groupBy(indicadoresAnio, (i) => i.accion_id?._id ?? i.accion_id);
     accionesNorm.forEach((accion) => {
-        accion.avance_descarga = weightedContribution(
+        // weightedAverage (no weightedContribution): el denominador es el
+        // peso realmente cubierto por indicadores con meta en ${anioStr}, no
+        // el 100% de la estructura completa del PDI — los pesos originales
+        // no se modifican ni se redistribuyen, solo cambia contra qué se
+        // divide la sumatoria.
+        accion.avance_descarga = weightedAverage(
             indicadoresPorAccion.get(String(accion._id)) || [],
             (indicador) => indicador.avance_descarga,
             (indicador) => indicador.peso
@@ -1885,11 +1900,45 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     });
 
     // PDI global también es un valor final: se redondea a 2 decimales aquí.
-    const avanceGlobalDescarga = round2(weightedAverage(
+    const avanceGlobal = round2(weightedAverage(
         macrosNorm,
         (macro) => macro.avance_descarga,
         (macro) => macro.peso
     ));
+
+    return {
+        anio: anioStr,
+        avanceGlobal,
+        macros: macrosNorm,
+        proyectos: proyectosNorm,
+        acciones: accionesNorm,
+        indicadoresVigencia: indicadoresAnio,
+        indicadoresPorAccion,
+    };
+}
+
+async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadores, anio }) {
+    const anioStr = String(anio);
+    const workbook = new ExcelJS.Workbook();
+    const generatedAt = new Date();
+    workbook.creator = 'MIRÓ - Tablero de control PDI';
+    workbook.created = generatedAt;
+    workbook.modified = generatedAt;
+    workbook.calcProperties = workbook.calcProperties || {};
+    workbook.calcProperties.fullCalcOnLoad = true;
+
+    const {
+        avanceGlobal: avanceGlobalDescarga,
+        macros: macrosNorm,
+        proyectos: proyectosNorm,
+        acciones: accionesNorm,
+        indicadoresVigencia: indicadoresAnio,
+        indicadoresPorAccion,
+    } = calcularAvanceVigencia({ macros, proyectos, acciones, indicadores, anio: anioStr });
+
+    const accionPorId = new Map(accionesNorm.map((a) => [String(a._id), a]));
+    const proyectoPorId = new Map(proyectosNorm.map((p) => [String(p._id), p]));
+    const macroPorId = new Map(macrosNorm.map((m) => [String(m._id), m]));
 
     // Periodos (semestres) distintos dentro de este año, presentes en los
     // indicadores con meta ese año. Se usan más abajo para agregar, en el
@@ -1906,7 +1955,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         ...duplicateCodes(accionesNorm, 'Acción estratégica'),
         ...duplicateCodes(indicadoresAnio, 'Indicador'),
         ...validarRelaciones({ macros: macrosNorm, proyectos: proyectosNorm, acciones: accionesNorm, indicadores: indicadoresAnio }),
-        ...validarPesos({ macros: macrosNorm, proyectos: proyectosNorm, acciones: accionesNorm, indicadores: indicadoresAnio }),
+        ...validarPesos({ macros: macrosNorm, proyectos: proyectosNorm, acciones: accionesNorm, indicadores: indicadoresAnio, skipIndicadorPesoCheck: true }),
         ...validarIndicadores(indicadoresAnio),
         ...validarCoberturaPesoAnio(accionesNorm, indicadoresPorAccion, anioStr),
     ];
@@ -2088,7 +2137,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     wsAcc.autoFilter = { from: 'A1', to: 'F1' };
     wsAcc.views = [{ state: 'frozen', ySplit: 1 }];
 
-    const ACCION_FORMULA_TXT = `Consolidación del avance ${anioStr} de la Acción Estratégica mediante la sumatoria ponderada del avance ${anioStr} de los indicadores que la conforman (solo los que tienen meta ese año), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ 100.`;
+    const ACCION_FORMULA_TXT = `Consolidación del avance ${anioStr} de la Acción Estratégica mediante la sumatoria ponderada del avance ${anioStr} de los indicadores que la conforman (solo los que tienen meta ese año), utilizando el peso asignado a cada uno.\nFórmula aplicada: Σ (Avance del Indicador × Peso del Indicador) ÷ Σ (Peso del Indicador), considerando solo los indicadores con meta en ${anioStr} (no se divide entre 100, para que el resultado represente el cumplimiento de lo programado en ${anioStr} y no el avance acumulado del PDI). Los pesos originales del PDI no se modifican ni se redistribuyen.`;
     accionesNorm.forEach((acc, idx) => {
         const r = idx + 2;
         const proyecto = proyectoPorId.get(String(acc.proyecto_id?._id ?? acc.proyecto_id));
@@ -2098,7 +2147,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         wsAcc.getCell(`D${r}`).value = acc.peso_norm;
         // Sin redondear: alimenta el Proyecto.
         wsAcc.getCell(`E${r}`).value = {
-            formula: `SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/100`,
+            formula: `IFERROR(SUMPRODUCT((${IND.accion}=$A${r})*${IND.pct}*${IND.peso})/SUMPRODUCT((${IND.accion}=$A${r})*${IND.peso}),0)`,
             result: acc.avance_descarga,
         };
         wsAcc.getCell(`F${r}`).value = ACCION_FORMULA_TXT;
@@ -2197,7 +2246,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         `• Este archivo es la versión de la memoria de cálculo enfocada SOLO en ${anioStr}: usa la misma cadena de cálculo Periodos → Indicadores → Acciones → Proyectos → Macroproyectos → PDI que el archivo general, pero cada nivel se calcula contra la meta de ${anioStr}, no contra la Meta final 2029.`,
         `• Solo se incluyen los indicadores que tienen meta definida en ${anioStr}: los que aplican a otros años del plan no aparecen aquí.`,
         '• Cada hoja tiene una columna "Fórmula aplicada" con el detalle del cálculo. Este archivo no compara contra un valor "guardado en el sistema": el sistema no persiste un avance por año a nivel de Acción/Proyecto/Macroproyecto/PDI (solo el avance por periodo de cada indicador).',
-        `• Si una Acción tiene indicadores que no aplican a ${anioStr}, su peso total con meta ese año puede no sumar 100%; en ese caso el avance de esa acción (y el de su proyecto/macroproyecto) puede quedar subestimado. Ver hoja Validaciones, categoría "Peso cubierto en ${anioStr}".`,
+        `• Si una Acción tiene indicadores que no aplican a ${anioStr}, su peso total con meta ese año puede no sumar 100%: en ese caso, el avance de esa acción se consolida dividiendo entre el peso realmente cubierto en ${anioStr} (no entre 100), para que el resultado represente el cumplimiento de lo programado en esta vigencia y no el avance acumulado del PDI. Los pesos originales del PDI no se modifican ni se redistribuyen. Ver hoja Validaciones, categoría "Peso cubierto en ${anioStr}".`,
     ]);
 
     nextRow += 1;
@@ -2363,12 +2412,12 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         'Validaciones que realiza el archivo',
         ['Validación', 'Qué revisa', 'Resultado esperado'],
         [
-            ['Pesos al 100%', 'Macroproyectos del PDI y elementos hijos en cada nivel (estructura completa, no solo lo de este año).', 'Cada grupo debe sumar exactamente 100%.'],
+            ['Pesos al 100%', 'Macroproyectos del PDI, Proyectos dentro de su Macroproyecto y Acciones dentro de su Proyecto (estructura completa, no solo lo de este año). No aplica a Indicadores dentro de su Acción: ver "Peso cubierto" más abajo.', 'Cada grupo debe sumar exactamente 100%.'],
             ['Códigos duplicados', `Códigos repetidos entre los indicadores con meta en ${anioStr} (y en macroproyectos/proyectos/acciones).`, 'No debe haber códigos repetidos dentro del mismo nivel.'],
             ['Relaciones jerárquicas', 'Proyecto → Macroproyecto, Acción → Proyecto, Indicador → Acción.', 'Cada elemento debe tener un padre válido.'],
             ['Valores numéricos', `Avances y metas de los periodos de ${anioStr}.`, 'Los campos que participan en cálculo deben ser numéricos.'],
             ['Tipos de cálculo', 'Tipo configurado en cada indicador incluido.', 'Debe ser Acumulado, Promedio o Último valor reportado.'],
-            [`Peso cubierto en ${anioStr}`, `Que el peso de los indicadores con meta en ${anioStr} sume 100% dentro de cada acción.`, `Si no suma 100%, el avance ${anioStr} de esa acción (y de su proyecto/macroproyecto) puede estar subestimado.`],
+            [`Peso cubierto en ${anioStr}`, `Que el peso de los indicadores con meta en ${anioStr} sume 100% dentro de cada acción.`, `Si no suma 100%, es informativo (no un error): el avance ${anioStr} de esa acción se consolidó dividiendo entre el peso realmente cubierto ese año, no entre 100. Los pesos del PDI no se modifican.`],
         ],
         guiaRow
     );
@@ -2455,4 +2504,4 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     return workbook;
 }
 
-module.exports = { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio };
+module.exports = { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio, calcularAvanceVigencia };
