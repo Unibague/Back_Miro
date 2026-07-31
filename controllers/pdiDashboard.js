@@ -6,7 +6,7 @@ const RespuestaFormulario = require('../models/pdiFormularioRespuesta');
 const Corte           = require('../models/pdiCorte');
 const { getSemaforo } = require('../helpers/pdiSemaforo');
 const pdiNodeNetwork  = require('../services/pdiNodeNetwork');
-const { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio } = require('../services/pdiAvanceExcelExport');
+const { buildAvanceWorkbook, buildIndicadoresMetasWorkbook, buildAvanceWorkbookAnio, calcularAvanceVigencia } = require('../services/pdiAvanceExcelExport');
 const { weightedAverage, toNumberValue } = require('../services/pdiAvanceCalculator');
 const {
     autoApproveAllPendingLeaderSubmittedResponses,
@@ -38,55 +38,6 @@ function promedioAvance(docs) {
     );
 }
 
-function ordenarPeriodos(lista = []) {
-    return [...lista].sort((a, b) => String(a.periodo ?? '').localeCompare(String(b.periodo ?? '')));
-}
-
-// Un periodo recien agregado guarda avance:0 por defecto aunque nadie lo haya
-// reportado (estado_reporte queda en 'Borrador'). Si solo filtraramos por
-// "avance no nulo" ese 0 de relleno se confundiria con un reporte real.
-function fueReportado(p) {
-    return Boolean(p.estado_reporte) && p.estado_reporte !== 'Borrador';
-}
-
-// Cumplimiento del indicador EN un año puntual, frente a la meta programada
-// para ese mismo año (no la Meta final 2029): es una tasa de ejecución anual,
-// análoga a "ejecutado / presupuestado" del avance financiero por año.
-function cumplimientoIndicadorAnio(indicador, anio) {
-    const periodosAnio = ordenarPeriodos(indicador.periodos || [])
-        .filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
-    if (!periodosAnio.length) return 0;
-
-    const tipo = indicador.tipo_calculo || 'promedio';
-
-    if (tipo === 'ultimo_valor') {
-        const conAvance = periodosAnio.filter((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
-        if (!conAvance.length) return 0;
-        const ultimo = conAvance[conAvance.length - 1];
-        const avance = toNumberValue(ultimo.avance);
-        const meta = toNumberValue(ultimo.meta);
-        if (avance === null) return 0;
-        if (meta !== null && meta > 0) return Math.round(Math.min(avance / meta, 1) * 100 * 100) / 100;
-        return Math.round(Math.min(avance, 100) * 100) / 100;
-    }
-
-    if (tipo === 'promedio') {
-        const avances = periodosAnio.map((p) => toNumberValue(p.avance)).filter((v) => v !== null);
-        const metas = periodosAnio.map((p) => toNumberValue(p.meta)).filter((v) => v !== null);
-        if (!avances.length || !metas.length) return 0;
-        const avanceProm = avances.reduce((a, b) => a + b, 0) / avances.length;
-        const metaProm = metas.reduce((a, b) => a + b, 0) / metas.length;
-        if (!(metaProm > 0)) return 0;
-        return Math.round(Math.min(avanceProm / metaProm, 1) * 100 * 100) / 100;
-    }
-
-    // acumulado
-    const sumaAvance = periodosAnio.reduce((s, p) => s + (toNumberValue(p.avance) ?? 0), 0);
-    const sumaMeta = periodosAnio.reduce((s, p) => s + (toNumberValue(p.meta) ?? 0), 0);
-    if (!(sumaMeta > 0)) return 0;
-    return Math.round(Math.min(sumaAvance / sumaMeta, 1) * 100 * 100) / 100;
-}
-
 // Indicadores que tienen meta definida en un año puntual: es el universo que
 // "aplica" a ese año (los que no tienen meta ese año simplemente no se evalúan).
 function indicadoresConMetaEnAnio(anio, indicadores) {
@@ -95,20 +46,6 @@ function indicadoresConMetaEnAnio(anio, indicadores) {
             String(p.periodo ?? '').slice(0, 4) === anio && toNumberValue(p.meta) !== null
         )
     );
-}
-
-// Avance real del año en curso: se toman TODOS los indicadores que tienen
-// meta definida en ese año (el mismo universo que "Indicadores del período"),
-// se calcula el % de cumplimiento individual de cada uno frente a la meta de
-// ESE año, y se promedian (suma de los % ÷ total de indicadores). No es una
-// ponderación por peso ni una cadena jerárquica: es el promedio simple del
-// avance real de ese año, tal como se ve en la tabla del tablero.
-function calcularAvanceGlobalAnio(anio, { indicadores }) {
-    const indicadoresDelAnio = indicadoresConMetaEnAnio(anio, indicadores);
-    if (!indicadoresDelAnio.length) return 0;
-
-    const suma = indicadoresDelAnio.reduce((acc, ind) => acc + cumplimientoIndicadorAnio(ind, anio), 0);
-    return Math.round((suma / indicadoresDelAnio.length) * 100) / 100;
 }
 
 // Estructura del año: cuántos macroproyectos/proyectos/acciones/indicadores
@@ -251,10 +188,23 @@ ctrl.resumen = async (req, res) => {
             (macro) => macro.peso
         ) * 100) / 100;
 
-        // Avance real del año en curso: promedio simple del % de cumplimiento
-        // individual de los indicadores con meta en ese año (ver calcularAvanceGlobalAnio).
+        // Avance real del año en curso: misma metodología ponderada por peso
+        // que el Excel "Memoria técnica del cálculo del avance del PDI
+        // {año}" (ver calcularAvanceVigencia en services/pdiAvanceExcelExport.js),
+        // para que la tarjeta del tablero y el Excel siempre coincidan.
         const anioActual = String(new Date().getFullYear());
-        const avanceAnioActual = calcularAvanceGlobalAnio(anioActual, { macros, proyectos, acciones, indicadores });
+        // calcularAvanceVigencia espera objetos planos (así los recibe siempre
+        // desde el exportador de Excel, con .lean()): los documentos Mongoose
+        // de arriba no se pueden usar directo porque sus campos no quedan
+        // como propiedades propias al hacer spread ({ ...doc }), así que se
+        // convierten aquí con toObject() antes de pasarlos.
+        const { avanceGlobal: avanceAnioActual } = calcularAvanceVigencia({
+            macros: macros.map((m) => m.toObject()),
+            proyectos: proyectos.map((p) => p.toObject()),
+            acciones: acciones.map((a) => a.toObject()),
+            indicadores: indicadores.map((i) => i.toObject()),
+            anio: anioActual,
+        });
         const estructuraAnioActual = calcularEstructuraAnio(anioActual, { proyectos, acciones, indicadores });
 
         // Presupuesto — suma desde macroproyectos (cada uno agrega sus proyectos)
