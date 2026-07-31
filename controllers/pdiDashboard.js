@@ -458,8 +458,8 @@ ctrl.exportarAvance = async (req, res) => {
 
         const workbook = await buildAvanceWorkbook({ macros, proyectos, acciones, indicadores });
 
-        const nombreArchivo = `Memoria tecnica del calculo del avance del PDI ${new Date().toISOString().slice(0, 10)}.xlsx`;
-        const nombreArchivoUtf8 = `Memoria técnica del cálculo del avance del PDI ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const nombreArchivo = `Memoria tecnica del calculo del avance acumulado del PDI 2026-2029 ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const nombreArchivoUtf8 = `Memoria técnica del cálculo del avance acumulado del PDI 2026–2029 ${new Date().toISOString().slice(0, 10)}.xlsx`;
         res.setHeader(
             'Content-Type',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -498,8 +498,8 @@ ctrl.exportarAvanceAnio = async (req, res) => {
 
         const workbook = await buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadores, anio });
 
-        const nombreArchivo = `Memoria tecnica del calculo del avance del PDI ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
-        const nombreArchivoUtf8 = `Memoria técnica del cálculo del avance del PDI ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const nombreArchivo = `Memoria tecnica del calculo del cumplimiento de la vigencia ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const nombreArchivoUtf8 = `Memoria técnica del cálculo del cumplimiento de la vigencia ${anio} ${new Date().toISOString().slice(0, 10)}.xlsx`;
         res.setHeader(
             'Content-Type',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
