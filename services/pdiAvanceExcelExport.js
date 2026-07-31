@@ -2487,14 +2487,19 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         `Cálculo del avance por nivel (todo referido a ${anioStr})`,
         ['Nivel', 'Cálculo', 'Resultado'],
         [
-            ['Indicador', `Según tipo de cálculo (Acumulado, Promedio o Último valor reportado), usando solo los periodos de ${anioStr}. Se compara contra la Meta ${anioStr} (no la Meta final 2029).`, `% de avance del indicador en ${anioStr}, capado a 100%.`],
-            ['Acción Estratégica', `Σ(% avance ${anioStr} del indicador × peso del indicador) ÷ 100, solo con indicadores que tienen meta en ${anioStr}.`, `Avance ponderado ${anioStr} de la acción.`],
-            ['Proyecto', `Σ(avance ${anioStr} de la acción × peso de la acción) ÷ 100.`, `Avance ponderado ${anioStr} del proyecto.`],
-            ['Macroproyecto', `Σ(avance ${anioStr} del proyecto × peso del proyecto) ÷ 100.`, `Avance ponderado ${anioStr} del macroproyecto.`],
-            ['PDI', `Sumatoria ponderada del avance ${anioStr} de los macroproyectos: Σ (Avance ${anioStr} del Macroproyecto × Peso del Macroproyecto) ÷ 100.`, `Avance global de ${anioStr}.`],
+            ['Indicador', `Según tipo de cálculo (Acumulado, Promedio o Último valor reportado), usando solo los periodos de ${anioStr}. Se compara contra la Meta ${anioStr} (no la Meta final 2029). Un indicador sin ninguna meta en ${anioStr} no aparece en este archivo: no aplica a esta vigencia.`, `% de avance del indicador en ${anioStr}, capado a 100%.`],
+            ['Acción Estratégica', `Σ(% avance ${anioStr} del indicador × peso del indicador) ÷ Σ(peso del indicador), usando SOLO los indicadores con meta en ${anioStr} (no se divide entre 100). Si ninguno de sus indicadores tiene meta en ${anioStr}, la acción "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} de la acción, sobre el peso realmente cubierto ese año (columna "¿Aplica a ${anioStr}?" en la hoja Indicadores/Acciones).`],
+            ['Proyecto', `Σ(avance ${anioStr} de la acción × peso de la acción) ÷ Σ(peso de la acción), usando SOLO las acciones que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Acciones). Las que no aplican se EXCLUYEN de la suma — no cuentan como 0%. Si ninguna acción aplica, el proyecto "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} del proyecto, sobre el peso cubierto por las acciones que aplican.`],
+            ['Macroproyecto', `Σ(avance ${anioStr} del proyecto × peso del proyecto) ÷ Σ(peso del proyecto), usando SOLO los proyectos que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Proyectos). Los que no aplican se EXCLUYEN de la suma. Si ningún proyecto aplica, el macroproyecto "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} del macroproyecto, sobre el peso cubierto por los proyectos que aplican.`],
+            ['PDI', `Σ(avance ${anioStr} del macroproyecto × peso del macroproyecto) ÷ Σ(peso del macroproyecto), usando SOLO los macroproyectos que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Macroproyectos y del Resumen).`, `Avance global de ${anioStr}, sobre el peso realmente cubierto por toda la estructura.`],
         ],
         guiaRow
     );
+    wsGuia.getCell(`A${guiaRow}`).value = `Nota: en ningún nivel se dividen los porcentajes entre el 100% de la estructura completa del PDI. El denominador de cada nivel es siempre la suma del peso de los hijos que "aplican" a ${anioStr} — un hijo aplica si tiene, en su propio subárbol, al menos un indicador con meta programada en ${anioStr}. Los pesos originales del PDI (columna "Peso" de cada hoja) no se modifican ni se redistribuyen: solo cambia contra qué se divide la sumatoria.`;
+    wsGuia.mergeCells(`A${guiaRow}:F${guiaRow}`);
+    wsGuia.getCell(`A${guiaRow}`).alignment = { wrapText: true, vertical: 'top' };
+    wsGuia.getCell(`A${guiaRow}`).font = { italic: true, color: { argb: 'FF6B7280' } };
+    guiaRow += 2;
 
     guiaRow = writeGuideTable(
         'Tipos de cálculo disponibles',
