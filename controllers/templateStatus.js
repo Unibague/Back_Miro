@@ -5,9 +5,23 @@ const xlsx = require('xlsx');
 
 const templateStatusController = {};
 
+// Una dependencia puede aparecer en loaded_data (has_submitted: true) pero
+// haber enviado la plantilla sin diligenciar ningún campo real (filled_data
+// vacío o con todos los valores en blanco). Sin esta distinción, ese envío
+// se contaba como "Enviado" igual que uno con información real.
+const isEmptySubmission = (filledData) => {
+  if (!Array.isArray(filledData) || filledData.length === 0) return true;
+  return !filledData.some(
+    (fd) =>
+      Array.isArray(fd.values) &&
+      fd.values.some((v) => v !== null && v !== undefined && String(v).trim() !== '')
+  );
+};
+
 const getTemplateSummary = (rows) => {
   const totalAssigned = rows.length;
   const totalSubmitted = rows.filter((row) => row.has_submitted).length;
+  const totalEmpty = rows.filter((row) => row.has_submitted && row.is_empty_submission).length;
   const totalPending = Math.max(totalAssigned - totalSubmitted, 0);
   const completionPercentage = totalAssigned === 0
     ? 0
@@ -19,6 +33,7 @@ const getTemplateSummary = (rows) => {
   return {
     total_assigned: totalAssigned,
     total_submitted: totalSubmitted,
+    total_empty: totalEmpty,
     total_pending: totalPending,
     completion_percentage: completionPercentage,
     pending_percentage: pendingPercentage
@@ -71,6 +86,7 @@ const buildTemplateSubmissionRows = async (template) => {
         user_email: userEmail,
         dependency: dependencyNameByCode.get(data.dependency) || data.dependency,
         has_submitted: true,
+        is_empty_submission: isEmptySubmission(data.filled_data),
         submitted_date: data.loaded_date
       });
     }
@@ -224,7 +240,9 @@ templateStatusController.downloadTemplateSubmissionStatus = async (req, res) => 
           'Usuario': row.user_name,
           'Email': row.user_email,
           'Dependencia': row.dependency,
-          'Estado': row.has_submitted ? 'Enviado' : 'Pendiente',
+          'Estado': row.has_submitted
+          ? (row.is_empty_submission ? 'Enviado (vacío)' : 'Enviado')
+          : 'Pendiente',
           'Fecha Envio': row.submitted_date ? new Date(row.submitted_date).toLocaleDateString('es-CO') : 'N/A',
           'Asignados': summary.total_assigned,
           'Enviados': summary.total_submitted,
