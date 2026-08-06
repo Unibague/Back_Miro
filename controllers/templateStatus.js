@@ -85,6 +85,10 @@ const buildTemplateSubmissionRows = async (template) => {
         user_name: userName,
         user_email: userEmail,
         dependency: dependencyNameByCode.get(data.dependency) || data.dependency,
+        // Una dependencia eliminada o renombrada despues del envio deja de
+        // resolverse en dependencyNameByCode; se marca para no ofrecerla en
+        // filtros como si aun existiera en el sistema.
+        dependency_exists: dependencyNameByCode.has(data.dependency),
         has_submitted: true,
         is_empty_submission: isEmptySubmission(data.filled_data),
         submitted_date: data.loaded_date
@@ -109,6 +113,7 @@ const buildTemplateSubmissionRows = async (template) => {
         user_name: 'Dependencia no encontrada',
         user_email: 'N/A',
         dependency: dependencyName,
+        dependency_exists: true,
         has_submitted: false,
         submitted_date: null
       });
@@ -130,6 +135,7 @@ const buildTemplateSubmissionRows = async (template) => {
         user_name: 'Sin usuarios asignados',
         user_email: 'N/A',
         dependency: dependencyName,
+        dependency_exists: true,
         has_submitted: false,
         submitted_date: null
       });
@@ -150,6 +156,7 @@ const buildTemplateSubmissionRows = async (template) => {
         user_name: 'Sin permiso en la Dependencia',
         user_email: 'N/A',
         dependency: dependencyName,
+        dependency_exists: true,
         has_submitted: false,
         submitted_date: null
       });
@@ -168,6 +175,7 @@ const buildTemplateSubmissionRows = async (template) => {
         user_name: displayName,
         user_email: user.email || 'N/A',
         dependency: dependencyName,
+        dependency_exists: true,
         has_submitted: false,
         submitted_date: null
       });

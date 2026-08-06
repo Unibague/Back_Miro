@@ -63,21 +63,39 @@ dependencySchema.statics.updateVisualizers = async function(dep_code, visualizer
     }
 };
 dependencySchema.statics.upsertDependencies = async function(dependencies) {
-    const bulkOps = dependencies.map(dep => ({
+    const normalizedDependencies = dependencies
+      .map((dep) => ({
+        ...dep,
+        dep_code: String(dep.dep_code ?? '').trim(),
+        name: String(dep.name ?? '').trim(),
+        dep_father: dep.dep_father === null || dep.dep_father === undefined || String(dep.dep_father).trim() === ''
+          ? null
+          : String(dep.dep_father).trim(),
+      }))
+      .filter((dep) => dep.dep_code && dep.name);
+
+    if (normalizedDependencies.length === 0) {
+      throw new Error('El sistema externo no devolvió dependencias válidas; se canceló la sincronización para evitar eliminar toda la colección.');
+    }
+
+    const bulkOps = normalizedDependencies.map(dep => ({
         updateOne: {
             filter: { dep_code: dep.dep_code },
             update: { $set: dep },
-            upsert: true // Realiza una operación de upsert
+            upsert: true
         }
     }));
 
     await this.bulkWrite(bulkOps);
 
-    const newDepCodes = dependencies.map(dep => dep.dep_code);
-    await this.updateMany(
-        { dep_code: { $nin: newDepCodes } },
-        { $set: { active: false } }
-    );
+    const newDepCodes = [...new Set(normalizedDependencies.map(dep => dep.dep_code))];
+    const deleteResult = await this.deleteMany({ dep_code: { $nin: newDepCodes } });
+
+    return {
+      syncedCount: normalizedDependencies.length,
+      deletedCount: deleteResult.deletedCount || 0,
+      depCodes: newDepCodes,
+    };
 };
 
 dependencySchema.statics.addUserToDependency = async function(dep_code, user) {
