@@ -84,22 +84,32 @@ dependencyController.syncDependenciesInternal = async () => {
   const response = await axios.get(DEPENDENCIES_ENDPOINT, {
     timeout: 30000
   });
+
+  if (!Array.isArray(response.data)) {
+    throw new Error('El sistema externo devolvió un formato inválido para las dependencias.');
+  }
   
   const dependencies = response.data.map((dependency) => {
     return {
-      dep_code: dependency.dep_code,
-      name: dependency.dep_name,
-      dep_father: dependency.dep_father,
+      dep_code: String(dependency.dep_code ?? '').trim(),
+      name: String(dependency.dep_name ?? '').trim(),
+      dep_father: dependency.dep_father === null || dependency.dep_father === undefined
+        ? null
+        : String(dependency.dep_father).trim() || null,
     };
-  });
+  }).filter((dependency) => dependency.dep_code && dependency.name);
   
-  await Dependency.upsertDependencies(dependencies);
-  console.log(`✅ ${dependencies.length} dependencias sincronizadas`);
+  const dependencySync = await Dependency.upsertDependencies(dependencies);
+  console.log(`✅ ${dependencySync.syncedCount} dependencias sincronizadas; ${dependencySync.deletedCount} eliminadas`);
   
   // 2. Obtener usuarios de Atlante para asignar responsables
   const usersResponse = await axios.get(USERS_ENDPOINT, {
     timeout: 30000
   });
+
+  if (!Array.isArray(usersResponse.data) || usersResponse.data.length === 0) {
+    throw new Error('El sistema externo devolvió un formato inválido para los usuarios.');
+  }
   
   // 3. LIMPIAR responsables antiguos primero
   await Dependency.updateMany({}, { $set: { responsible: null } });
@@ -107,14 +117,14 @@ dependencyController.syncDependenciesInternal = async () => {
   
   // 4. Definir jerarquía de posiciones (de mayor a menor prioridad)
   const positionHierarchy = [
-    { priority: 1, keywords: ['RECTOR', 'RECTORA'] },
-    { priority: 2, keywords: ['VICERRECTOR', 'VICERRECTORA'] },
-    { priority: 3, keywords: ['DECANO', 'DECANA'] },
-    { priority: 4, keywords: ['DIRECTOR', 'DIRECTORA'] },
-    { priority: 5, keywords: ['GERENTE', 'GERENTE DE'] },
-    { priority: 6, keywords: ['JEFE', 'JEFA'] },
-    { priority: 7, keywords: ['COORDINADOR', 'COORDINADORA'] },
-    { priority: 8, keywords: ['BIBLIOTECOLOGA', 'BIBLIOTECÓLOGA'] }
+    { priority: 1, pattern: /\bRECTOR(?:A)?\b/ },
+    { priority: 2, pattern: /\bVICERRECTOR(?:A)?\b/ },
+    { priority: 3, pattern: /\bDECAN(?:O|A)\b/ },
+    { priority: 4, pattern: /\bDIRECTOR(?:A)?\b/ },
+    { priority: 5, pattern: /\bGERENTE\b/ },
+    { priority: 6, pattern: /\bJEF(?:E|A)\b/ },
+    { priority: 7, pattern: /\bCOORDINADOR(?:A)?\b/ },
+    { priority: 8, pattern: /\bBIBLIOTECOLOG(?:O|A)\b/ }
   ];
   
   // 5. Clasificar usuarios por prioridad
@@ -123,13 +133,18 @@ dependencyController.syncDependenciesInternal = async () => {
   for (const user of usersResponse.data) {
     if (!user.position || !user.dep_code || !user.email) continue;
     
-    const positionUpper = user.position.toUpperCase().trim();
+    const positionUpper = String(user.position)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .trim();
+    const depCode = String(user.dep_code).trim();
+    const email = String(user.email).trim().toLowerCase();
     
     // Buscar la prioridad más alta que coincida (más flexible)
     let userPriority = null;
     for (const level of positionHierarchy) {
-      // Buscar si CUALQUIER palabra del cargo coincide con las keywords
-      if (level.keywords.some(keyword => positionUpper.includes(keyword))) {
+      if (level.pattern.test(positionUpper)) {
         userPriority = level.priority;
         console.log(`🔍 Detectado: "${user.position}" -> Prioridad ${level.priority}`);
         break;
@@ -137,11 +152,11 @@ dependencyController.syncDependenciesInternal = async () => {
     }
     
     if (userPriority) {
-      if (!usersByDependency[user.dep_code]) {
-        usersByDependency[user.dep_code] = [];
+      if (!usersByDependency[depCode]) {
+        usersByDependency[depCode] = [];
       }
-      usersByDependency[user.dep_code].push({
-        email: user.email,
+      usersByDependency[depCode].push({
+        email,
         position: user.position,
         priority: userPriority
       });
@@ -152,26 +167,31 @@ dependencyController.syncDependenciesInternal = async () => {
   
   // 6. Asignar responsable con mayor prioridad por dependencia
   let assignedCount = 0;
+  const leaderUpdates = [];
   for (const [dep_code, users] of Object.entries(usersByDependency)) {
     // Ordenar por prioridad (menor número = mayor prioridad)
     users.sort((a, b) => a.priority - b.priority);
     
     const topLeader = users[0];
-    const dependency = await Dependency.findOne({ dep_code });
-    
-    if (dependency) {
-      dependency.responsible = topLeader.email;
-      await dependency.save();
-      assignedCount++;
-      console.log(`✅ [P${topLeader.priority}] ${topLeader.position} -> ${topLeader.email} (${dependency.name})`);
-    }
+    leaderUpdates.push({
+      updateOne: {
+        filter: { dep_code },
+        update: { $set: { responsible: topLeader.email } },
+      },
+    });
+  }
+
+  if (leaderUpdates.length > 0) {
+    const leaderResult = await Dependency.bulkWrite(leaderUpdates);
+    assignedCount = leaderResult.modifiedCount || leaderResult.matchedCount || 0;
   }
   
   console.log(`✅ ${assignedCount} responsables asignados automáticamente`);
   
   return {
     status: 'success',
-    count: dependencies.length,
+    count: dependencySync.syncedCount,
+    deletedCount: dependencySync.deletedCount,
     leadersAssigned: assignedCount
   };
 };
@@ -184,6 +204,7 @@ dependencyController.loadDependencies = async (req, res) => {
       status: result.status,
       message: 'Dependencies loaded/updated successfully',
       count: result.count,
+      deletedCount: result.deletedCount,
       leadersAssigned: result.leadersAssigned
     });
   } catch (error) {

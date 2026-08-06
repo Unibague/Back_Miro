@@ -192,7 +192,9 @@ ctrl.resumen = async (req, res) => {
         // que el Excel "Memoria técnica del cálculo del avance del PDI
         // {año}" (ver calcularAvanceVigencia en services/pdiAvanceExcelExport.js),
         // para que la tarjeta del tablero y el Excel siempre coincidan.
-        const anioActual = String(new Date().getFullYear());
+        // Permite que el panorama consulte cualquier vigencia del PDI. Sin
+        // parametro se conserva el comportamiento anterior (anio en curso).
+        const anioActual = String(req.query.anio || new Date().getFullYear());
         // calcularAvanceVigencia espera objetos planos (así los recibe siempre
         // desde el exportador de Excel, con .lean()): los documentos Mongoose
         // de arriba no se pueden usar directo porque sus campos no quedan

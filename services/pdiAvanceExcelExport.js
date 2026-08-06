@@ -808,7 +808,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     ]);
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = 'Avance ponderado global del PDI';
+    wsResumen.getCell(`A${nextRow}`).value = 'Avance técnico consolidado del PDI';
     wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
     nextRow += 1;
 
@@ -838,7 +838,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     const lastMacroDataRow = nextRow - 1;
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = 'Avance ponderado global (calculado con fórmula)';
+    wsResumen.getCell(`A${nextRow}`).value = 'Avance técnico consolidado (calculado con fórmula)';
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     // Redondeada a 2 decimales, sin truncar a entero.
@@ -849,7 +849,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
     wsResumen.getCell(`D${nextRow}`).font = { bold: true, size: 13, color: { argb: 'FF15803D' } };
     wsResumen.getCell(`D${nextRow}`).numFmt = '0.00"%"';
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = 'Avance ponderado global (guardado en el sistema / mostrado en el tablero)';
+    wsResumen.getCell(`A${nextRow}`).value = 'Avance técnico consolidado (guardado en el sistema / mostrado en el tablero)';
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     const totalPesoMacro = macrosNorm.reduce((acc, m) => acc + (Number(m.peso_norm) || 0), 0);
@@ -939,7 +939,7 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         'Propósito, entradas y salidas por hoja',
         ['Hoja', 'Propósito', 'Información que recibe', 'Información que genera'],
         [
-            ['Resumen PDI', 'Presenta el resultado global y la estructura del PDI.', 'Avances calculados de macroproyectos y pesos globales.', 'Avance ponderado global calculado y comparación con el avance guardado.'],
+            ['Resumen PDI', 'Presenta el resultado global y la estructura del PDI.', 'Avances calculados de macroproyectos y pesos globales.', 'Avance técnico consolidado calculado y comparación con el avance guardado.'],
             ['Guía', 'Explica cómo leer el archivo.', 'Reglas de negocio y estructura del libro.', 'Diccionario de columnas, tipos de cálculo y reglas de validación.'],
             ['Validaciones', 'Muestra controles de calidad del modelo.', 'Códigos, pesos, relaciones jerárquicas, metas y valores reportados.', 'Estados OK, Advertencia o Error con acción sugerida.'],
             ['Macroproyectos', 'Calcula avance por macroproyecto.', 'Proyectos asociados al macroproyecto y sus pesos.', 'Avance calculado, avance guardado y diferencia.'],
@@ -956,9 +956,9 @@ async function buildAvanceWorkbook({ macros, proyectos, acciones, indicadores })
         ['Nivel', 'Cálculo', 'Resultado'],
         [
             ['Indicador', 'Según tipo de cálculo: Acumulado, Promedio o Último valor reportado. Luego se compara con la Meta final 2029 cuando aplica.', '% de avance del indicador, capado a 100%.'],
-            ['Acción Estratégica', 'Σ(% avance del indicador × peso del indicador) ÷ 100.', 'Avance ponderado de la acción.'],
-            ['Proyecto', 'Σ(avance de la acción × peso de la acción) ÷ 100.', 'Avance ponderado del proyecto.'],
-            ['Macroproyecto', 'Σ(avance del proyecto × peso del proyecto) ÷ 100.', 'Avance ponderado del macroproyecto.'],
+            ['Acción Estratégica', 'Σ(% avance del indicador × peso del indicador) ÷ 100.', 'Avance técnico de la acción.'],
+            ['Proyecto', 'Σ(avance de la acción × peso de la acción) ÷ 100.', 'Avance técnico del proyecto.'],
+            ['Macroproyecto', 'Σ(avance del proyecto × peso del proyecto) ÷ 100.', 'Avance técnico del macroproyecto.'],
             ['PDI', 'Sumatoria ponderada del avance de los macroproyectos: Σ (Avance del Macroproyecto × Peso del Macroproyecto) ÷ 100.', 'Avance global mostrado en el tablero.'],
         ],
         guiaRow
@@ -1741,7 +1741,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
     ]);
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado ${periodo}`;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance técnico consolidado ${periodo}`;
     wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
     nextRow += 1;
 
@@ -1771,7 +1771,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
     const lastMacroDataRow = nextRow - 1;
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado global ${periodo} (calculado con fórmula)`;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance técnico consolidado ${periodo} (calculado con fórmula)`;
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     wsResumen.getCell(`D${nextRow}`).value = {
@@ -2210,7 +2210,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     ]);
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado ${anioStr}`;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance técnico consolidado ${anioStr}`;
     wsResumen.getCell(`A${nextRow}`).font = { bold: true, size: 13 };
     nextRow += 1;
 
@@ -2240,7 +2240,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
     const lastMacroDataRow = nextRow - 1;
 
     nextRow += 1;
-    wsResumen.getCell(`A${nextRow}`).value = `Avance ponderado global ${anioStr} (calculado con fórmula)`;
+    wsResumen.getCell(`A${nextRow}`).value = `Avance técnico consolidado ${anioStr} (calculado con fórmula)`;
     wsResumen.getCell(`A${nextRow}`).font = { bold: true };
     wsResumen.mergeCells(`A${nextRow}:C${nextRow}`);
     // Solo se promedian los Macroproyectos que aplican a ${anioStr} (columna
@@ -2336,7 +2336,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         'Propósito, entradas y salidas por hoja',
         ['Hoja', 'Propósito', 'Información que recibe', 'Información que genera'],
         [
-            [`Resumen PDI ${anioStr}`, `Presenta el resultado de ${anioStr} y la estructura considerada.`, 'Avances calculados de macroproyectos y pesos globales para ese año.', `Avance ponderado ${anioStr} calculado.`],
+            [`Resumen PDI ${anioStr}`, `Presenta el resultado de ${anioStr} y la estructura considerada.`, 'Avances calculados de macroproyectos y pesos globales para ese año.', `Avance técnico consolidado ${anioStr} calculado.`],
             ['Guía', 'Explica cómo leer el archivo.', 'Reglas de negocio y estructura del libro.', 'Diccionario de columnas y reglas de validación.'],
             ['Validaciones', 'Muestra controles de calidad del modelo.', 'Códigos, pesos, relaciones jerárquicas, metas y cobertura del peso en el año.', 'Estados OK, Advertencia o Error con acción sugerida.'],
             ['Macroproyectos', `Calcula avance ${anioStr} por macroproyecto.`, 'Proyectos asociados al macroproyecto y sus pesos.', `Avance ${anioStr} calculado.`],
@@ -2353,9 +2353,9 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         ['Nivel', 'Cálculo', 'Resultado'],
         [
             ['Indicador', `Según tipo de cálculo (Acumulado, Promedio o Último valor reportado), usando solo los periodos de ${anioStr}. Se compara contra la Meta ${anioStr} (no la Meta final 2029). Un indicador sin ninguna meta en ${anioStr} no aparece en este archivo: no aplica a esta vigencia.`, `% de avance del indicador en ${anioStr}, capado a 100%.`],
-            ['Acción Estratégica', `Σ(% avance ${anioStr} del indicador × peso del indicador) ÷ Σ(peso del indicador), usando SOLO los indicadores con meta en ${anioStr} (no se divide entre 100). Si ninguno de sus indicadores tiene meta en ${anioStr}, la acción "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} de la acción, sobre el peso realmente cubierto ese año (columna "¿Aplica a ${anioStr}?" en la hoja Indicadores/Acciones).`],
-            ['Proyecto', `Σ(avance ${anioStr} de la acción × peso de la acción) ÷ Σ(peso de la acción), usando SOLO las acciones que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Acciones). Las que no aplican se EXCLUYEN de la suma — no cuentan como 0%. Si ninguna acción aplica, el proyecto "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} del proyecto, sobre el peso cubierto por las acciones que aplican.`],
-            ['Macroproyecto', `Σ(avance ${anioStr} del proyecto × peso del proyecto) ÷ Σ(peso del proyecto), usando SOLO los proyectos que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Proyectos). Los que no aplican se EXCLUYEN de la suma. Si ningún proyecto aplica, el macroproyecto "no aplica" a esta vigencia.`, `Avance ponderado ${anioStr} del macroproyecto, sobre el peso cubierto por los proyectos que aplican.`],
+            ['Acción Estratégica', `Σ(% avance ${anioStr} del indicador × peso del indicador) ÷ Σ(peso del indicador), usando SOLO los indicadores con meta en ${anioStr} (no se divide entre 100). Si ninguno de sus indicadores tiene meta en ${anioStr}, la acción "no aplica" a esta vigencia.`, `Avance técnico ${anioStr} de la acción, sobre el peso realmente cubierto ese año (columna "¿Aplica a ${anioStr}?" en la hoja Indicadores/Acciones).`],
+            ['Proyecto', `Σ(avance ${anioStr} de la acción × peso de la acción) ÷ Σ(peso de la acción), usando SOLO las acciones que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Acciones). Las que no aplican se EXCLUYEN de la suma — no cuentan como 0%. Si ninguna acción aplica, el proyecto "no aplica" a esta vigencia.`, `Avance técnico ${anioStr} del proyecto, sobre el peso cubierto por las acciones que aplican.`],
+            ['Macroproyecto', `Σ(avance ${anioStr} del proyecto × peso del proyecto) ÷ Σ(peso del proyecto), usando SOLO los proyectos que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Proyectos). Los que no aplican se EXCLUYEN de la suma. Si ningún proyecto aplica, el macroproyecto "no aplica" a esta vigencia.`, `Avance técnico ${anioStr} del macroproyecto, sobre el peso cubierto por los proyectos que aplican.`],
             ['PDI', `Σ(avance ${anioStr} del macroproyecto × peso del macroproyecto) ÷ Σ(peso del macroproyecto), usando SOLO los macroproyectos que "aplican" a ${anioStr} (columna "¿Aplica a ${anioStr}?" de la hoja Macroproyectos y del Resumen).`, `Avance global de ${anioStr}, sobre el peso realmente cubierto por toda la estructura.`],
         ],
         guiaRow
@@ -2411,7 +2411,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
 
         const detalleHeaderRow = nextRow;
         wsResumen.getCell(`A${detalleHeaderRow}`).value = 'Periodo';
-        wsResumen.getCell(`B${detalleHeaderRow}`).value = 'Avance ponderado global (%)';
+        wsResumen.getCell(`B${detalleHeaderRow}`).value = 'Avance técnico consolidado (%)';
         wsResumen.getCell(`C${detalleHeaderRow}`).value = 'Indicadores con meta';
         wsResumen.getCell(`D${detalleHeaderRow}`).value = 'Ver detalle en la hoja';
         wsResumen.getRow(detalleHeaderRow).eachCell((cell, colNumber) => {
