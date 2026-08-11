@@ -465,6 +465,99 @@ templateController.createPlantilla = async (req, res) => {
   }
 };
 
+// Crea una copia independiente de una plantilla existente y la asigna a un
+// periodo distinto (elegido por el admin), a diferencia del flujo de
+// "duplicar" del frontend que solo precarga un formulario de creación sin
+// tocar el periodo.
+templateController.duplicatePlantilla = async (req, res) => {
+  try {
+    const { id, targetPeriodId, email } = req.body;
+
+    if (!id) {
+      return res.status(400).json({ mensaje: "El id de la plantilla es requerido" });
+    }
+    if (!targetPeriodId) {
+      return res.status(400).json({ mensaje: "El periodo destino es requerido" });
+    }
+
+    const sourceTemplate = await Template.findById(id);
+    if (!sourceTemplate) {
+      return res.status(404).json({ mensaje: "Plantilla no encontrada" });
+    }
+
+    const targetPeriod = await Period.findById(targetPeriodId);
+    if (!targetPeriod) {
+      return res.status(404).json({ mensaje: "Periodo destino no encontrado" });
+    }
+
+    const user = await UserService.findUserByEmailAndRole(email, "Administrador");
+
+    const baseName = sourceTemplate.name;
+    let templateName = `${baseName} - ${targetPeriod.name}`;
+    let counter = 2;
+    while (
+      await Template.findOne({
+        name: new RegExp(`^${escapeRegExp(templateName)}$`, "i"),
+      })
+    ) {
+      templateName = `${baseName} - ${targetPeriod.name} (${counter})`;
+      counter += 1;
+    }
+
+    const plainSource = sourceTemplate.toObject();
+    const duplicated = new Template({
+      name: templateName,
+      file_name: plainSource.file_name,
+      file_description: plainSource.file_description,
+      fields: plainSource.fields,
+      workbook_sheets: plainSource.workbook_sheets,
+      original_workbook_base64: plainSource.original_workbook_base64,
+      active: plainSource.active,
+      category: plainSource.category,
+      period: targetPeriodId,
+      created_by: user,
+      dimensions: plainSource.dimensions,
+      producers: plainSource.producers,
+      shared: plainSource.shared,
+      allows_qr: plainSource.allows_qr,
+      notify_producers: plainSource.notify_producers,
+      fecha_inicio: plainSource.fecha_inicio,
+      fecha_final_productores: plainSource.fecha_final_productores,
+      fecha_final_responsables: plainSource.fecha_final_responsables,
+      responsible_producers: plainSource.responsible_producers,
+      qr_authorized_producers: plainSource.qr_authorized_producers,
+      fecha_final: plainSource.fecha_final,
+      is_snies: plainSource.is_snies,
+      skip_comment_validation: plainSource.skip_comment_validation,
+    });
+
+    await duplicated.save();
+
+    try {
+      await AuditLogger.logCreate(req, user, 'template', {
+        templateId: duplicated._id.toString(),
+        templateName: duplicated.name,
+        fileName: duplicated.file_name,
+        duplicatedFrom: id,
+        period: targetPeriodId,
+      });
+    } catch (auditError) {
+      console.warn('Audit logging failed (non-critical):', auditError.message);
+    }
+
+    try {
+      await Validator.createValidatorsFromDropdownOptions(duplicated.fields, targetPeriodId);
+    } catch (autoValidatorError) {
+      console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
+    }
+
+    res.status(200).json({ status: "Plantilla duplicada", _id: duplicated._id, template: duplicated });
+  } catch (error) {
+    console.error("Error al duplicar la plantilla:", error);
+    res.status(500).json({ mensaje: "Error al duplicar la plantilla", error: error.message });
+  }
+};
+
 templateController.updatePlantilla = async (req, res) => {
   const { id } = req.params;
   const updatedFields = await sanitizeTemplateDropdownPayload(req.body);
