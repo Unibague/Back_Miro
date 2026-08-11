@@ -8,6 +8,7 @@ router.get("/all", controller.getPlantillas);
 router.get("/all/no-pagination", controller.getTemplatesWithoutPagination)
 router.get("/:id", controller.getPlantilla);
 router.post("/create", auditMiddleware('template'), controller.createPlantilla);
+router.post("/duplicate", auditMiddleware('template'), controller.duplicatePlantilla);
 router.put("/:id", auditMiddleware('template'), controller.updatePlantilla);
 router.put("/:id/add-dimension", auditMiddleware('template'), controller.addDimension);
 router.delete("/delete", auditMiddleware('template'), controller.deletePlantilla);
