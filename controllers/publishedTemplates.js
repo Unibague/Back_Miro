@@ -3448,7 +3448,10 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
           : template.template?.qr_authorized_producers;
         const qrAuthorizedIds = (rawQrAuthorized || []).map(id => id.toString());
         const canGenerateQr = isEncargado || (qrAuthorizedIds.length > 0 && userDepIds.some(id => qrAuthorizedIds.includes(id)));
-        return { ...template, validators, isEncargado, canGenerateQr };
+        // Incluir tambien los borradores QR sin confirmar (por dependencias que aun
+        // no tienen envio confirmado) para que la descarga "con info de otros
+        // productores" no omita datos que si se cuentan en "Informacion Cargada".
+        return { ...template, loaded_data: getLoadedDataIncludingQrDrafts(template), validators, isEncargado, canGenerateQr };
       })
     );
 
