@@ -4,6 +4,7 @@ const controller = require('../controllers/publishedTemplates');
 router.post("/publish", controller.publishTemplate);
 
 router.delete("/delete", controller.deletePublishedTemplate);
+router.delete("/deleteLoadedData", controller.deleteAllLoadedData);
 
 router.get("/", controller.getAssignedTemplatesToProductor);
 router.get("/available", controller.getAvailableTemplatesToProductor);
