@@ -3838,12 +3838,16 @@ publTempController.deletePublishedTemplate = async (req, res) => {
 }
 
 // Retira TODA la informacion enviada (todas las dependencias) de una
-// plantilla publicada, sin eliminar la plantilla publicada en si. Al igual
-// que deleteLoadedDataDependency (la version por dependencia), esto NO borra
-// los datos de forma irrecuperable: cada entrada de loaded_data se mueve a
-// qr_draft_data (una por dependencia, reemplazando cualquier borrador previo
-// de esa misma dependencia) para que la informacion pueda recuperarse o
-// reenviarse despues, en vez de perderse para siempre en un $set a [].
+// plantilla publicada, sin eliminar la plantilla publicada en si. Deja
+// loaded_data y data_confirmations realmente vacios -- a proposito NO se
+// mueve nada a qr_draft_data, porque ese campo se usa en el resumen de
+// envios y en /dimension/mergedData (getLoadedDataIncludingQrDrafts) para
+// mostrar borradores en linea como "ya enviado"; si la informacion borrada
+// se guardara ahi, seguiria apareciendo mezclada (y hasta duplicandose) en
+// esas vistas apenas otra dependencia volviera a cargar datos, que es
+// exactamente el efecto que este boton debe evitar. El respaldo para poder
+// recuperar la informacion si el borrado fue un error queda en el propio
+// log de auditoria (details), no en el documento.
 publTempController.deleteAllLoadedData = async (req, res) => {
   const { id, email } = req.query;
 
@@ -3855,32 +3859,29 @@ publTempController.deleteAllLoadedData = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
-    const draftsByDependency = new Map(
-      (template.qr_draft_data || []).map((draft) => [draft.dependency, draft])
+    const clearedLoadedData = (template.loaded_data || []).map((entry) =>
+      (entry.toObject ? entry.toObject() : entry)
     );
-    (template.loaded_data || []).forEach((entry) => {
-      draftsByDependency.set(entry.dependency, entry);
-    });
 
-    const clearedDependencies = (template.loaded_data || []).map((entry) => entry.dependency);
-
-    template.qr_draft_data = Array.from(draftsByDependency.values());
-    template.loaded_data = [];
-    template.data_confirmations = [];
-    template.final_submitted = false;
-    template.final_submitted_by = null;
-    template.final_submitted_date = null;
-    template.markModified('qr_draft_data');
-    template.markModified('loaded_data');
-    template.markModified('data_confirmations');
-
-    await template.save();
+    await PublishedTemplate.updateOne(
+      { _id: id },
+      {
+        $set: {
+          loaded_data: [],
+          data_confirmations: [],
+          final_submitted: false,
+          final_submitted_by: null,
+          final_submitted_date: null,
+        },
+      }
+    );
 
     await auditLogger.logDelete(req, user, 'publishedTemplateData', {
       publishedTemplateId: id,
       templateName: template.name,
       scope: 'all',
-      clearedDependencies,
+      clearedDependencies: clearedLoadedData.map((entry) => entry.dependency),
+      backup: clearedLoadedData,
     });
 
     return res.status(200).json({ status: 'Loaded data deleted successfully' });
