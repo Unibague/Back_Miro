@@ -3837,6 +3837,49 @@ publTempController.deletePublishedTemplate = async (req, res) => {
   }
 }
 
+// Borra toda la informacion enviada (loaded_data, confirmaciones y borradores)
+// de una plantilla publicada, sin eliminar la plantilla publicada en si. A
+// diferencia de deletePublishedTemplate (que exige loaded_data vacio), esta
+// accion es la que le permite al administrador vaciar esa informacion cuando
+// la quiere dejar en blanco otra vez.
+publTempController.deleteAllLoadedData = async (req, res) => {
+  const { id, email } = req.query;
+
+  try {
+    const user = await UserService.findUserByEmailAndRole(email, 'Administrador');
+
+    const template = await PublishedTemplate.findById(id);
+    if (!template) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    await PublishedTemplate.updateOne(
+      { _id: id },
+      {
+        $set: {
+          loaded_data: [],
+          qr_draft_data: [],
+          data_confirmations: [],
+          final_submitted: false,
+          final_submitted_by: null,
+          final_submitted_date: null,
+        },
+      }
+    );
+
+    await auditLogger.logDelete(req, user, 'publishedTemplateData', {
+      publishedTemplateId: id,
+      templateName: template.name,
+      scope: 'all',
+    });
+
+    return res.status(200).json({ status: 'Loaded data deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting all loaded data:', error);
+    return res.status(500).json({ status: 'Internal server error', details: error.message });
+  }
+};
+
 publTempController.updateDeadlines = async (req, res) => {
   try {
     const { email, templateIds, deadline, fecha_inicio, fecha_final_productores, fecha_final_responsables, fecha_final } = req.body;
