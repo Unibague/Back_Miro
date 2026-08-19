@@ -2884,7 +2884,16 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
         const value = hasUsableValue(directValue)
           ? directValue
           : equivalentValue ?? periodFallback ?? "";
-        acc[header] = normalizeSniesValidatorOutputValue(value, normalizer);
+        const normalizedValue = normalizeSniesValidatorOutputValue(value, normalizer);
+        // Columnas ID_*/TIPO_*/COD_*/CODIGO_* deben quedar solo con el código
+        // (ej. "CC"), no con la descripción completa ("CC Cédula de
+        // Ciudadanía") — antes esto solo pasaba si el campo tenía un
+        // validador configurado en la plantilla SNIES; ahora se aplica
+        // siempre que el nombre de columna sea de ese tipo, tenga o no
+        // validador asociado.
+        acc[header] = shouldUseValidatorCodeOnly(header) && hasUsableValue(normalizedValue)
+          ? extractInitialValidatorCode(normalizedValue)
+          : normalizedValue;
         return acc;
       }, {});
     });
