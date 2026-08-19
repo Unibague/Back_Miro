@@ -2156,6 +2156,49 @@ const POSSIBLE_ID_FIELDS = [
   "NRO_IDENTIFICACI_N",              // Nro. Identificación
 ];
 
+// Plantilla "Apoyo financiero" (hoja REPORTE_APOYOS y similares): la fuente
+// puede traer varias filas para la misma persona (una por cada apoyo
+// recibido), pero SNIES espera una única fila por cédula con S/N en cada
+// columna RECIBIO_APOYO_*. Se agrupa por la columna de identificación y,
+// para cada columna de bandera, si CUALQUIERA de las filas de esa persona
+// tiene "S" el resultado consolidado queda en "S" (nunca se degrada un "S"
+// ya detectado a "N" por culpa de otra fila de la misma persona).
+const isRecibioApoyoHeader = (header = "") => {
+  const normalized = normalizeFieldName(header);
+  return normalized.startsWith("RECIBIO") && normalized.includes("APOYO");
+};
+
+const consolidateSupportRowsByIdentification = (headers, rows) => {
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  const flagHeaders = headers.filter(isRecibioApoyoHeader);
+  if (!idHeader || flagHeaders.length < 2 || rows.length === 0) return rows;
+
+  const consolidated = [];
+  const rowByIdentification = new Map();
+
+  rows.forEach((row) => {
+    const idValue = String(row[idHeader] ?? "").trim();
+    if (!idValue) {
+      consolidated.push(row);
+      return;
+    }
+
+    const existingRow = rowByIdentification.get(idValue);
+    if (!existingRow) {
+      rowByIdentification.set(idValue, row);
+      consolidated.push(row);
+      return;
+    }
+
+    flagHeaders.forEach((flagHeader) => {
+      const newValue = String(row[flagHeader] ?? "").trim().toUpperCase();
+      if (newValue === "S") existingRow[flagHeader] = "S";
+    });
+  });
+
+  return consolidated;
+};
+
 const findIdentificationInRow = (row) => {
   for (const field of POSSIBLE_ID_FIELDS) {
     const val = row[field];
@@ -2459,6 +2502,82 @@ const getMergedDataForPublishedTemplate = async (publishedTemplateId) => {
   return enrichWithIntegraUserData(rows);
 };
 
+// Plantilla "Apoyos académicos, financieros u otros": solo deben quedar en el
+// reporte SNIES las personas que también aparezcan como estudiantes en la
+// plantilla "Matriculados" del mismo período. Se ubica esa plantilla por
+// nombre (comparación sin tildes/mayúsculas) entre las plantillas publicadas
+// del mismo período de la plantilla SNIES que se está generando, y se arma
+// un set de cédulas contra el cual filtrar.
+const MATRICULADOS_TEMPLATE_NAME_TOKEN = "MATRICULADOS";
+
+const normalizeIdentificationValue = (value) =>
+  String(value ?? "").trim().replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+
+const getMatriculadosIdentificationSet = async (periodId) => {
+  if (!periodId) return null;
+
+  try {
+    const candidates = await PublishedTemplate.find({ period: periodId }).select("_id name").lean();
+    const matriculadosTemplates = candidates.filter((candidate) =>
+      normalizeComparableName(candidate.name || "").includes(MATRICULADOS_TEMPLATE_NAME_TOKEN)
+    );
+
+    if (matriculadosTemplates.length === 0) {
+      console.warn(`[SNIES-Apoyos] No se encontró plantilla "Matriculados" para el período ${periodId}; no se filtra por matrícula.`);
+      return null;
+    }
+
+    const identificationSet = new Set();
+    for (const matriculadosTemplate of matriculadosTemplates) {
+      const rows = await getMergedDataForPublishedTemplate(matriculadosTemplate._id);
+      rows.forEach((row) => {
+        const idValue = findIdentificationInRow(row);
+        if (idValue) identificationSet.add(normalizeIdentificationValue(idValue));
+      });
+    }
+
+    console.log(`[SNIES-Apoyos] Matriculados: ${identificationSet.size} cédula(s) encontrada(s) en ${matriculadosTemplates.length} plantilla(s) para el período ${periodId}.`);
+    return identificationSet;
+  } catch (error) {
+    console.error("[SNIES-Apoyos] Error consultando plantilla Matriculados, no se filtra por matrícula:", error.message);
+    return null;
+  }
+};
+
+// Misma detección que usa consolidateSupportRowsByIdentification: una hoja
+// "de apoyos" tiene columna de identificación + al menos 2 columnas
+// RECIBIO_*_APOYO*. Se reutiliza para no aplicar este filtro a otras
+// plantillas SNIES que también tengan NUM_DOCUMENTO pero no sean de apoyos.
+const isApoyosReportSheet = (headers) => {
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  const flagHeaders = headers.filter(isRecibioApoyoHeader);
+  return Boolean(idHeader) && flagHeaders.length >= 2;
+};
+
+// Devuelve tanto las filas que sí quedan (matriculadas) como la lista de
+// cédulas excluidas, para poder mostrarle al usuario en el módulo SNIES por
+// qué esas personas no aparecen en el reporte de apoyos.
+const filterRowsByMatriculados = (headers, rows, matriculadosIds) => {
+  if (!matriculadosIds) return { rows, excludedIdentifications: [] };
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  if (!idHeader) return { rows, excludedIdentifications: [] };
+
+  const excludedSet = new Set();
+  const filtered = rows.filter((row) => {
+    const rawId = String(row[idHeader] ?? "").trim();
+    const idValue = normalizeIdentificationValue(rawId);
+    const isEnrolled = Boolean(idValue) && matriculadosIds.has(idValue);
+    if (!isEnrolled && rawId) excludedSet.add(rawId);
+    return isEnrolled;
+  });
+
+  const excludedIdentifications = [...excludedSet];
+  if (excludedIdentifications.length > 0) {
+    console.log(`[SNIES-Apoyos] Se excluyeron ${excludedIdentifications.length} cédula(s) que no están en la plantilla Matriculados: ${excludedIdentifications.join(", ")}`);
+  }
+  return { rows: filtered, excludedIdentifications };
+};
+
 // Parsea año y semestre a partir del nombre del período
 // Soporta: "2024-1", "2024-2", "2024-I", "2024-II", "2024 1", "2024 II", etc.
 const parsePeriodYearSemester = (period) => {
@@ -2692,6 +2811,17 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
   const validatorNormalizationLookup = await buildSniesValidatorNormalizationLookup(template.fields || [], template.period);
   const equivalenceLookup = buildFieldEquivalenceLookup(template.field_equivalences);
 
+  // Solo se consulta la plantilla Matriculados (y se enriquece contra Integra)
+  // cuando el workbook realmente tiene una hoja de apoyos — evita esa consulta
+  // extra en el resto de plantillas SNIES que no la necesitan.
+  const needsMatriculadosFilter = worksheets.some((worksheet) => {
+    const { headers } = extractWorksheetHeaders(worksheet);
+    return isApoyosReportSheet(headers);
+  });
+  const matriculadosIdentificationSet = needsMatriculadosFilter
+    ? await getMatriculadosIdentificationSet(template.period)
+    : null;
+
   const sheetDatasets = worksheets.map((worksheet) => {
     const { headerRowNumber, headers, headerColumns } = extractWorksheetHeaders(worksheet);
 
@@ -2703,6 +2833,7 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
         headers,
         headerColumns,
         rows: [],
+        excludedIdentifications: [],
         sourceTemplate: null,
         preserveOriginalContent: true,
       };
@@ -2716,6 +2847,7 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
         headers: [],
         headerColumns: [],
         rows: [],
+        excludedIdentifications: [],
         sourceTemplate: null,
         preserveOriginalContent: false,
       };
@@ -2757,13 +2889,19 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
       }, {});
     });
 
+    const { rows: rowsForOutput, excludedIdentifications } = isApoyosReportSheet(headers)
+      ? filterRowsByMatriculados(headers, finalRows, matriculadosIdentificationSet)
+      : { rows: finalRows, excludedIdentifications: [] };
+    const consolidatedRows = consolidateSupportRowsByIdentification(headers, rowsForOutput);
+
     return {
       worksheet,
       worksheetName: worksheet.name,
       headerRowNumber,
       headers,
       headerColumns,
-      rows: finalRows,
+      rows: consolidatedRows,
+      excludedIdentifications,
       sourceTemplate: matchedSourceTemplate
         ? {
             template_id: matchedSourceTemplate.template_id,
@@ -3164,6 +3302,7 @@ controller.getConnectedData = async (req, res) => {
         sourceTemplate: sheet.sourceTemplate,
         headers: sheet.headers,
         rows: sheet.rows,
+        excludedIdentifications: sheet.excludedIdentifications || [],
         preserveOriginalContent: sheet.preserveOriginalContent,
       })),
     });
