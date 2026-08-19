@@ -3997,6 +3997,101 @@ publTempController.cleanHyperlinkData = async (req, res) => {
 
 
 
+// ── Resolución de PROGRAMA (SIGA/Iceberg) por cédula, para la copia que se
+// guarda en Consulta de Información al hacer el envío final a SNIES ────────
+// Se calcula ANTES de excluir la cédula del resultado (ver isIdentificationFieldName
+// en confirmFinalSubmit), usando la misma lógica de "dependencia por cédula"
+// que ya usa el módulo Cruce de apoyos SIGA/Iceberg (PROGRAMA_DEPENDENCIA en
+// controllers/supportTemplates.js): se busca al docente en SIGA (funcionarios,
+// USERS_ENDPOINT) por número de documento y se toma el nombre de su Facultad
+// (o, si no tiene una Facultad como ancestro, el de su dependencia directa).
+const normalizeDocenteId = (value) => String(value ?? "").trim().replace(/[^\dA-Za-z]/g, "");
+
+const normalizeDependencyName = (value = "") =>
+  String(value)
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase();
+
+const isFacultyDependencyName = (name = "") => normalizeDependencyName(name).includes("FACULTAD");
+
+const buildDependencyByCodeForPrograma = async () => {
+  const dependencies = await Dependency.find({}, "dep_code name dep_father").lean();
+  const byCode = new Map();
+  dependencies.forEach((dependency) => {
+    const code = String(dependency.dep_code || "").trim();
+    if (!code) return;
+    byCode.set(code, {
+      dep_code: code,
+      name: String(dependency.name || "").trim(),
+      dep_father: String(dependency.dep_father || "").trim(),
+    });
+  });
+  return byCode;
+};
+
+const findFacultyForDepCode = (depCode, dependencyByCode) => {
+  const visited = new Set();
+  let current = dependencyByCode.get(String(depCode || "").trim());
+  while (current && !visited.has(current.dep_code)) {
+    if (isFacultyDependencyName(current.name)) return current;
+    visited.add(current.dep_code);
+    current = dependencyByCode.get(current.dep_father);
+  }
+  return null;
+};
+
+const resolveProgramaFromDepCode = (depCode, dependencyByCode) => {
+  const code = String(depCode || "").trim();
+  if (!code) return "";
+  const dependency = dependencyByCode.get(code);
+  const faculty = findFacultyForDepCode(code, dependencyByCode);
+  return faculty?.name || dependency?.name || "";
+};
+
+const safeGetSigaUsers = async () => {
+  if (!process.env.USERS_ENDPOINT) return [];
+  try {
+    const response = await axios.get(process.env.USERS_ENDPOINT, { timeout: 15000 });
+    return Array.isArray(response.data) ? response.data : [];
+  } catch (error) {
+    console.warn(`[historico-docentes] No fue posible consultar SIGA (USERS_ENDPOINT): ${error.message}`);
+    return [];
+  }
+};
+
+// Dado un listado de números de documento, retorna un mapa cédula → nombre
+// de programa/facultad, cruzando SIGA (funcionarios) y la base local de
+// usuarios.
+const buildDocenteProgramMap = async (identifications) => {
+  const ids = [...new Set(identifications.map(normalizeDocenteId).filter(Boolean))];
+  const programByIdentification = new Map();
+  if (ids.length === 0) return programByIdentification;
+
+  const numericIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+  const [usersDb, sigaUsers, dependencyByCode] = await Promise.all([
+    User.find({ identification: { $in: numericIds } }, "identification dep_code").lean(),
+    safeGetSigaUsers(),
+    buildDependencyByCodeForPrograma(),
+  ]);
+
+  usersDb.forEach((user) => {
+    const id = normalizeDocenteId(user.identification);
+    if (id && user.dep_code) {
+      programByIdentification.set(id, resolveProgramaFromDepCode(user.dep_code, dependencyByCode));
+    }
+  });
+  // SIGA (API en vivo) tiene prioridad sobre la copia local por si el dato cambió recientemente.
+  sigaUsers.forEach((user) => {
+    const id = normalizeDocenteId(user.identification);
+    if (id && ids.includes(id) && user.dep_code) {
+      programByIdentification.set(id, resolveProgramaFromDepCode(user.dep_code, dependencyByCode));
+    }
+  });
+
+  return programByIdentification;
+};
+
 // Envío final al SNIES — solo el productor responsable puede ejecutarlo
 publTempController.confirmFinalSubmit = async (req, res) => {
   const { pubTem_id, email } = req.body;
@@ -4067,7 +4162,17 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     // los ámbitos de la plantilla, para que aparezca en la carpeta de cada
     // uno. Un reenvío final (misma plantilla publicada) reemplaza la copia
     // anterior en vez de acumular una nueva.
+    // "TIPO_DOCUMENTO"/"ID_TIPO_DOCUMENTO" (CC, CE, TI...) NO es la cédula en
+    // sí — sin este chequeo, isIdentificationFieldName lo confundía con el
+    // campo de identificación (ambos contienen "DOCUMENTO"), y el cruce con
+    // SIGA terminaba buscando "CC"/"CE" como si fuera un número de documento.
+    const isDocumentTypeFieldName = (fieldName = '') => {
+      const normalized = normalizeFieldName(fieldName);
+      return normalized.includes('TIPO') && (normalized.includes('DOC') || normalized.includes('IDENTIFICACION'));
+    };
+
     const isIdentificationFieldName = (fieldName = '') => {
+      if (isDocumentTypeFieldName(fieldName)) return false;
       const normalized = normalizeFieldName(fieldName);
       return (
         normalized.includes('CEDULA') ||
@@ -4081,13 +4186,26 @@ publTempController.confirmFinalSubmit = async (req, res) => {
       try {
         const sheetMap = new Map();
         (pubTem.loaded_data || []).forEach((loadedEntry) => {
+          // Cédulas de este productor por hoja, en el mismo orden en que se
+          // van concatenando las filas de esa hoja más abajo — permiten
+          // calcular PROGRAMA sin que la cédula quede guardada en el resultado.
+          const identificationValsBySheet = new Map();
+
           (loadedEntry.filled_data || []).forEach((fieldData) => {
             const fieldName = fieldData.field_name;
-            if (!fieldName || isIdentificationFieldName(fieldName)) return;
-
+            if (!fieldName) return;
             const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
+
+            if (isIdentificationFieldName(fieldName)) {
+              if (!identificationValsBySheet.has(sheetName)) {
+                const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
+                identificationValsBySheet.set(sheetName, vals.map((v) => String(v ?? "").trim()));
+              }
+              return;
+            }
+
             if (!sheetMap.has(sheetName)) {
-              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {} });
+              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
             }
             const info = sheetMap.get(sheetName);
             if (!info.colMap[fieldName]) {
@@ -4098,18 +4216,64 @@ publTempController.confirmFinalSubmit = async (req, res) => {
             const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
             info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
           });
+
+          identificationValsBySheet.forEach((vals, sheetName) => {
+            if (!sheetMap.has(sheetName)) {
+              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
+            }
+            sheetMap.get(sheetName).idsByEntry.push(vals);
+          });
         });
+
+        // Calcular PROGRAMA (SIGA/Iceberg) por cédula para las hojas que
+        // traían un campo de identificación (ej. DOCENTE_IES, DOCENTE_CONTRATO).
+        // Se aísla en su propio try/catch: si SIGA no responde o falla el
+        // cruce, el archivo se debe seguir guardando en Consulta de
+        // Información igual (solo sin la columna), en vez de perderse todo.
+        const allIdentifications = [];
+        sheetMap.forEach((info) => {
+          info.idsByEntry.forEach((vals) => allIdentifications.push(...vals));
+        });
+        console.log(`[HistoricoDocentes] PROGRAMA: ${allIdentifications.length} cédula(s) recolectada(s) en total.`);
+        let programByIdentification = new Map();
+        if (allIdentifications.length > 0) {
+          try {
+            programByIdentification = await buildDocenteProgramMap(allIdentifications);
+            console.log(`[HistoricoDocentes] PROGRAMA: SIGA resolvió programa para ${programByIdentification.size} de ${allIdentifications.length} cédula(s).`);
+          } catch (programError) {
+            console.error("[HistoricoDocentes] Error calculando PROGRAMA (SIGA/Iceberg), se guarda sin esa columna:", programError.message);
+          }
+        }
 
         const sheets = [];
         for (const [name, info] of sheetMap.entries()) {
           if (info.headers.length === 0) continue;
           const maxRows = Math.max(...info.headers.map((h) => info.valueArrays[h]?.length || 0));
           if (maxRows === 0) continue;
+
+          const headers = [...info.headers];
+          // Solo se agrega la columna si las cédulas recolectadas cuadran
+          // exactamente con el total de filas de la hoja (evita desalinear
+          // columnas cuando algún productor no incluyó identificación).
+          const flatIds = info.idsByEntry.flat();
+          if (flatIds.length !== maxRows) {
+            console.log(`[HistoricoDocentes] PROGRAMA: hoja "${name}" NO recibe la columna — ${flatIds.length} cédula(s) recolectada(s) vs ${maxRows} fila(s) (deben coincidir).`);
+          }
+          const programaColumn = flatIds.length === maxRows
+            ? flatIds.map((id) => {
+                const normalized = normalizeDocenteId(id);
+                return normalized ? (programByIdentification.get(normalized) || "") : "";
+              })
+            : null;
+          if (programaColumn) headers.push("PROGRAMA");
+
           const rows = [];
           for (let i = 0; i < maxRows; i++) {
-            rows.push(info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? "")));
+            const row = info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? ""));
+            if (programaColumn) row.push(programaColumn[i] || "");
+            rows.push(row);
           }
-          sheets.push({ name, headers: info.headers, rows });
+          sheets.push({ name, headers, rows });
         }
 
         if (sheets.length === 0) return;
