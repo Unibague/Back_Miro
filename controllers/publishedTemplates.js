@@ -658,31 +658,10 @@ const convertIdToDescriptive = async (fieldName, value, templateField = null, pe
   
 
   
-  // 1. PRIMERO buscar en mapeos estáticos (más rápido y confiable)
-  // Solo convertir si el campo es exactamente uno de los campos conocidos o tiene patrón específico
-  for (const [key, mapping] of Object.entries(idToDescriptiveValue)) {
-    // Verificar coincidencia exacta o patrones específicos
-    const isExactMatch = fieldNameLower === key;
-    const isIdPattern = fieldNameLower.startsWith('id_') && fieldNameLower.includes(key.replace('id_', ''));
-    const isSpecificPattern = (
-      (key === 'modalidad' && fieldNameLower === 'modalidad') ||
-      (key === 'tipo_movilidad' && fieldNameLower === 'tipo_movilidad') ||
-      (key === 'nacional_internacional' && fieldNameLower === 'nacional_internacional') ||
-      (key === 'movilidad_por_convenio' && fieldNameLower === 'movilidad_por_convenio') ||
-      (key === 'promueve' && fieldNameLower.startsWith('promueve_')) ||
-      (key === 'desarrolla' && fieldNameLower.startsWith('desarrolla_')) ||
-      (key === 'impacto' && fieldNameLower.includes('impacto_de_la_movilidad'))
-    );
-    
-    if (isExactMatch || isIdPattern || isSpecificPattern) {
-      const result = mapping[stringValue];
-      if (result && result !== value) {
-        return result;
-      }
-    }
-  }
-  
-  // 2. Si no encuentra en mapeos estáticos, verificar validador externo
+  // 1. PRIMERO el validador propio del campo (definido en la plantilla): es la
+  // fuente de verdad para ese campo específico y no debe ser pisado por un
+  // mapeo genérico por nombre (dos plantillas pueden tener un campo con el
+  // mismo nombre, ej. "MODALIDAD", pero significados y catálogos distintos).
   if (templateField && templateField.validate_with) {
     try {
       const validateWithText = typeof templateField.validate_with === 'string'
@@ -719,7 +698,30 @@ const convertIdToDescriptive = async (fieldName, value, templateField = null, pe
       console.warn('Error al buscar validador:', error.message);
     }
   }
-  
+
+  // 2. Si el campo no tiene validador propio (o no resolvió el valor), usar
+  // los mapeos estáticos genéricos como respaldo.
+  for (const [key, mapping] of Object.entries(idToDescriptiveValue)) {
+    // Verificar coincidencia exacta o patrones específicos
+    const isExactMatch = fieldNameLower === key;
+    const isIdPattern = fieldNameLower.startsWith('id_') && fieldNameLower.includes(key.replace('id_', ''));
+    const isSpecificPattern = (
+      (key === 'modalidad' && fieldNameLower === 'modalidad') ||
+      (key === 'tipo_movilidad' && fieldNameLower === 'tipo_movilidad') ||
+      (key === 'nacional_internacional' && fieldNameLower === 'nacional_internacional') ||
+      (key === 'movilidad_por_convenio' && fieldNameLower === 'movilidad_por_convenio') ||
+      (key === 'promueve' && fieldNameLower.startsWith('promueve_')) ||
+      (key === 'desarrolla' && fieldNameLower.startsWith('desarrolla_')) ||
+      (key === 'impacto' && fieldNameLower.includes('impacto_de_la_movilidad'))
+    );
+
+    if (isExactMatch || isIdPattern || isSpecificPattern) {
+      const result = mapping[stringValue];
+      if (result && result !== value) {
+        return result;
+      }
+    }
+  }
 
   return value;
 };

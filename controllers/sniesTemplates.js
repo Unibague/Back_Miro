@@ -389,6 +389,7 @@ const PROGRAM_SNIES_CATALOG = [
   ["Arquitectura", "20162"],
   ["Biología Ambiental", "106585"],
   ["Derecho", "20166"],
+  ["Derecho en Honda", "105472"],
   ["Ciencia Política", "52541"],
   ["Tecnología en Mercadeo y ventas", "20197"],
   ["Especialización Estratégica y Negocios Internacionales", "20201"],
@@ -2510,11 +2511,88 @@ const getMergedDataForPublishedTemplate = async (publishedTemplateId) => {
 // un set de cédulas contra el cual filtrar.
 const MATRICULADOS_TEMPLATE_NAME_TOKEN = "MATRICULADOS";
 
+const POSSIBLE_DOCUMENT_TYPE_FIELDS = [
+  "ID_TIPO_DOCUMENTO", "TIPO_DOCUMENTO", "TIPO_DE_DOCUMENTO",
+  "COD_TIPO_DOCUMENTO", "CODIGO_TIPO_DOCUMENTO", "TIPO_DOC",
+  "ID_TIPO_IDENTIFICACION", "TIPO_IDENTIFICACION", "TIPO_DE_IDENTIFICACION",
+  "DOCUMENT_TYPE",
+];
+
+const POSSIBLE_MUNICIPALITY_FIELDS = [
+  "ID_MUNICIPIO", "MUNICIPIO", "COD_MUNICIPIO", "CODIGO_MUNICIPIO",
+  "MUNICIPIO_CODIGO", "MUN_CODIGO", "ID_MUNICIPIO_PROGRAMA",
+  "COD_MUNICIPIO_PROGRAMA", "CODIGO_MUNICIPIO_PROGRAMA",
+  "MUNICIPIO_PROGRAMA", "ID_MUNICIPIO_OFERTA", "MUNICIPIO_OFERTA",
+];
+
+const PROGRAM_MUNICIPALITY_OVERRIDES = new Map([
+  ["105472", "73349"], // Derecho en Honda
+]);
+
 const normalizeIdentificationValue = (value) =>
   String(value ?? "").trim().replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 
-const getMatriculadosIdentificationSet = async (periodId) => {
-  if (!periodId) return null;
+const normalizeDocumentTypeValue = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? extractInitialValidatorCode(text).toUpperCase() : "";
+};
+
+const findDocumentTypeInRow = (row) => {
+  for (const [fieldName, value] of Object.entries(row || {})) {
+    if (
+      POSSIBLE_DOCUMENT_TYPE_FIELDS.includes(normalizeFieldName(fieldName)) &&
+      hasUsableValue(value)
+    ) {
+      return normalizeDocumentTypeValue(value);
+    }
+  }
+  return "";
+};
+
+const normalizeProgramConsecutiveValue = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? extractInitialValidatorCode(text).replace(/\./g, "") : "";
+};
+
+const findProgramConsecutiveInRow = (row) => {
+  for (const [fieldName, value] of Object.entries(row || {})) {
+    if (
+      PRO_CONSECUTIVO_FIELDS.includes(normalizeFieldName(fieldName)) &&
+      hasUsableValue(value)
+    ) {
+      return normalizeProgramConsecutiveValue(value);
+    }
+  }
+  return "";
+};
+
+const normalizeMunicipalityValue = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? extractInitialValidatorCode(text) : "";
+};
+
+const findMunicipalityInRow = (row) => {
+  for (const [fieldName, value] of Object.entries(row || {})) {
+    if (
+      POSSIBLE_MUNICIPALITY_FIELDS.includes(normalizeFieldName(fieldName)) &&
+      hasUsableValue(value)
+    ) {
+      return normalizeMunicipalityValue(value);
+    }
+  }
+  return "";
+};
+
+const getIdentificationProgramKey = (identification, programConsecutive) =>
+  `${identification}::${programConsecutive}`;
+
+const getEnrollmentKey = (identification, documentType, programConsecutive) =>
+  `${identification}::${documentType}::${programConsecutive}`;
+
+const getMatriculadosReferenceData = async (periodId) => {
+  if (!periodId) {
+    throw new Error("No se puede generar Apoyos SNIES sin un período para consultar Matriculados");
+  }
 
   try {
     const candidates = await PublishedTemplate.find({ period: periodId }).select("_id name").lean();
@@ -2523,24 +2601,77 @@ const getMatriculadosIdentificationSet = async (periodId) => {
     );
 
     if (matriculadosTemplates.length === 0) {
-      console.warn(`[SNIES-Apoyos] No se encontró plantilla "Matriculados" para el período ${periodId}; no se filtra por matrícula.`);
-      return null;
+      throw new Error(`No se encontró la plantilla "Matriculados" para el período ${periodId}`);
     }
 
     const identificationSet = new Set();
+    const documentTypesByIdentification = new Map();
+    const programConsecutivesByIdentification = new Map();
+    const municipalitiesByIdentificationAndProgram = new Map();
+    const enrollmentKeys = new Set();
     for (const matriculadosTemplate of matriculadosTemplates) {
       const rows = await getMergedDataForPublishedTemplate(matriculadosTemplate._id);
       rows.forEach((row) => {
         const idValue = findIdentificationInRow(row);
-        if (idValue) identificationSet.add(normalizeIdentificationValue(idValue));
+        if (!idValue) return;
+
+        const normalizedIdentification = normalizeIdentificationValue(idValue);
+        identificationSet.add(normalizedIdentification);
+
+        const documentType = findDocumentTypeInRow(row);
+        if (documentType) {
+          if (!documentTypesByIdentification.has(normalizedIdentification)) {
+            documentTypesByIdentification.set(normalizedIdentification, new Set());
+          }
+          documentTypesByIdentification.get(normalizedIdentification).add(documentType);
+        }
+
+        const programConsecutive = findProgramConsecutiveInRow(row);
+        if (programConsecutive) {
+          if (!programConsecutivesByIdentification.has(normalizedIdentification)) {
+            programConsecutivesByIdentification.set(normalizedIdentification, new Set());
+          }
+          programConsecutivesByIdentification.get(normalizedIdentification).add(programConsecutive);
+
+          const municipality = findMunicipalityInRow(row);
+          if (municipality) {
+            const identificationProgramKey = getIdentificationProgramKey(
+              normalizedIdentification,
+              programConsecutive
+            );
+            if (!municipalitiesByIdentificationAndProgram.has(identificationProgramKey)) {
+              municipalitiesByIdentificationAndProgram.set(identificationProgramKey, new Set());
+            }
+            municipalitiesByIdentificationAndProgram.get(identificationProgramKey).add(municipality);
+          }
+
+          if (documentType) {
+            enrollmentKeys.add(
+              getEnrollmentKey(normalizedIdentification, documentType, programConsecutive)
+            );
+          }
+        }
       });
     }
 
-    console.log(`[SNIES-Apoyos] Matriculados: ${identificationSet.size} cédula(s) encontrada(s) en ${matriculadosTemplates.length} plantilla(s) para el período ${periodId}.`);
-    return identificationSet;
+    if (identificationSet.size === 0) {
+      throw new Error(`La plantilla "Matriculados" del período ${periodId} no contiene identificaciones`);
+    }
+    if (enrollmentKeys.size === 0) {
+      throw new Error(`La plantilla "Matriculados" del período ${periodId} no permite construir la llave identificación + tipo de documento + PRO_CONSECUTIVO`);
+    }
+
+    console.log(`[SNIES-Apoyos] Matriculados: ${identificationSet.size} cédula(s), ${documentTypesByIdentification.size} con tipo de documento y ${programConsecutivesByIdentification.size} con PRO_CONSECUTIVO en ${matriculadosTemplates.length} plantilla(s) para el período ${periodId}.`);
+    return {
+      identificationSet,
+      documentTypesByIdentification,
+      programConsecutivesByIdentification,
+      municipalitiesByIdentificationAndProgram,
+      enrollmentKeys,
+    };
   } catch (error) {
-    console.error("[SNIES-Apoyos] Error consultando plantilla Matriculados, no se filtra por matrícula:", error.message);
-    return null;
+    console.error("[SNIES-Apoyos] No se puede validar Apoyos contra Matriculados:", error.message);
+    throw new Error(`No se pudo validar Apoyos contra Matriculados: ${error.message}`);
   }
 };
 
@@ -2557,25 +2688,215 @@ const isApoyosReportSheet = (headers) => {
 // Devuelve tanto las filas que sí quedan (matriculadas) como la lista de
 // cédulas excluidas, para poder mostrarle al usuario en el módulo SNIES por
 // qué esas personas no aparecen en el reporte de apoyos.
-const filterRowsByMatriculados = (headers, rows, matriculadosIds) => {
-  if (!matriculadosIds) return { rows, excludedIdentifications: [] };
+const filterRowsByMatriculados = (headers, rows, matriculadosReferenceData) => {
+  if (!matriculadosReferenceData) {
+    return {
+      rows: [],
+      excludedIdentifications: rows.map((row) => String(findIdentificationInRow(row) || "")).filter(Boolean),
+    };
+  }
+
   const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
   if (!idHeader) return { rows, excludedIdentifications: [] };
+  const documentTypeHeader = headers.find((header) =>
+    POSSIBLE_DOCUMENT_TYPE_FIELDS.includes(normalizeFieldName(header))
+  );
+  const programConsecutiveHeader = headers.find((header) =>
+    PRO_CONSECUTIVO_FIELDS.includes(normalizeFieldName(header))
+  );
+  const municipalityHeader = headers.find((header) =>
+    POSSIBLE_MUNICIPALITY_FIELDS.includes(normalizeFieldName(header))
+  );
 
   const excludedSet = new Set();
   const filtered = rows.filter((row) => {
     const rawId = String(row[idHeader] ?? "").trim();
-    const idValue = normalizeIdentificationValue(rawId);
-    const isEnrolled = Boolean(idValue) && matriculadosIds.has(idValue);
+    const identification = normalizeIdentificationValue(rawId);
+    let isEnrolled = Boolean(identification) &&
+      matriculadosReferenceData.identificationSet.has(identification);
+
+    const documentType = documentTypeHeader
+      ? normalizeDocumentTypeValue(row[documentTypeHeader])
+      : "";
+    const programConsecutive = programConsecutiveHeader
+      ? normalizeProgramConsecutiveValue(row[programConsecutiveHeader])
+      : "";
+
+    // La relación de SNIES no se valida solo con el número: tipo y programa
+    // deben corresponder a la misma fila reportada en Matriculados.
+    if (isEnrolled && documentTypeHeader && programConsecutiveHeader) {
+      isEnrolled = Boolean(documentType && programConsecutive) &&
+        matriculadosReferenceData.enrollmentKeys.has(
+          getEnrollmentKey(identification, documentType, programConsecutive)
+        );
+    }
+
+    if (isEnrolled && municipalityHeader && programConsecutive) {
+      const configuredMunicipality = PROGRAM_MUNICIPALITY_OVERRIDES.get(programConsecutive);
+      const expectedMunicipalities = configuredMunicipality
+        ? new Set([configuredMunicipality])
+        : matriculadosReferenceData.municipalitiesByIdentificationAndProgram.get(
+            getIdentificationProgramKey(identification, programConsecutive)
+          );
+      if (expectedMunicipalities?.size) {
+        const municipality = normalizeMunicipalityValue(row[municipalityHeader]);
+        isEnrolled = Boolean(municipality) && expectedMunicipalities.has(municipality);
+      }
+    }
+
     if (!isEnrolled && rawId) excludedSet.add(rawId);
     return isEnrolled;
   });
 
   const excludedIdentifications = [...excludedSet];
   if (excludedIdentifications.length > 0) {
-    console.log(`[SNIES-Apoyos] Se excluyeron ${excludedIdentifications.length} cédula(s) que no están en la plantilla Matriculados: ${excludedIdentifications.join(", ")}`);
+    console.log(`[SNIES-Apoyos] Se excluyeron ${excludedIdentifications.length} identificación(es) cuya llave no coincide con Matriculados: ${excludedIdentifications.join(", ")}`);
   }
   return { rows: filtered, excludedIdentifications };
+};
+
+// SNIES relaciona apoyos y matriculados mediante número + tipo de documento.
+// Si apoyos trae un tipo distinto, se usa el reportado en Matriculados para
+// que ambas plantillas conserven exactamente la misma llave de estudiante.
+const synchronizeDocumentTypesWithMatriculados = (headers, rows, documentTypesByIdentification) => {
+  if (!documentTypesByIdentification) return rows;
+
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  const documentTypeHeader = headers.find((header) =>
+    POSSIBLE_DOCUMENT_TYPE_FIELDS.includes(normalizeFieldName(header))
+  );
+  if (!idHeader || !documentTypeHeader) return rows;
+
+  let synchronizedCount = 0;
+  const ambiguousIdentifications = new Set();
+  const synchronizedRows = rows.map((row) => {
+    const identification = normalizeIdentificationValue(row[idHeader]);
+    const matriculadosTypes = documentTypesByIdentification.get(identification);
+    if (!identification || !matriculadosTypes || matriculadosTypes.size === 0) return row;
+
+    const currentType = normalizeDocumentTypeValue(row[documentTypeHeader]);
+    if (currentType && matriculadosTypes.has(currentType)) return row;
+
+    // Un mismo número con varios tipos no permite decidir cuál corresponde;
+    // en ese caso se conserva el valor de apoyos y se registra la novedad.
+    if (matriculadosTypes.size !== 1) {
+      ambiguousIdentifications.add(identification);
+      return row;
+    }
+
+    const [matriculadosType] = matriculadosTypes;
+    synchronizedCount += 1;
+    return { ...row, [documentTypeHeader]: matriculadosType };
+  });
+
+  if (synchronizedCount > 0) {
+    console.log(`[SNIES-Apoyos] Se sincronizó el tipo de documento de ${synchronizedCount} fila(s) con la plantilla Matriculados.`);
+  }
+  if (ambiguousIdentifications.size > 0) {
+    console.warn(`[SNIES-Apoyos] No se pudo sincronizar el tipo de documento para ${ambiguousIdentifications.size} identificación(es) porque Matriculados contiene más de un tipo: ${[...ambiguousIdentifications].join(", ")}`);
+  }
+
+  return synchronizedRows;
+};
+
+// PRO_CONSECUTIVO también forma parte de la llave con la que SNIES relaciona
+// los apoyos con la matrícula. Se toma siempre de Matriculados cuando para la
+// identificación existe un único programa reportado.
+const synchronizeProgramConsecutivesWithMatriculados = (
+  headers,
+  rows,
+  programConsecutivesByIdentification
+) => {
+  if (!programConsecutivesByIdentification) return rows;
+
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  const programConsecutiveHeader = headers.find((header) =>
+    PRO_CONSECUTIVO_FIELDS.includes(normalizeFieldName(header))
+  );
+  if (!idHeader || !programConsecutiveHeader) return rows;
+
+  let synchronizedCount = 0;
+  const ambiguousIdentifications = new Set();
+  const synchronizedRows = rows.map((row) => {
+    const identification = normalizeIdentificationValue(row[idHeader]);
+    const matriculadosConsecutives = programConsecutivesByIdentification.get(identification);
+    if (!identification || !matriculadosConsecutives || matriculadosConsecutives.size === 0) return row;
+
+    const currentConsecutive = normalizeProgramConsecutiveValue(row[programConsecutiveHeader]);
+    if (currentConsecutive && matriculadosConsecutives.has(currentConsecutive)) return row;
+
+    if (matriculadosConsecutives.size !== 1) {
+      ambiguousIdentifications.add(identification);
+      return row;
+    }
+
+    const [matriculadosConsecutive] = matriculadosConsecutives;
+    synchronizedCount += 1;
+    return { ...row, [programConsecutiveHeader]: matriculadosConsecutive };
+  });
+
+  if (synchronizedCount > 0) {
+    console.log(`[SNIES-Apoyos] Se sincronizó PRO_CONSECUTIVO de ${synchronizedCount} fila(s) con la plantilla Matriculados.`);
+  }
+  if (ambiguousIdentifications.size > 0) {
+    console.warn(`[SNIES-Apoyos] No se pudo sincronizar PRO_CONSECUTIVO para ${ambiguousIdentifications.size} identificación(es) porque Matriculados contiene más de un programa: ${[...ambiguousIdentifications].join(", ")}`);
+  }
+
+  return synchronizedRows;
+};
+
+const synchronizeMunicipalitiesWithMatriculados = (
+  headers,
+  rows,
+  municipalitiesByIdentificationAndProgram
+) => {
+  const idHeader = headers.find((header) => POSSIBLE_ID_FIELDS.includes(normalizeFieldName(header)));
+  const programConsecutiveHeader = headers.find((header) =>
+    PRO_CONSECUTIVO_FIELDS.includes(normalizeFieldName(header))
+  );
+  const municipalityHeader = headers.find((header) =>
+    POSSIBLE_MUNICIPALITY_FIELDS.includes(normalizeFieldName(header))
+  );
+  if (!idHeader || !programConsecutiveHeader || !municipalityHeader) return rows;
+
+  let synchronizedCount = 0;
+  const ambiguousKeys = new Set();
+  const synchronizedRows = rows.map((row) => {
+    const identification = normalizeIdentificationValue(row[idHeader]);
+    const programConsecutive = normalizeProgramConsecutiveValue(row[programConsecutiveHeader]);
+    if (!identification || !programConsecutive) return row;
+
+    // La sede de Derecho con PRO_CONSECUTIVO 105472 es Honda (DANE 73349).
+    // Esta regla también cubre casos donde Matriculados no trae el municipio.
+    const configuredMunicipality = PROGRAM_MUNICIPALITY_OVERRIDES.get(programConsecutive);
+    const matriculadosMunicipalities = configuredMunicipality
+      ? new Set([configuredMunicipality])
+      : municipalitiesByIdentificationAndProgram?.get(
+          getIdentificationProgramKey(identification, programConsecutive)
+        );
+    if (!matriculadosMunicipalities || matriculadosMunicipalities.size === 0) return row;
+
+    const currentMunicipality = normalizeMunicipalityValue(row[municipalityHeader]);
+    if (currentMunicipality && matriculadosMunicipalities.has(currentMunicipality)) return row;
+
+    if (matriculadosMunicipalities.size !== 1) {
+      ambiguousKeys.add(getIdentificationProgramKey(identification, programConsecutive));
+      return row;
+    }
+
+    const [matriculadosMunicipality] = matriculadosMunicipalities;
+    synchronizedCount += 1;
+    return { ...row, [municipalityHeader]: matriculadosMunicipality };
+  });
+
+  if (synchronizedCount > 0) {
+    console.log(`[SNIES-Apoyos] Se sincronizó el municipio de ${synchronizedCount} fila(s) con Matriculados/programa.`);
+  }
+  if (ambiguousKeys.size > 0) {
+    console.warn(`[SNIES-Apoyos] No se pudo sincronizar el municipio para ${ambiguousKeys.size} combinación(es) de identificación y programa porque Matriculados contiene más de un municipio.`);
+  }
+
+  return synchronizedRows;
 };
 
 // Parsea año y semestre a partir del nombre del período
@@ -2726,12 +3047,33 @@ const filterSourceRowsForSnies = (sourceTemplateName, rows = []) => {
 };
 
 const buildSniesDataset = async (template, fallbackPubTemId = null) => {
+  // pubTemId representa la plantilla publicada desde la cual el usuario abrió
+  // el módulo SNIES. Su período es la fuente confiable para buscar
+  // Matriculados; la configuración SNIES puede conservar un período anterior.
+  let fallbackPublishedTemplate = null;
+  let effectivePeriodId = template.period || null;
+  if (fallbackPubTemId) {
+    try {
+      fallbackPublishedTemplate = await PublishedTemplate.findById(fallbackPubTemId)
+        .select("_id name period")
+        .lean();
+      if (fallbackPublishedTemplate?.period) {
+        effectivePeriodId = fallbackPublishedTemplate.period;
+        if (String(effectivePeriodId) !== String(template.period || "")) {
+          console.log(`[SNIES-Period] Se usará el período ${effectivePeriodId} de la plantilla publicada ${fallbackPubTemId}, en lugar del período ${template.period} configurado en SNIES.`);
+        }
+      }
+    } catch (error) {
+      console.warn(`[SNIES-Dataset] No se pudo consultar el pubTemId ${fallbackPubTemId}:`, error.message);
+    }
+  }
+
   // Cargar período para inyectar año y semestre en las filas
   let periodYear = null;
   let periodSemester = null;
   let periodName = null;
-  if (template.period) {
-    const period = await Period.findById(template.period).select("name start_date");
+  if (effectivePeriodId) {
+    const period = await Period.findById(effectivePeriodId).select("name start_date");
     if (period) {
       const parsed = parsePeriodYearSemester(period);
       periodYear = parsed.year;
@@ -2757,17 +3099,42 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
       (s) => String(s.template_id) === String(fallbackPubTemId)
     );
     if (!alreadyIncluded) {
-      try {
-        const pubTem = await PublishedTemplate.findById(fallbackPubTemId).select("_id name").lean();
-        if (pubTem) {
-          sourceTemplates = [...sourceTemplates, { template_id: pubTem._id, template_name: pubTem.name }];
-          console.log(`[SNIES-Dataset] Added fallback pubTemId ${fallbackPubTemId} → "${pubTem.name}"`);
-        }
-      } catch (e) {
-        console.warn("[SNIES-Dataset] Could not load fallback pubTem:", e.message);
+      if (fallbackPublishedTemplate) {
+        sourceTemplates = [...sourceTemplates, {
+          template_id: fallbackPublishedTemplate._id,
+          template_name: fallbackPublishedTemplate.name,
+        }];
+        console.log(`[SNIES-Dataset] Added fallback pubTemId ${fallbackPubTemId} → "${fallbackPublishedTemplate.name}"`);
       }
     }
   }
+
+  // No mezclar fuentes publicadas de períodos anteriores. Una configuración
+  // SNIES reutilizada puede conservar IDs viejos y, si se agregan a la fuente
+  // actual, aparecen estudiantes que legítimamente no están matriculados en
+  // el período que se está reportando.
+  if (effectivePeriodId && sourceTemplates.length > 0) {
+    const sourceTemplateIds = sourceTemplates.map((source) => source.template_id).filter(Boolean);
+    const sourcesFromEffectivePeriod = await PublishedTemplate.find({
+      _id: { $in: sourceTemplateIds },
+      period: effectivePeriodId,
+    }).select("_id").lean();
+    const allowedSourceIds = new Set(
+      sourcesFromEffectivePeriod.map((source) => String(source._id))
+    );
+    const discardedCount = sourceTemplates.length - allowedSourceIds.size;
+    sourceTemplates = sourceTemplates.filter((source) =>
+      allowedSourceIds.has(String(source.template_id))
+    );
+    if (discardedCount > 0) {
+      console.warn(`[SNIES-Dataset] Se descartaron ${discardedCount} fuente(s) configurada(s) de otro período.`);
+    }
+  }
+
+  if (sourceTemplates.length === 0) {
+    throw new Error(`No hay plantillas fuente publicadas para el período ${effectivePeriodId || "seleccionado"}`);
+  }
+
   const sourceDatasetResults = await Promise.allSettled(
     sourceTemplates.map(async (sourceTemplate) => ({
       ...sourceTemplate,
@@ -2808,7 +3175,7 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
 
   const useWorksheetMapping = worksheets.length > 1;
   const mergedRows = enrichedSourceDatasets.flatMap((sourceTemplate) => sourceTemplate.rows);
-  const validatorNormalizationLookup = await buildSniesValidatorNormalizationLookup(template.fields || [], template.period);
+  const validatorNormalizationLookup = await buildSniesValidatorNormalizationLookup(template.fields || [], effectivePeriodId);
   const equivalenceLookup = buildFieldEquivalenceLookup(template.field_equivalences);
 
   // Solo se consulta la plantilla Matriculados (y se enriquece contra Integra)
@@ -2818,8 +3185,8 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
     const { headers } = extractWorksheetHeaders(worksheet);
     return isApoyosReportSheet(headers);
   });
-  const matriculadosIdentificationSet = needsMatriculadosFilter
-    ? await getMatriculadosIdentificationSet(template.period)
+  const matriculadosReferenceData = needsMatriculadosFilter
+    ? await getMatriculadosReferenceData(effectivePeriodId)
     : null;
 
   const sheetDatasets = worksheets.map((worksheet) => {
@@ -2898,8 +3265,33 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
       }, {});
     });
 
+    const documentTypesSynchronizedRows = isApoyosReportSheet(headers)
+      ? synchronizeDocumentTypesWithMatriculados(
+          headers,
+          finalRows,
+          matriculadosReferenceData?.documentTypesByIdentification
+        )
+      : finalRows;
+    const matriculadosSynchronizedRows = isApoyosReportSheet(headers)
+      ? synchronizeProgramConsecutivesWithMatriculados(
+          headers,
+          documentTypesSynchronizedRows,
+          matriculadosReferenceData?.programConsecutivesByIdentification
+        )
+      : documentTypesSynchronizedRows;
+    const municipalitySynchronizedRows = isApoyosReportSheet(headers)
+      ? synchronizeMunicipalitiesWithMatriculados(
+          headers,
+          matriculadosSynchronizedRows,
+          matriculadosReferenceData?.municipalitiesByIdentificationAndProgram
+        )
+      : matriculadosSynchronizedRows;
     const { rows: rowsForOutput, excludedIdentifications } = isApoyosReportSheet(headers)
-      ? filterRowsByMatriculados(headers, finalRows, matriculadosIdentificationSet)
+      ? filterRowsByMatriculados(
+          headers,
+          municipalitySynchronizedRows,
+          matriculadosReferenceData
+        )
       : { rows: finalRows, excludedIdentifications: [] };
     const consolidatedRows = consolidateSupportRowsByIdentification(headers, rowsForOutput);
 

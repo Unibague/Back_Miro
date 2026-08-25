@@ -22,8 +22,12 @@ const dependencySchema = new mongoose.Schema({
         type: String
     },
     visualizers: {
-        type: [String], 
+        type: [String],
         default: []
+    },
+    active: {
+        type: Boolean,
+        default: true
     }
 },
 {
@@ -78,10 +82,15 @@ dependencySchema.statics.upsertDependencies = async function(dependencies) {
       throw new Error('El sistema externo no devolvió dependencias válidas; se canceló la sincronización para evitar eliminar toda la colección.');
     }
 
+    // Las dependencias nunca se eliminan de la base de datos: si el sistema
+    // externo deja de reportar un dep_code, se marca como inactiva (active:
+    // false) en vez de borrarla, para que los históricos (envíos, reportes,
+    // tableros) puedan seguir resolviendo su nombre. Si vuelve a aparecer en
+    // una sincronización futura, se reactiva automáticamente.
     const bulkOps = normalizedDependencies.map(dep => ({
         updateOne: {
             filter: { dep_code: dep.dep_code },
-            update: { $set: dep },
+            update: { $set: { ...dep, active: true } },
             upsert: true
         }
     }));
@@ -89,11 +98,14 @@ dependencySchema.statics.upsertDependencies = async function(dependencies) {
     await this.bulkWrite(bulkOps);
 
     const newDepCodes = [...new Set(normalizedDependencies.map(dep => dep.dep_code))];
-    const deleteResult = await this.deleteMany({ dep_code: { $nin: newDepCodes } });
+    const deactivateResult = await this.updateMany(
+      { dep_code: { $nin: newDepCodes }, active: { $ne: false } },
+      { $set: { active: false } }
+    );
 
     return {
       syncedCount: normalizedDependencies.length,
-      deletedCount: deleteResult.deletedCount || 0,
+      deactivatedCount: deactivateResult.modifiedCount || 0,
       depCodes: newDepCodes,
     };
 };

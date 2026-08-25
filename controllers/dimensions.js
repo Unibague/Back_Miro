@@ -5,6 +5,11 @@ const User = require('../models/users');
 const Template = require('../models/templates');
 const PublishedTemplate = require('../models/publishedTemplates');
 const Validator = require('../models/validators');
+const HistoricoDocentes = require('../models/historicoDocentes');
+const {
+  buildActividadBienestarAnalytics,
+  isActividadBienestarFile,
+} = require('../services/consultaInformacionAnalytics');
 
 const dimensionController = {};
 
@@ -54,6 +59,21 @@ const stringifyRawValue = (value) => {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object' && 'text' in value) return String(value.text ?? '').trim();
   return String(value).trim();
+};
+
+// Los archivos historicos no siempre conservan exactamente las mismas
+// mayusculas, tildes o espacios que la definicion actual de la plantilla.
+// Esta busqueda normalizada evita que un campo valido desaparezca del
+// tablero solo por esas diferencias de escritura.
+const getValuesByNormalizedFieldName = (valuesByFieldName, fieldName) => {
+  if (!valuesByFieldName || !fieldName) return [];
+  const exact = valuesByFieldName.get(fieldName);
+  if (exact) return exact;
+  const wanted = normKey(fieldName);
+  for (const pair of valuesByFieldName.entries()) {
+    if (normKey(pair[0]) === wanted) return pair[1];
+  }
+  return [];
 };
 
 // Distintas plantillas (o incluso distintas filas de la misma) a veces
@@ -118,6 +138,20 @@ const resolveValidatorValue = (validateWith, rawText, resolversByValidator) => {
   return resolved || rawText;
 };
 
+const resolveSemanticFieldValue = (field, rawText, resolversByValidator) => {
+  if (field.validate_with) return resolveValidatorValue(field.validate_with, rawText, resolversByValidator);
+
+  // Algunos formatos antiguos no declararon el validador aunque el campo si
+  // contiene un codigo de catalogo. Este caso es clave en Bienestar: 47 es
+  // Bienestar Universitario y 5 es Gestion Humana.
+  if (normKey(field.name).indexOf('CODIGOUNIDADORGANIZACIONAL') !== -1) {
+    const lookup = resolversByValidator.get(normKey('UNIDADES_ORGANIZACIONALES'));
+    return (lookup && lookup.get(normKey(rawText))) || rawText;
+  }
+
+  return rawText;
+};
+
 // A partir de las definiciones de campos de una plantilla y los valores
 // realmente reportados (values por field_name, ya aplanados de todas las
 // dependencias/filas), arma un resumen automatico: para campos numericos, el
@@ -129,7 +163,7 @@ const buildFieldSummary = (fields, valuesByFieldName, resolversByValidator) => {
 
   (fields || []).forEach((field) => {
     if (!field?.name) return;
-    const rawValues = valuesByFieldName.get(field.name);
+    const rawValues = getValuesByNormalizedFieldName(valuesByFieldName, field.name);
     if (!rawValues || rawValues.length === 0) return;
 
     // Un campo numerico con validador (dropdown codificado como numero, ej.
@@ -154,7 +188,19 @@ const buildFieldSummary = (fields, valuesByFieldName, resolversByValidator) => {
       return;
     }
 
-    const isControlledVocabulary = Boolean(field.validate_with) || field.datatype === 'True/False';
+    // Ademas de listas controladas, algunos formatos historicos guardan como
+    // texto sus categorias (tipo, modalidad, estado, actividad, sector...).
+    // Esos campos siguen siendo utiles para rankings y donas. Descripciones
+    // de actividades/eventos se incluyen para responder cuales se repiten.
+    const semanticName = normKey(field.name);
+    const isSemanticCategory = [
+      'TIPO', 'CATEGORIA', 'CATEGOR', 'MODALIDAD', 'ESTADO', 'SECTOR',
+      'POBLACION', 'BENEFICIARIO', 'ACTIVIDADEVENTO', 'DESCRIPCIONACTIVIDAD',
+      'DESCRIPCIONEVENTO', 'NOMBREACTIVIDAD', 'NOMBREEVENTO', 'UNIDADORGANIZACIONAL',
+    ].some((keyword) => semanticName.indexOf(keyword) !== -1);
+    const isControlledVocabulary = Boolean(field.validate_with)
+      || field.datatype === 'True/False'
+      || isSemanticCategory;
     if (!isControlledVocabulary) return;
 
     const frequency = new Map();
@@ -167,9 +213,7 @@ const buildFieldSummary = (fields, valuesByFieldName, resolversByValidator) => {
       // en la misma clave ("CC"), sin importar que una ya traiga el nombre y
       // la otra se resuelva ahora al nombre real (ej. "Bienestar - Salud").
       const key = categoryGroupKey(rawText);
-      const text = field.validate_with
-        ? resolveValidatorValue(field.validate_with, rawText, resolversByValidator)
-        : rawText;
+      const text = resolveSemanticFieldValue(field, rawText, resolversByValidator);
       totalNonBlank += 1;
       const existing = frequency.get(key);
       if (!existing) {
@@ -195,7 +239,19 @@ const buildFieldSummary = (fields, valuesByFieldName, resolversByValidator) => {
   });
 
   numeric.sort((a, b) => b.total - a.total);
-  categorical.sort((a, b) => b.topCount - a.topCount);
+  const categoricalPriority = (field) => {
+    const key = normKey(field.name);
+    if (key.indexOf('CATEGORIA') !== -1 || key.indexOf('CATEGOR') !== -1) return 120;
+    if (key.indexOf('UNIDADORGANIZACIONAL') !== -1) return 118;
+    if (key.indexOf('TIPOACTIVIDAD') !== -1) return 115;
+    if (key.indexOf('DESCRIPCIONACTIVIDAD') !== -1 || key.indexOf('DESCRIPCIONEVENTO') !== -1) return 110;
+    if (key.indexOf('ACTIVIDADEVENTO') !== -1) return 105;
+    if (key.indexOf('MODALIDAD') !== -1) return 100;
+    if (key.indexOf('TIPOBENEFICIARIO') !== -1 || key.indexOf('POBLACION') !== -1) return 95;
+    if (key.indexOf('TIPO') !== -1 || key.indexOf('ESTADO') !== -1 || key.indexOf('SECTOR') !== -1) return 80;
+    return 0;
+  };
+  categorical.sort((a, b) => categoricalPriority(b) - categoricalPriority(a) || b.topCount - a.topCount);
 
   // Sin recortar aqui: esto se calcula por plantilla y luego se agrupa a
   // nivel de ambito (varias plantillas aportan candidatos); el recorte final
@@ -217,6 +273,15 @@ const BIENESTAR_ACTIVITY_TEMPLATE_KEYS = new Set([
 const BIENESTAR_PARTICIPANT_TEMPLATE_KEYS = new Set([
   'BENEFICIARIOBIENESTARCULTURAL', 'PARTICIPANTEOTRASESTRATEGIAS',
 ].map(normKey));
+const BIENESTAR_HUMAN_RESOURCE_TEMPLATE_KEYS = new Set([
+  'RECURSOHUMANOBIENESTARCULTURAL',
+].map(normKey));
+
+// Resumenes "curados" adicionales (mismo criterio que Bienestar): a la
+// medida de una plantilla puntual, con las cifras que de verdad importan
+// para ese proceso en vez del resumen automatico generico.
+const RUTAS_APRENDIZAJE_TEMPLATE_KEY = normKey('RUTAS_DE_APRENDIZAJE');
+const ESTADISTICA_PRACTICAS_TEMPLATE_KEY = normKey('ESTADISTICA_PRACTICAS');
 
 const findFieldByPredicate = (fields, predicate) => (fields || []).find(
   (field) => field?.name && predicate(normKey(field.name), field)
@@ -225,20 +290,23 @@ const findFieldByPredicate = (fields, predicate) => (fields || []).find(
 const getFieldValuesForEntry = (entry, fieldDef) => {
   if (!fieldDef) return [];
   const filled = entry.filled_data || [];
-  const match = filled.find((f) => f && f.field_name === fieldDef.name);
+  const fieldKey = normKey(fieldDef.name);
+  const match = filled.find((f) => f && normKey(f.field_name) === fieldKey);
   return match && Array.isArray(match.values) ? match.values : [];
 };
 
 const buildBienestarCurado = (templateIds, templateInfoById, publishedTemplates, dependencyNameByCode) => {
   const activityTemplateIds = [];
   const participantTemplateIds = [];
+  const humanResourceTemplateIds = [];
   templateIds.forEach((tId) => {
     const info = templateInfoById.get(tId);
     if (!info) return;
     const key = normKey(info.name);
     if (BIENESTAR_ACTIVITY_TEMPLATE_KEYS.has(key)) activityTemplateIds.push(tId);
     else if (BIENESTAR_PARTICIPANT_TEMPLATE_KEYS.has(key)) participantTemplateIds.push(tId);
-    // Cualquier otra plantilla del ambito (ej. "Recurso Humano") no se usa aqui.
+    else if (BIENESTAR_HUMAN_RESOURCE_TEMPLATE_KEYS.has(key)) humanResourceTemplateIds.push(tId);
+    // Cualquier otra plantilla del ambito se conserva para el resumen generico.
   });
 
   const entriesByTemplateId = (ids) => {
@@ -316,13 +384,22 @@ const buildBienestarCurado = (templateIds, templateInfoById, publishedTemplates,
     });
   });
 
+  let totalRecursoHumano = 0;
+  const humanResourceEntriesByTemplateId = entriesByTemplateId(humanResourceTemplateIds);
+  humanResourceTemplateIds.forEach((tId) => {
+    (humanResourceEntriesByTemplateId.get(tId) || []).forEach((entry) => {
+      totalRecursoHumano += countRecordsInLoadedEntry(entry);
+    });
+  });
+
   const actividades = Array.from(activitiesByCodigo.entries())
     .map(([codigo, descripcion]) => ({ codigo, descripcion: descripcion || '(sin descripción)' }))
     .sort((a, b) => a.codigo.localeCompare(b.codigo));
 
   const porDependencia = Array.from(dependencyActivityCodes.entries())
+    .filter(([depCode]) => dependencyNameByCode.has(depCode))
     .map(([depCode, codigos]) => ({
-      dependencia: dependencyNameByCode.get(depCode) || depCode,
+      dependencia: dependencyNameByCode.get(depCode),
       totalActividades: codigos.size,
     }))
     .sort((a, b) => b.totalActividades - a.totalActividades);
@@ -330,10 +407,141 @@ const buildBienestarCurado = (templateIds, templateInfoById, publishedTemplates,
   return {
     totalActividades: activitiesByCodigo.size,
     totalParticipantes,
+    totalRecursoHumano,
     totalBeneficiarios: Math.round(totalBeneficiarios),
     totalPersonasImpactadas: Math.round(totalPersonasImpactadas),
     actividades,
     porDependencia,
+    consumedTemplateIds: activityTemplateIds.concat(participantTemplateIds, humanResourceTemplateIds),
+  };
+};
+
+// Resumen "curado" para la plantilla RUTAS_DE_APRENDIZAJE (Estructura y
+// Procesos Académicos): cuantos estudiantes matriculados y cuantas insignias
+// entregadas tiene cada ruta. La cantidad de cursos aprobados se deja fuera
+// a proposito (a pedido explicito, no aporta valor para este resumen).
+const buildRutasAprendizajeCurado = (templateIds, templateInfoById, publishedTemplates, resolversByValidator) => {
+  const rutaTemplateId = templateIds.find((tId) => {
+    const info = templateInfoById.get(tId);
+    return info && normKey(info.name) === RUTAS_APRENDIZAJE_TEMPLATE_KEY;
+  });
+  if (!rutaTemplateId) return null;
+
+  const info = templateInfoById.get(rutaTemplateId) || { fields: [] };
+  const rutaField = findFieldByPredicate(
+    info.fields,
+    (k) => k.indexOf('RUTA') !== -1 && k.indexOf('APRENDIZAJE') !== -1
+  );
+  const insigniaField = findFieldByPredicate(
+    info.fields,
+    (k) => k.indexOf('INSIGNIA') !== -1 && k.indexOf('ENTREGAD') !== -1
+  );
+  if (!rutaField) return null;
+
+  const entries = [];
+  publishedTemplates.forEach((published) => {
+    const tId = String((published.template && published.template._id) || '');
+    if (tId !== rutaTemplateId) return;
+    (published.loaded_data || []).forEach((entry) => {
+      if (countRecordsInLoadedEntry(entry) > 0) entries.push(entry);
+    });
+  });
+
+  const porRuta = new Map(); // nombre ruta -> { ruta, matriculados, insignias }
+  let totalInsignias = 0;
+
+  entries.forEach((entry) => {
+    const rutaValues = getFieldValuesForEntry(entry, rutaField);
+    const insigniaValues = insigniaField ? getFieldValuesForEntry(entry, insigniaField) : [];
+    const rowCount = countRecordsInLoadedEntry(entry);
+
+    for (let r = 0; r < rowCount; r += 1) {
+      const rutaNombre = stringifyRawValue(rutaValues[r]);
+      if (!rutaNombre) continue;
+
+      const insigniaRaw = insigniaField
+        ? resolveValidatorValue(insigniaField.validate_with, stringifyRawValue(insigniaValues[r]), resolversByValidator)
+        : '';
+      const entregada = normalizeFieldNameForMatch(insigniaRaw) === 'SI';
+      if (entregada) totalInsignias += 1;
+
+      const existing = porRuta.get(rutaNombre) || { ruta: rutaNombre, matriculados: 0, insignias: 0 };
+      existing.matriculados += 1;
+      if (entregada) existing.insignias += 1;
+      porRuta.set(rutaNombre, existing);
+    }
+  });
+
+  const rutas = Array.from(porRuta.values()).sort((a, b) => b.matriculados - a.matriculados);
+  const totalMatriculados = rutas.reduce((sum, r) => sum + r.matriculados, 0);
+
+  return {
+    totalMatriculados,
+    totalRutas: rutas.length,
+    totalInsigniasEntregadas: totalInsignias,
+    rutas,
+    consumedTemplateIds: [rutaTemplateId],
+  };
+};
+
+// Resumen "curado" para Prácticas Académicas (Estructura y Procesos
+// Académicos): un registro por estudiante en práctica (ESTADISTICA_PRACTICAS),
+// con cuantos estudiantes hay por empresa y por modalidad. NOTA: no se cruza
+// con EMPRESAS_PRACTICAS para mostrar nombre/sector porque esa plantilla no
+// guarda el NIT de la empresa en un campo propio (su "ID_EMPRESA" es en
+// realidad el TIPO de documento, ej. "NIT"), asi que no hay forma de unirla
+// con el ID numerico de empresa que si trae ESTADISTICA_PRACTICAS.
+const buildPracticasCurado = (templateIds, templateInfoById, publishedTemplates, resolversByValidator) => {
+  const estadisticaTemplateId = templateIds.find((tId) => {
+    const info = templateInfoById.get(tId);
+    return info && normKey(info.name) === ESTADISTICA_PRACTICAS_TEMPLATE_KEY;
+  });
+  if (!estadisticaTemplateId) return null;
+
+  const estadisticaInfo = templateInfoById.get(estadisticaTemplateId) || { fields: [] };
+  const empresaRefField = findFieldByPredicate(estadisticaInfo.fields, (k) => k.indexOf('IDEMPRESA') !== -1);
+  const modalidadField = findFieldByPredicate(estadisticaInfo.fields, (k) => k.indexOf('MODALIDAD') !== -1);
+
+  let totalEstudiantes = 0;
+  const porEmpresa = new Map();
+  const porModalidad = new Map();
+
+  publishedTemplates.forEach((published) => {
+    const tId = String((published.template && published.template._id) || '');
+    if (tId !== estadisticaTemplateId) return;
+    (published.loaded_data || []).forEach((entry) => {
+      const rowCount = countRecordsInLoadedEntry(entry);
+      if (rowCount === 0) return;
+      const empresaValues = empresaRefField ? getFieldValuesForEntry(entry, empresaRefField) : [];
+      const modalidadValues = modalidadField ? getFieldValuesForEntry(entry, modalidadField) : [];
+
+      for (let r = 0; r < rowCount; r += 1) {
+        totalEstudiantes += 1;
+
+        const empresaIdRaw = empresaRefField ? stringifyRawValue(empresaValues[r]) : '';
+        const empresaLabel = empresaIdRaw || 'Sin empresa';
+        porEmpresa.set(empresaLabel, (porEmpresa.get(empresaLabel) || 0) + 1);
+
+        if (modalidadField) {
+          const modalidadRaw = stringifyRawValue(modalidadValues[r]);
+          const modalidad = resolveValidatorValue(modalidadField.validate_with, modalidadRaw, resolversByValidator) || 'Sin modalidad';
+          porModalidad.set(modalidad, (porModalidad.get(modalidad) || 0) + 1);
+        }
+      }
+    });
+  });
+
+  return {
+    totalEstudiantes,
+    totalEmpresas: porEmpresa.size,
+    porEmpresa: Array.from(porEmpresa.entries())
+      .map(([empresa, estudiantes]) => ({ empresa, estudiantes }))
+      .sort((a, b) => b.estudiantes - a.estudiantes)
+      .slice(0, 10),
+    porModalidad: Array.from(porModalidad.entries())
+      .map(([modalidad, estudiantes]) => ({ modalidad, estudiantes }))
+      .sort((a, b) => b.estudiantes - a.estudiantes),
+    consumedTemplateIds: [estadisticaTemplateId],
   };
 };
 
@@ -346,11 +554,22 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
   var periodId = req.query.periodId || null;
 
   try {
+    var historicQuery = {
+      active: true,
+      category: 'plantillas',
+      file_type: { $ne: 'pdf' },
+    };
+    if (periodId) historicQuery.period = periodId;
+
     var results = await Promise.all([
       Dimension.find().select('_id name').lean(),
       Template.find().select('_id name dimensions fields').lean(),
       Validator.find().select('name columns').lean(),
       Dependency.find().select('dep_code name').lean(),
+      HistoricoDocentes.find(historicQuery)
+        .select('_id file_name dimension period sheets createdAt')
+        .sort({ createdAt: -1 })
+        .lean(),
     ]);
     var dimensions = results[0];
     var templates = results[1];
@@ -358,6 +577,14 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
     var dependencyNameByCode = new Map(
       results[3].map(function (dep) { return [dep.dep_code, dep.name]; })
     );
+    var actividadBienestarByDimension = new Map();
+    results[4].forEach(function (document) {
+      var dimensionId = document.dimension ? String(document.dimension) : '';
+      if (!dimensionId || actividadBienestarByDimension.has(dimensionId)) return;
+      if (!isActividadBienestarFile(document.file_name)) return;
+      var analytics = buildActividadBienestarAnalytics(document);
+      if (analytics) actividadBienestarByDimension.set(dimensionId, analytics);
+    });
 
     var templateIdsByDimension = new Map();
     var dimIdsByTemplateId = new Map();
@@ -391,6 +618,8 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
     var recordsByMonth = new Map();
     // dimId -> Map<"YYYY-MM", total de registros ese mes, solo ese ambito>
     var recordsByMonthByDim = new Map();
+    // templateId -> Map<"YYYY-MM", total de registros ese mes>
+    var recordsByMonthByTemplate = new Map();
     // templateId -> Map<fieldName, valores reportados (todas las filas/dependencias)>
     var fieldValuesByTemplateId = new Map();
 
@@ -416,6 +645,10 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
           if (loadedDate && !Number.isNaN(loadedDate.getTime())) {
             var monthKey = loadedDate.getFullYear() + '-' + String(loadedDate.getMonth() + 1).padStart(2, '0');
             recordsByMonth.set(monthKey, (recordsByMonth.get(monthKey) || 0) + recordCount);
+
+            if (!recordsByMonthByTemplate.has(templateId)) recordsByMonthByTemplate.set(templateId, new Map());
+            var templateMonthMap = recordsByMonthByTemplate.get(templateId);
+            templateMonthMap.set(monthKey, (templateMonthMap.get(monthKey) || 0) + recordCount);
 
             for (var dm = 0; dm < dimIdsForThisTemplate.length; dm++) {
               var dimKeyForMonth = dimIdsForThisTemplate[dm];
@@ -444,144 +677,67 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
       var dimId = String(dimension._id);
       var templateIds = templateIdsByDimension.get(dimId) || [];
 
+      // Resumenes a la medida (ver funciones arriba): cada uno cubre una
+      // plantilla puntual con las cifras que de verdad importan para ese
+      // proceso. El desglose generico se conserva para TODAS las plantillas:
+      // el usuario puede ver tanto el panorama curado como el detalle de cada
+      // archivo sin que Actividad de bienestar/cultural desaparezcan.
+      var curado = normKey(dimension.name) === BIENESTAR_DIMENSION_KEY
+        ? buildBienestarCurado(templateIds, templateInfoById, publishedTemplates, dependencyNameByCode)
+        : null;
+      var rutasAprendizaje = buildRutasAprendizajeCurado(templateIds, templateInfoById, publishedTemplates, resolversByValidator);
+      var practicas = buildPracticasCurado(templateIds, templateInfoById, publishedTemplates, resolversByValidator);
+
+      // Desglose GENERICO por plantilla (el resto de plantillas del ambito,
+      // sin fusionar entre ellas): cada plantilla se presenta como su propia
+      // tarjeta con sus totales/promedios numericos y su distribucion de
+      // valores categoricos, en vez de mezclarse todas en un solo resumen de
+      // ambito.
       var totalRegistrosReportados = 0;
-      // Candidatos de resumen recolectados de TODAS las plantillas de este
-      // ambito, para agruparlos y presentarlos como si fueran del ambito.
-      var numericCandidates = [];
-      var categoricalCandidates = [];
+      var plantillas = [];
 
       for (var i = 0; i < templateIds.length; i++) {
         var tId = templateIds[i];
-        totalRegistrosReportados += (recordsByTemplateId.get(tId) || 0);
+        var templateRecords = recordsByTemplateId.get(tId) || 0;
+        totalRegistrosReportados += templateRecords;
+        if (templateRecords === 0) continue;
 
         var info = templateInfoById.get(tId) || { name: 'Sin nombre', fields: [] };
         var valuesByFieldName = fieldValuesByTemplateId.get(tId) || new Map();
         var resumen = buildFieldSummary(info.fields, valuesByFieldName, resolversByValidator);
 
-        resumen.numeric.forEach(function (field) {
-          numericCandidates.push({
-            name: field.name,
-            total: field.total,
-            average: field.average,
-            count: field.count,
-            plantilla: info.name,
-          });
-        });
-        resumen.categorical.forEach(function (field) {
-          categoricalCandidates.push({
-            name: field.name,
-            distribution: field.distribution,
-            topValue: field.topValue,
-            topCount: field.topCount,
-            totalValues: field.totalValues,
-            plantilla: info.name,
-          });
+        var templateTimelineMap = recordsByMonthByTemplate.get(tId) || new Map();
+        var templateTimeline = Array.from(templateTimelineMap.entries())
+          .map(function (pair) { return { month: pair[0], totalRegistros: pair[1] }; })
+          .sort(function (a, b) { return a.month.localeCompare(b.month); });
+
+        plantillas.push({
+          templateId: tId,
+          name: info.name,
+          totalRegistros: templateRecords,
+          numeric: resumen.numeric.slice(0, 4),
+          categorical: resumen.categorical.slice(0, 6),
+          timeline: templateTimeline,
         });
       }
 
-      // Varias plantillas del mismo ambito suelen compartir el mismo campo
-      // (ej. "ID_TIPO_DOCUMENTO"); en vez de mostrarlo repetido una vez por
-      // plantilla, se fusiona en un solo dato combinado del ambito.
-      var mergedNumericByName = new Map();
-      numericCandidates.forEach(function (field) {
-        var key = field.name.trim().toUpperCase();
-        var existing = mergedNumericByName.get(key);
-        if (!existing) {
-          mergedNumericByName.set(key, {
-            name: field.name,
-            total: field.total,
-            count: field.count,
-            plantillas: [field.plantilla],
-          });
-        } else {
-          existing.total += field.total;
-          existing.count += field.count;
-          if (existing.plantillas.indexOf(field.plantilla) === -1) existing.plantillas.push(field.plantilla);
-        }
-      });
-      var mergedNumeric = Array.from(mergedNumericByName.values()).map(function (field) {
-        return {
-          name: field.name,
-          total: field.total,
-          average: field.count > 0 ? field.total / field.count : 0,
-          count: field.count,
-          plantilla: field.plantillas.join(', '),
-        };
-      });
-
-      // La clave de agrupacion viene del groupKey ya calculado en
-      // buildFieldSummary (a partir del texto crudo, antes de resolver el
-      // validador). Si por algun motivo no viene (datos viejos en cache), se
-      // recalcula a partir del valor mostrado como respaldo.
-      var addDistributionEntry = function (valueCounts, distributionEntry) {
-        var groupKey = distributionEntry.groupKey || categoryGroupKey(distributionEntry.value);
-        var existingEntry = valueCounts.get(groupKey);
-        if (!existingEntry) {
-          valueCounts.set(groupKey, { label: distributionEntry.value, count: distributionEntry.count });
-        } else {
-          existingEntry.count += distributionEntry.count;
-          existingEntry.label = preferMoreDescriptiveLabel(existingEntry.label, distributionEntry.value);
-        }
-      };
-
-      var mergedCategoricalByName = new Map();
-      categoricalCandidates.forEach(function (field) {
-        var key = field.name.trim().toUpperCase();
-        var existing = mergedCategoricalByName.get(key);
-        if (!existing) {
-          var valueCounts = new Map();
-          field.distribution.forEach(function (d) { addDistributionEntry(valueCounts, d); });
-          mergedCategoricalByName.set(key, {
-            name: field.name,
-            valueCounts: valueCounts,
-            totalValues: field.totalValues,
-            plantillas: [field.plantilla],
-          });
-        } else {
-          field.distribution.forEach(function (d) { addDistributionEntry(existing.valueCounts, d); });
-          existing.totalValues += field.totalValues;
-          if (existing.plantillas.indexOf(field.plantilla) === -1) existing.plantillas.push(field.plantilla);
-        }
-      });
-      var mergedCategorical = Array.from(mergedCategoricalByName.values()).map(function (field) {
-        var distribution = Array.from(field.valueCounts.values())
-          .map(function (entry) { return { value: entry.label, count: entry.count }; })
-          .sort(function (a, b) { return b.count - a.count; });
-        return {
-          name: field.name,
-          distribution: distribution.slice(0, 5),
-          topValue: distribution.length > 0 ? distribution[0].value : null,
-          topCount: distribution.length > 0 ? distribution[0].count : 0,
-          totalValues: field.totalValues,
-          plantilla: field.plantillas.join(', '),
-        };
-      });
-
-      mergedNumeric.sort(function (a, b) { return b.total - a.total; });
-      mergedCategorical.sort(function (a, b) { return b.topCount - a.topCount; });
+      plantillas.sort(function (a, b) { return b.totalRegistros - a.totalRegistros; });
 
       var dimMonthMap = recordsByMonthByDim.get(dimId) || new Map();
       var timeline = Array.from(dimMonthMap.entries())
         .map(function (pair) { return { month: pair[0], totalRegistros: pair[1] }; })
         .sort(function (a, b) { return a.month.localeCompare(b.month); });
 
-      // Resumen a la medida SOLO para Bienestar Institucional (ver
-      // buildBienestarCurado): actividades, beneficiarios, participantes,
-      // personas impactadas y desglose por dependencia.
-      var curado = normKey(dimension.name) === BIENESTAR_DIMENSION_KEY
-        ? buildBienestarCurado(templateIds, templateInfoById, publishedTemplates, dependencyNameByCode)
-        : null;
-
       return {
         _id: dimension._id,
         name: dimension.name,
         totalRegistrosReportados: totalRegistrosReportados,
-        resumen: {
-          numeric: mergedNumeric.slice(0, 6),
-          categorical: mergedCategorical.slice(0, 4),
-        },
+        plantillas: plantillas,
         timeline: timeline,
         curado: curado,
+        rutasAprendizaje: rutasAprendizaje,
+        practicas: practicas,
+        actividadBienestar: actividadBienestarByDimension.get(dimId) || null,
       };
     });
 
