@@ -130,7 +130,7 @@ const sendDependencyUpdateEmail = async (user, allDependencies, newDependencyIds
 
 const getAllDependencies = async (req, res) => {
     try {
-        const dependencies = await Dependency.find({}, 'dep_code name').sort({ name: 1 });
+        const dependencies = await Dependency.find({ active: { $ne: false } }, 'dep_code name').sort({ name: 1 });
         res.json(dependencies);
     } catch (error) {
         res.status(500).json({ message: error.message });

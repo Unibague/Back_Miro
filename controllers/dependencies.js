@@ -100,7 +100,7 @@ dependencyController.syncDependenciesInternal = async () => {
   }).filter((dependency) => dependency.dep_code && dependency.name);
   
   const dependencySync = await Dependency.upsertDependencies(dependencies);
-  console.log(`✅ ${dependencySync.syncedCount} dependencias sincronizadas; ${dependencySync.deletedCount} eliminadas`);
+  console.log(`✅ ${dependencySync.syncedCount} dependencias sincronizadas; ${dependencySync.deactivatedCount} desactivadas (no se eliminan, se conservan para históricos)`);
   
   // 2. Obtener usuarios de Atlante para asignar responsables
   const usersResponse = await axios.get(USERS_ENDPOINT, {
@@ -191,7 +191,7 @@ dependencyController.syncDependenciesInternal = async () => {
   return {
     status: 'success',
     count: dependencySync.syncedCount,
-    deletedCount: dependencySync.deletedCount,
+    deactivatedCount: dependencySync.deactivatedCount,
     leadersAssigned: assignedCount
   };
 };
