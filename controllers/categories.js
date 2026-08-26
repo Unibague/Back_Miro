@@ -27,11 +27,16 @@ categoryController.createCategory = async (req, res) => {
 
         if (templates && templates.length > 0) {
           const isSniesCategory = name.toUpperCase().includes("SNIES");
+          const isCnaCategory = name.toUpperCase().includes("CNA");
           await Promise.all(
             templates.map(t =>
               Template.findByIdAndUpdate(
                 t.templateId,
-                { category: category._id, ...(isSniesCategory ? { is_snies: true } : {}) },
+                {
+                  category: category._id,
+                  ...(isSniesCategory ? { is_snies: true } : {}),
+                  ...(isCnaCategory ? { is_cna: true } : {}),
+                },
                 { new: true }
               )
             )
@@ -126,9 +131,14 @@ categoryController.updateCategory = async (req, res) => {
     await category.save();
 
     const isSniesCategory = name.toUpperCase().includes("SNIES");
+    const isCnaCategory = name.toUpperCase().includes("CNA");
     await Template.updateMany(
       { _id: { $in: newTemplateIds } },
-      { category: categoryId, ...(isSniesCategory ? { is_snies: true } : {}) }
+      {
+        category: categoryId,
+        ...(isSniesCategory ? { is_snies: true } : {}),
+        ...(isCnaCategory ? { is_cna: true } : {}),
+      }
     );
 
     res.status(200).json({ message: "Categoría actualizada exitosamente", category });

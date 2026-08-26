@@ -221,6 +221,10 @@ const templateSchema = new Schema({
       type: Boolean,
       default: false
     },
+    is_cna: {
+      type: Boolean,
+      default: false
+    },
     skip_comment_validation: {
       type: Boolean,
       default: false
