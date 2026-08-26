@@ -9,6 +9,46 @@ const HistoricoDocentes = require('../models/historicoDocentes');
 const {
   buildActividadBienestarAnalytics,
   isActividadBienestarFile,
+  buildRepresentacionEstudiantilAnalytics,
+  isRepresentacionEstudiantilFile,
+  buildPublicacionesAutoresAnalytics,
+  isPublicacionesAutoresFile,
+  buildDocentesHistoricoSniesAnalytics,
+  isDocentesHistoricoSniesFile,
+  buildRutasAprendizajeAnalytics,
+  isRutasAprendizajeFile,
+  buildPracticasAcademicasAnalytics,
+  isPracticasAcademicasFile,
+  buildEstrategiasCurricularesAnalytics,
+  isEstrategiasCurricularesFile,
+  buildCapacitacionFuncionariosAnalytics,
+  isCapacitacionFuncionariosFile,
+  buildConveniosCooperacionAnalytics,
+  isConveniosCooperacionFile,
+  buildEstimulosFuncionariosAnalytics,
+  isEstimulosFuncionariosFile,
+  buildOtrasEstrategiasAnalytics,
+  isOtrasEstrategiasFile,
+  buildPazYRegionAnalytics,
+  isPazYRegionFile,
+  buildGruposInvestigacionAnalytics,
+  isGruposInvestigacionFile,
+  buildLineasInvestigacionAnalytics,
+  isLineasInvestigacionFile,
+  buildRedesInvestigacionAnalytics,
+  isRedesInvestigacionFile,
+  buildSemillerosParticipantesAnalytics,
+  isSemillerosParticipantesFile,
+  buildTrabajoGradoAnalytics,
+  isTrabajoGradoFile,
+  buildMovilidadEntranteEstudiantesAnalytics,
+  isMovilidadEntranteEstudiantesFile,
+  buildMovilidadEntranteFuncionariosAnalytics,
+  isMovilidadEntranteFuncionariosFile,
+  buildMovilidadSalienteEstudiantesAnalytics,
+  isMovilidadSalienteEstudiantesFile,
+  buildMovilidadSalienteFuncionariosAnalytics,
+  isMovilidadSalienteFuncionariosFile,
 } = require('../services/consultaInformacionAnalytics');
 
 const dimensionController = {};
@@ -578,12 +618,150 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
       results[3].map(function (dep) { return [dep.dep_code, dep.name]; })
     );
     var actividadBienestarByDimension = new Map();
+    var representacionEstudiantilByDimension = new Map();
+    var publicacionesAutoresByDimension = new Map();
+    var docentesHistoricoSniesByDimension = new Map();
+    var rutasAprendizajeHistoricoByDimension = new Map();
+    var practicasAcademicasHistoricoByDimension = new Map();
+    var estrategiasCurricularesHistoricoByDimension = new Map();
+    var capacitacionFuncionariosByDimension = new Map();
+    var conveniosCooperacionByDimension = new Map();
+    var estimulosFuncionariosByDimension = new Map();
+    var otrasEstrategiasByDimension = new Map();
+    var pazYRegionByDimension = new Map();
+    var gruposInvestigacionByDimension = new Map();
+    var lineasInvestigacionByDimension = new Map();
+    var redesInvestigacionByDimension = new Map();
+    var semillerosParticipantesByDimension = new Map();
+    var trabajoGradoByDimension = new Map();
+    var movilidadEntranteEstudiantesByDimension = new Map();
+    var movilidadEntranteFuncionariosByDimension = new Map();
+    var movilidadSalienteEstudiantesByDimension = new Map();
+    var movilidadSalienteFuncionariosByDimension = new Map();
+    // Registros reportados vía "Consulta de Información" (archivos subidos
+    // directamente, HistoricoDocentes) por ambito — se suman al conteo del
+    // sistema viejo de Plantillas/PublishedTemplate para que "Registros
+    // reportados por ambito" refleje TODO lo reportado, no solo lo que pasó
+    // por Plantillas (ambitos como Gestión Institucional nunca tuvieron
+    // Plantillas del sistema viejo, así que sin esto siempre mostraban 0).
+    var historicoRegistrosByDimension = new Map();
     results[4].forEach(function (document) {
       var dimensionId = document.dimension ? String(document.dimension) : '';
-      if (!dimensionId || actividadBienestarByDimension.has(dimensionId)) return;
-      if (!isActividadBienestarFile(document.file_name)) return;
-      var analytics = buildActividadBienestarAnalytics(document);
-      if (analytics) actividadBienestarByDimension.set(dimensionId, analytics);
+      if (!dimensionId) return;
+
+      var rowsInDocument = (document.sheets || []).reduce(function (sum, sheet) {
+        if (normKey(sheet.name) === 'LISTAS') return sum;
+        return sum + (Array.isArray(sheet.rows) ? sheet.rows.length : 0);
+      }, 0);
+      historicoRegistrosByDimension.set(
+        dimensionId,
+        (historicoRegistrosByDimension.get(dimensionId) || 0) + rowsInDocument
+      );
+
+      if (!actividadBienestarByDimension.has(dimensionId) && isActividadBienestarFile(document.file_name)) {
+        var bienestarAnalytics = buildActividadBienestarAnalytics(document);
+        if (bienestarAnalytics) actividadBienestarByDimension.set(dimensionId, bienestarAnalytics);
+      }
+
+      if (!representacionEstudiantilByDimension.has(dimensionId) && isRepresentacionEstudiantilFile(document.file_name)) {
+        var representacionAnalytics = buildRepresentacionEstudiantilAnalytics(document);
+        if (representacionAnalytics) representacionEstudiantilByDimension.set(dimensionId, representacionAnalytics);
+      }
+
+      if (!publicacionesAutoresByDimension.has(dimensionId) && isPublicacionesAutoresFile(document.file_name)) {
+        var publicacionesAnalytics = buildPublicacionesAutoresAnalytics(document);
+        if (publicacionesAnalytics) publicacionesAutoresByDimension.set(dimensionId, publicacionesAnalytics);
+      }
+
+      if (!docentesHistoricoSniesByDimension.has(dimensionId) && isDocentesHistoricoSniesFile(document.file_name)) {
+        var docentesSniesAnalytics = buildDocentesHistoricoSniesAnalytics(document);
+        if (docentesSniesAnalytics) docentesHistoricoSniesByDimension.set(dimensionId, docentesSniesAnalytics);
+      }
+
+      if (!rutasAprendizajeHistoricoByDimension.has(dimensionId) && isRutasAprendizajeFile(document.file_name)) {
+        var rutasAnalytics = buildRutasAprendizajeAnalytics(document);
+        if (rutasAnalytics) rutasAprendizajeHistoricoByDimension.set(dimensionId, rutasAnalytics);
+      }
+
+      if (!practicasAcademicasHistoricoByDimension.has(dimensionId) && isPracticasAcademicasFile(document.file_name)) {
+        var practicasAnalytics = buildPracticasAcademicasAnalytics(document);
+        if (practicasAnalytics) practicasAcademicasHistoricoByDimension.set(dimensionId, practicasAnalytics);
+      }
+
+      if (!estrategiasCurricularesHistoricoByDimension.has(dimensionId) && isEstrategiasCurricularesFile(document.file_name)) {
+        var estrategiasAnalytics = buildEstrategiasCurricularesAnalytics(document);
+        if (estrategiasAnalytics) estrategiasCurricularesHistoricoByDimension.set(dimensionId, estrategiasAnalytics);
+      }
+
+      if (!capacitacionFuncionariosByDimension.has(dimensionId) && isCapacitacionFuncionariosFile(document.file_name)) {
+        var capacitacionAnalytics = buildCapacitacionFuncionariosAnalytics(document);
+        if (capacitacionAnalytics) capacitacionFuncionariosByDimension.set(dimensionId, capacitacionAnalytics);
+      }
+
+      if (!conveniosCooperacionByDimension.has(dimensionId) && isConveniosCooperacionFile(document.file_name)) {
+        var conveniosAnalytics = buildConveniosCooperacionAnalytics(document);
+        if (conveniosAnalytics) conveniosCooperacionByDimension.set(dimensionId, conveniosAnalytics);
+      }
+
+      if (!estimulosFuncionariosByDimension.has(dimensionId) && isEstimulosFuncionariosFile(document.file_name)) {
+        var estimulosAnalytics = buildEstimulosFuncionariosAnalytics(document);
+        if (estimulosAnalytics) estimulosFuncionariosByDimension.set(dimensionId, estimulosAnalytics);
+      }
+
+      if (!otrasEstrategiasByDimension.has(dimensionId) && isOtrasEstrategiasFile(document.file_name)) {
+        var otrasEstrategiasAnalytics = buildOtrasEstrategiasAnalytics(document);
+        if (otrasEstrategiasAnalytics) otrasEstrategiasByDimension.set(dimensionId, otrasEstrategiasAnalytics);
+      }
+
+      if (!pazYRegionByDimension.has(dimensionId) && isPazYRegionFile(document.file_name)) {
+        var pazYRegionAnalytics = buildPazYRegionAnalytics(document);
+        if (pazYRegionAnalytics) pazYRegionByDimension.set(dimensionId, pazYRegionAnalytics);
+      }
+
+      if (!gruposInvestigacionByDimension.has(dimensionId) && isGruposInvestigacionFile(document.file_name)) {
+        var gruposAnalytics = buildGruposInvestigacionAnalytics(document);
+        if (gruposAnalytics) gruposInvestigacionByDimension.set(dimensionId, gruposAnalytics);
+      }
+
+      if (!lineasInvestigacionByDimension.has(dimensionId) && isLineasInvestigacionFile(document.file_name)) {
+        var lineasAnalytics = buildLineasInvestigacionAnalytics(document);
+        if (lineasAnalytics) lineasInvestigacionByDimension.set(dimensionId, lineasAnalytics);
+      }
+
+      if (!redesInvestigacionByDimension.has(dimensionId) && isRedesInvestigacionFile(document.file_name)) {
+        var redesInvestAnalytics = buildRedesInvestigacionAnalytics(document);
+        if (redesInvestAnalytics) redesInvestigacionByDimension.set(dimensionId, redesInvestAnalytics);
+      }
+
+      if (!semillerosParticipantesByDimension.has(dimensionId) && isSemillerosParticipantesFile(document.file_name)) {
+        var semillerosAnalytics = buildSemillerosParticipantesAnalytics(document);
+        if (semillerosAnalytics) semillerosParticipantesByDimension.set(dimensionId, semillerosAnalytics);
+      }
+
+      if (!trabajoGradoByDimension.has(dimensionId) && isTrabajoGradoFile(document.file_name)) {
+        var trabajoGradoAnalytics = buildTrabajoGradoAnalytics(document);
+        if (trabajoGradoAnalytics) trabajoGradoByDimension.set(dimensionId, trabajoGradoAnalytics);
+      }
+
+      if (!movilidadEntranteEstudiantesByDimension.has(dimensionId) && isMovilidadEntranteEstudiantesFile(document.file_name)) {
+        var movEntEstAnalytics = buildMovilidadEntranteEstudiantesAnalytics(document);
+        if (movEntEstAnalytics) movilidadEntranteEstudiantesByDimension.set(dimensionId, movEntEstAnalytics);
+      }
+
+      if (!movilidadEntranteFuncionariosByDimension.has(dimensionId) && isMovilidadEntranteFuncionariosFile(document.file_name)) {
+        var movEntFuncAnalytics = buildMovilidadEntranteFuncionariosAnalytics(document);
+        if (movEntFuncAnalytics) movilidadEntranteFuncionariosByDimension.set(dimensionId, movEntFuncAnalytics);
+      }
+
+      if (!movilidadSalienteEstudiantesByDimension.has(dimensionId) && isMovilidadSalienteEstudiantesFile(document.file_name)) {
+        var movSalEstAnalytics = buildMovilidadSalienteEstudiantesAnalytics(document);
+        if (movSalEstAnalytics) movilidadSalienteEstudiantesByDimension.set(dimensionId, movSalEstAnalytics);
+      }
+
+      if (!movilidadSalienteFuncionariosByDimension.has(dimensionId) && isMovilidadSalienteFuncionariosFile(document.file_name)) {
+        var movSalFuncAnalytics = buildMovilidadSalienteFuncionariosAnalytics(document);
+        if (movSalFuncAnalytics) movilidadSalienteFuncionariosByDimension.set(dimensionId, movSalFuncAnalytics);
+      }
     });
 
     var templateIdsByDimension = new Map();
@@ -723,6 +901,8 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
 
       plantillas.sort(function (a, b) { return b.totalRegistros - a.totalRegistros; });
 
+      totalRegistrosReportados += historicoRegistrosByDimension.get(dimId) || 0;
+
       var dimMonthMap = recordsByMonthByDim.get(dimId) || new Map();
       var timeline = Array.from(dimMonthMap.entries())
         .map(function (pair) { return { month: pair[0], totalRegistros: pair[1] }; })
@@ -738,6 +918,26 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
         rutasAprendizaje: rutasAprendizaje,
         practicas: practicas,
         actividadBienestar: actividadBienestarByDimension.get(dimId) || null,
+        representacionEstudiantil: representacionEstudiantilByDimension.get(dimId) || null,
+        publicacionesAutores: publicacionesAutoresByDimension.get(dimId) || null,
+        docentesHistoricoSnies: docentesHistoricoSniesByDimension.get(dimId) || null,
+        rutasAprendizajeHistorico: rutasAprendizajeHistoricoByDimension.get(dimId) || null,
+        practicasAcademicasHistorico: practicasAcademicasHistoricoByDimension.get(dimId) || null,
+        estrategiasCurricularesHistorico: estrategiasCurricularesHistoricoByDimension.get(dimId) || null,
+        capacitacionFuncionarios: capacitacionFuncionariosByDimension.get(dimId) || null,
+        conveniosCooperacion: conveniosCooperacionByDimension.get(dimId) || null,
+        estimulosFuncionarios: estimulosFuncionariosByDimension.get(dimId) || null,
+        otrasEstrategias: otrasEstrategiasByDimension.get(dimId) || null,
+        pazYRegion: pazYRegionByDimension.get(dimId) || null,
+        gruposInvestigacion: gruposInvestigacionByDimension.get(dimId) || null,
+        lineasInvestigacion: lineasInvestigacionByDimension.get(dimId) || null,
+        redesInvestigacion: redesInvestigacionByDimension.get(dimId) || null,
+        semillerosParticipantes: semillerosParticipantesByDimension.get(dimId) || null,
+        trabajoGrado: trabajoGradoByDimension.get(dimId) || null,
+        movilidadEntranteEstudiantes: movilidadEntranteEstudiantesByDimension.get(dimId) || null,
+        movilidadEntranteFuncionarios: movilidadEntranteFuncionariosByDimension.get(dimId) || null,
+        movilidadSalienteEstudiantes: movilidadSalienteEstudiantesByDimension.get(dimId) || null,
+        movilidadSalienteFuncionarios: movilidadSalienteFuncionariosByDimension.get(dimId) || null,
       };
     });
 
