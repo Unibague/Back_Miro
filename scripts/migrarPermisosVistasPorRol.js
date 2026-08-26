@@ -22,6 +22,7 @@ const KEY_VARIANTS = {
     traceability: ['traceabilityProductor'],
     historicoDocentes: ['historicoDocentesResponsable', 'historicoDocentesProductor'],
     snies: ['sniesProductor'],
+    cna: ['cnaProductor'],
     dateReviewResponsible: ['dateReviewResponsibleProductor'],
     pdi: ['pdiResponsable'],
     pdiMine: ['pdiMineResponsable'],

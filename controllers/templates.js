@@ -528,6 +528,7 @@ templateController.duplicatePlantilla = async (req, res) => {
       qr_authorized_producers: plainSource.qr_authorized_producers,
       fecha_final: plainSource.fecha_final,
       is_snies: plainSource.is_snies,
+      is_cna: plainSource.is_cna,
       skip_comment_validation: plainSource.skip_comment_validation,
     });
 

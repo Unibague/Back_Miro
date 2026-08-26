@@ -1137,11 +1137,13 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       ...(periodId && { period: periodId }),
     };
     
-    // Solo para el módulo SNIES: en vez de "soy alguno de los productores
+    // Solo para el módulo SNIES/CNA: en vez de "soy alguno de los productores
     // asignados" (template.producers), exige "mi dependencia es el productor
     // ENCARGADO del envío final" (responsible_producers, campo raíz de
-    // publishedTemplates) y que la plantilla sea de SNIES (template.is_snies).
+    // publishedTemplates) y que la plantilla sea de SNIES/CNA (template.is_snies
+    // / template.is_cna).
     const sniesResponsableOnly = req.query.sniesResponsableOnly === 'true';
+    const cnaResponsableOnly = req.query.cnaResponsableOnly === 'true';
 
     // Filtrado específico cuando filterByUserScope=true
     if (filterByUserScope === 'true') {
@@ -1162,6 +1164,9 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
 
         if (sniesResponsableOnly) {
           query['template.is_snies'] = true;
+          query['responsible_producers'] = { $in: dependencyIds };
+        } else if (cnaResponsableOnly) {
+          query['template.is_cna'] = true;
           query['responsible_producers'] = { $in: dependencyIds };
         } else {
           query['template.producers'] = { $in: dependencyIds };
