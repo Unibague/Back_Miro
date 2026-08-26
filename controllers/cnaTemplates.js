@@ -704,7 +704,52 @@ const convertCellValue = (value) => {
   return "";
 };
 
-const sanitizeExcelValue = (value) => {
+const CNA_DATE_TOSTRING_MONTHS = {
+  Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6,
+  Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12,
+};
+const padCnaDatePart = (n) => String(n).padStart(2, "0");
+
+// Formatea fechas a D/M/A (mismo criterio que sniesTemplates.js) en vez de
+// dejarlas como el string ISO crudo que se guarda en Mongo; se usan los
+// componentes UTC a proposito: una fecha sin hora se guarda como medianoche
+// UTC, y convertirla a hora de Colombia desplazaria el dia calendario un dia
+// hacia atras.
+const formatCnaDateValueToDMA = (value, fieldName = "") => {
+  if (value === null || value === undefined || value === "") return null;
+
+  const raw = value instanceof Date ? value.toISOString() : String(value).trim();
+  const isDateField = /(^|[^A-Z])(FECHA|DATE)([^A-Z]|$)/i.test(fieldName);
+  const isRecognizableDate =
+    /^\d{2}\/\d{2}\/\d{4}$/.test(raw) ||
+    /^\d{4}[-/]\d{2}[-/]\d{2}(?:T.*)?$/.test(raw) ||
+    /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s/i.test(raw) ||
+    /GMT[+-]\d{4}/i.test(raw);
+
+  if (!isDateField && !isRecognizableDate && !(value instanceof Date)) return null;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+
+  const calendarMatch = raw.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+  if (calendarMatch) {
+    return `${calendarMatch[3]}/${calendarMatch[2]}/${calendarMatch[1]}`;
+  }
+
+  const jsDateStringMatch = raw.match(
+    /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{2})\s+(\d{4})/i
+  );
+  if (jsDateStringMatch) {
+    const month = CNA_DATE_TOSTRING_MONTHS[jsDateStringMatch[1]];
+    if (month) {
+      return `${jsDateStringMatch[2]}/${padCnaDatePart(month)}/${jsDateStringMatch[3]}`;
+    }
+  }
+
+  const parsed = value instanceof Date ? value : new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return `${padCnaDatePart(parsed.getUTCDate())}/${padCnaDatePart(parsed.getUTCMonth() + 1)}/${parsed.getUTCFullYear()}`;
+};
+
+const sanitizeExcelValue = (value, fieldName = "") => {
   const normalizedValue = convertCellValue(value);
 
   if (normalizedValue === null || normalizedValue === undefined) {
@@ -715,10 +760,13 @@ const sanitizeExcelValue = (value) => {
     return normalizedValue;
   }
 
-  return String(normalizedValue)
+  const stringValue = String(normalizedValue)
     // Remove characters that are invalid in XML 1.0 / XLSX shared strings.
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uD800-\uDFFF\uFFFE\uFFFF]/g, "")
     .trim();
+
+  const formattedDate = formatCnaDateValueToDMA(stringValue, fieldName);
+  return formattedDate !== null ? formattedDate : stringValue;
 };
 
 const cloneNoteValue = (note) => {
@@ -1407,7 +1455,7 @@ const rewriteWorksheetXml = (xmlContent, headers, rows, headerRowNumber) => {
 
     headers.forEach((header, headerIndex) => {
       const cellRef = `${columnNumberToName(headerIndex + 1)}${excelRowNumber}`;
-      const cellNode = buildCellNode(doc, cellRef, sanitizeExcelValue(row[header]));
+      const cellNode = buildCellNode(doc, cellRef, sanitizeExcelValue(row[header], header));
       rowNode.appendChild(cellNode);
     });
 
