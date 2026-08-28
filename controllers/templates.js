@@ -10,6 +10,7 @@ const UserService = require("../services/users");
 const Dependency = require('../models/dependencies');
 const AuditLogger = require('../services/auditLogger');
 const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
+const { syncTemplateCategories } = require('../helpers/templateCategorySync');
 
 const { ObjectId } = mongoose.Types;
 
@@ -445,6 +446,13 @@ templateController.createPlantilla = async (req, res) => {
       console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
     }
 
+    // Ubicar la plantilla en la categoría de los switches SNIES / CNA / Otra
+    try {
+      await syncTemplateCategories(plantilla);
+    } catch (categoryError) {
+      console.warn('Category sync failed (non-critical):', categoryError.message);
+    }
+
     res.status(200).json({ status: "Plantilla creada", _id: plantilla._id, template: plantilla });
   } catch (error) {
     console.error("Error al crear la plantilla:", error);
@@ -529,6 +537,7 @@ templateController.duplicatePlantilla = async (req, res) => {
       fecha_final: plainSource.fecha_final,
       is_snies: plainSource.is_snies,
       is_cna: plainSource.is_cna,
+      is_otra: plainSource.is_otra,
       skip_comment_validation: plainSource.skip_comment_validation,
     });
 
@@ -656,6 +665,11 @@ templateController.updatePlantilla = async (req, res) => {
           console.warn('Auto-validator update failed (non-critical):', autoValidatorError.message);
         }
       }
+      try {
+        await syncTemplateCategories(updatedTemplate);
+      } catch (categoryError) {
+        console.warn('Category sync failed (non-critical):', categoryError.message);
+      }
       return res.status(200).json(updatedTemplate);
     }
 
@@ -697,6 +711,13 @@ templateController.updatePlantilla = async (req, res) => {
       } catch (autoValidatorError) {
         console.warn('Auto-validator update failed (non-critical):', autoValidatorError.message);
       }
+    }
+
+    // Ubicar la plantilla en la categoría de los switches SNIES / CNA / Otra
+    try {
+      await syncTemplateCategories(updatedTemplate);
+    } catch (categoryError) {
+      console.warn('Category sync failed (non-critical):', categoryError.message);
     }
 
     // 🔁 Se sincronizan los producers embebidos en publishedTemplates
