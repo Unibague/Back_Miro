@@ -28,6 +28,7 @@ categoryController.createCategory = async (req, res) => {
         if (templates && templates.length > 0) {
           const isSniesCategory = name.toUpperCase().includes("SNIES");
           const isCnaCategory = name.toUpperCase().includes("CNA");
+          const isOtraCategory = name.trim().toUpperCase() === "OTRA";
           await Promise.all(
             templates.map(t =>
               Template.findByIdAndUpdate(
@@ -36,6 +37,7 @@ categoryController.createCategory = async (req, res) => {
                   category: category._id,
                   ...(isSniesCategory ? { is_snies: true } : {}),
                   ...(isCnaCategory ? { is_cna: true } : {}),
+                  ...(isOtraCategory ? { is_otra: true } : {}),
                 },
                 { new: true }
               )
@@ -124,7 +126,16 @@ categoryController.updateCategory = async (req, res) => {
     const oldTemplateIds = category.templates.map(t => t.templateId.toString());
 
     const templatesToRemove = oldTemplateIds.filter(id => !newTemplateIds.includes(id));
-    await Template.updateMany({ _id: { $in: templatesToRemove } }, { $unset: { category: "" } });
+    const previousName = category.name || "";
+    const removedFlags = {
+      ...(previousName.toUpperCase().includes("SNIES") ? { is_snies: false } : {}),
+      ...(previousName.toUpperCase().includes("CNA") ? { is_cna: false } : {}),
+      ...(previousName.trim().toUpperCase() === "OTRA" ? { is_otra: false } : {}),
+    };
+    await Template.updateMany(
+      { _id: { $in: templatesToRemove } },
+      { $unset: { category: "" }, ...(Object.keys(removedFlags).length ? { $set: removedFlags } : {}) }
+    );
 
     category.name = name;
     category.templates = templates.map(t => ({ templateId: t.templateId }));
@@ -132,12 +143,14 @@ categoryController.updateCategory = async (req, res) => {
 
     const isSniesCategory = name.toUpperCase().includes("SNIES");
     const isCnaCategory = name.toUpperCase().includes("CNA");
+    const isOtraCategory = name.trim().toUpperCase() === "OTRA";
     await Template.updateMany(
       { _id: { $in: newTemplateIds } },
       {
         category: categoryId,
         ...(isSniesCategory ? { is_snies: true } : {}),
         ...(isCnaCategory ? { is_cna: true } : {}),
+        ...(isOtraCategory ? { is_otra: true } : {}),
       }
     );
 
@@ -157,7 +170,16 @@ categoryController.deleteCategory = async (req, res) => {
     const category = await Category.findById(categoryId);
     if (!category) return res.status(404).json({ message: "Categoría no encontrada" });
 
-    await Template.updateMany({ category: categoryId }, { $unset: { category: "" } });
+    const deletedName = category.name || "";
+    const clearedFlags = {
+      ...(deletedName.toUpperCase().includes("SNIES") ? { is_snies: false } : {}),
+      ...(deletedName.toUpperCase().includes("CNA") ? { is_cna: false } : {}),
+      ...(deletedName.trim().toUpperCase() === "OTRA" ? { is_otra: false } : {}),
+    };
+    await Template.updateMany(
+      { category: categoryId },
+      { $unset: { category: "" }, ...(Object.keys(clearedFlags).length ? { $set: clearedFlags } : {}) }
+    );
     await Category.findByIdAndDelete(categoryId);
 
     res.status(200).json({ message: "Categoría eliminada exitosamente" });

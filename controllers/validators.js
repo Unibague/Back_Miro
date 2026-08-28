@@ -1715,28 +1715,17 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
     try {
         const { validatorName: requestedValidatorName, columnName: requestedColumnName } = splitValidateWithReference(name);
 
-        // Usar el validador con más filas de datos (global vs snapshot de periodo)
-        const countValidatorRows = (v) => {
-            if (!v) return 0;
-            const cols = v.columns || [];
-            return cols.length > 0 ? Math.max(...cols.map(c => (c.values || []).length)) : 0;
-        };
-
+        // Preferir siempre la tabla propia del periodo (si existe): es la
+        // versión vigente/autoritativa para ese periodo, sin importar si tiene
+        // menos filas que la tabla global (p. ej. cuando un admin recorta la
+        // lista a propósito para el nuevo periodo). findValidatorByName ya cae
+        // a la tabla global si el periodo no tiene una tabla con ese nombre.
         const findBestValidator = async (lookupName) => {
             if (!lookupName) return null;
-            const [globalValidator, periodValidator] = await Promise.all([
-                findGlobalValidatorByName(lookupName),
-                hasPeriodId(periodId)
-                    ? validatorController.findValidatorByName(lookupName, periodId)
-                    : Promise.resolve(null),
-            ]);
-            if (!globalValidator && !periodValidator) return null;
-            if (!globalValidator) return periodValidator;
-            if (!periodValidator) return globalValidator;
-            // Preferir el que tenga más filas (más completo/actualizado)
-            return countValidatorRows(periodValidator) > countValidatorRows(globalValidator)
-                ? periodValidator
-                : globalValidator;
+            if (hasPeriodId(periodId)) {
+                return validatorController.findValidatorByName(lookupName, periodId);
+            }
+            return findGlobalValidatorByName(lookupName);
         };
 
         let validator = await findBestValidator(requestedValidatorName);
