@@ -57,6 +57,67 @@ const sortedDistribution = (map, limit) => {
   return limit ? values.slice(0, limit) : values;
 };
 
+// "Detalle por hoja": cada plantilla curada arma un arreglo de hojas, y cada
+// hoja un arreglo de desgloses generico (dona o barra) en vez de un campo
+// especifico por cada tipo de grafica — asi el mismo renderizador del front
+// sirve para las ~20 plantillas sin tener que inflar la interfaz por cada
+// una. `donutBreakdown`/`barBreakdown` arman un desglose a partir de un Map
+// ya contado (o de un array ya ordenado con `fromValues`); se filtran los
+// vacios al armar la hoja.
+const donutBreakdown = (label, mapOrValues, limit) => ({
+  label,
+  type: 'donut',
+  data: mapOrValues instanceof Map ? sortedDistribution(mapOrValues, limit) : mapOrValues,
+});
+const barBreakdown = (label, mapOrValues, limit) => ({
+  label,
+  type: 'bar',
+  data: mapOrValues instanceof Map ? sortedDistribution(mapOrValues, limit) : mapOrValues,
+});
+const buildHoja = (nombre, totalRegistros, desgloses) => ({
+  nombre,
+  totalRegistros,
+  desgloses: desgloses.filter((d) => d.data.length > 0),
+});
+
+// Campos "Si/No" de enfoque/contribucion que traen varias plantillas
+// (promueve empatia, contribuye a la permanencia, cooperacion nacional o
+// internacional, etc.): cuenta cuantos registros marcaron cada enfoque. Se
+// resuelve por palabras clave en el nombre normalizado de la columna (no por
+// texto exacto) porque el mismo set de preguntas aparece con columnas
+// tituladas distinto segun la plantilla.
+const ENFOQUE_FLAGS = [
+  { match: 'COOPERACIONNACIONAL', label: 'Cooperación nacional' },
+  { match: 'COOPERACIONINTERNACIONAL', label: 'Cooperación internacional' },
+  { match: 'COMPRENSIONDELAREALIDADSOCIAL', label: 'Comprensión realidad social' },
+  { match: 'PROMUEVELAEMPATIA', label: 'Empatía' },
+  { match: 'PROMUEVELAETICA', label: 'Ética' },
+  { match: 'HABILIDADESBLANDAS', label: 'Habilidades blandas' },
+  { match: 'BILINGUISMO', label: 'Bilingüismo' },
+  { match: 'OTRASCULTURASYLENGUAS', label: 'Relacionamiento intercultural' },
+  { match: 'TRABAJOAUTONOMO', label: 'Trabajo autónomo' },
+  { match: 'CONTRIBUYEALAPERMANENCIA', label: 'Permanencia' },
+  { match: 'CONTRIBUYEALAGRADUACION', label: 'Graduación' },
+  { match: 'DESARROLLOPROFESORAL', label: 'Desarrollo profesoral' },
+  { match: 'FORMACIONINTEGRAL', label: 'Formación integral' },
+  { match: 'SOSTENIBILIDADAMBIENTAL', label: 'Sostenibilidad ambiental' },
+];
+
+const analyzeEnfoques = (list) => {
+  if (list.length === 0) return [];
+  const sampleKeys = Object.keys(list[0]);
+  const resolved = ENFOQUE_FLAGS
+    .map((flag) => ({ ...flag, key: sampleKeys.find((k) => k.indexOf(flag.match) !== -1) }))
+    .filter((flag) => flag.key);
+  const counts = new Map();
+  list.forEach((row) => {
+    resolved.forEach((flag) => {
+      if (String(row[flag.key] ?? '').trim().toUpperCase().startsWith('S')) addCount(counts, flag.label);
+    });
+  });
+  return sortedDistribution(counts);
+};
+
 // En esta plantilla consolidada los codigos usados por las areas productoras
 // son los acordados para el informe funcional solicitado por Bienestar.
 const WELLBEING_UNITS = {
@@ -184,6 +245,132 @@ const buildActividadBienestarAnalytics = (document) => {
     0
   );
 
+  // Detalle por hoja: cada hoja fuente que compone este archivo trae su
+  // propio mini-analisis (por unidad/categoria/mes/tipo, segun aplique),
+  // en vez de mezclarse todas en el resumen general de arriba.
+  const analyzeOrigenBeneficiarios = (list) => {
+    let internos = 0;
+    let externos = 0;
+    list.forEach((row) => {
+      internos += asNumber(row.CANTIDADBENEFICIARIOSINTERNOSSINREGISTRO);
+      externos += asNumber(row.CANTIDADBENEFICIARIOEXTERNO || row.CANTIDADBENEFICIARIOSEXTERNOS);
+    });
+    const result = [];
+    if (internos > 0) result.push({ name: 'Internos sin registro', value: internos });
+    if (externos > 0) result.push({ name: 'Externos', value: externos });
+    return result;
+  };
+
+  const analyzeActivityGroup = (list) => {
+    const porCategoria = new Map();
+    list.forEach((activity) => addCount(porCategoria, activity.__CATEGORY));
+    return [
+      donutBreakdown('Origen de beneficiarios', analyzeOrigenBeneficiarios(list)),
+      barBreakdown('Por categoría', porCategoria),
+      barBreakdown('Enfoques y contribuciones', analyzeEnfoques(list)),
+    ];
+  };
+
+  // Unidad de cada fila, calculada una sola vez: se usa tanto para agregar
+  // (analyze*) como para filtrar por dependencia (hojasPorDependencia), asi
+  // que ambos caminos quedan siempre de acuerdo entre si.
+  const humanResourceUnit = (row) => {
+    const code = String(row.CODIGOACTIVIDAD || '').trim();
+    const activity = activityByCode.get(code) || {};
+    return unitLabel(row.CODIGOUNIDADORGANIZACIONAL || row.DEPENDENCIA || activity.__UNIT);
+  };
+  const beneficiaryUnit = (row) => unitLabel(row.DEPENDENCIA || row.CODIGOUNIDADORGANIZACIONAL);
+  const groupedBeneficiaryUnit = (row) => unitLabel(row.CODIGOUNIDADORGANIZACIONAL);
+
+  const analyzeHumanResourceRows = (rows) => {
+    const porCategoria = new Map();
+    const porPrograma = new Map();
+    const porActividad = new Map();
+    rows.forEach((row) => {
+      const code = String(row.CODIGOACTIVIDAD || '').trim();
+      const activity = activityByCode.get(code) || {};
+      addCount(porCategoria, activity.__CATEGORY || 'Sin categoría');
+      const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
+      if (programa) addCount(porPrograma, programa);
+      const nombreActividad = String(row.NOMBREACTIVIDADEVENTO || '').trim();
+      if (nombreActividad) addCount(porActividad, nombreActividad);
+    });
+    return [
+      barBreakdown('Por categoría', porCategoria),
+      barBreakdown('Top programas académicos', porPrograma, 10),
+      barBreakdown('Top actividades', porActividad, 10),
+    ];
+  };
+
+  const analyzeBeneficiaryListRows = (rows) => {
+    const porTipo = new Map();
+    const porActividad = new Map();
+    const porPrograma = new Map();
+    rows.forEach((row) => {
+      addCount(porTipo, row.ACTIVIDAD || row.RORESDISPONIBLES || 'Beneficiario registrado');
+      const actividad = String(row.NOMBREACTIVIDADEVENTO || '').trim();
+      if (actividad) addCount(porActividad, actividad);
+      const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
+      if (programa) addCount(porPrograma, programa);
+    });
+    return [
+      donutBreakdown('Por tipo', porTipo),
+      barBreakdown('Top programas académicos', porPrograma, 10),
+      barBreakdown('Top actividades', porActividad, 10),
+    ];
+  };
+
+  const analyzeGroupedBeneficiaryRows = (rows) => {
+    const porTipo = new Map();
+    rows.forEach((row) => addCount(porTipo, row.IDTIPOBENEFICIARIO || 'Sin tipo', asNumber(row.CANTIDADBENEFICIARIOS)));
+    return [donutBreakdown('Por tipo', porTipo)];
+  };
+
+  // Arma las 6 tarjetas de "Detalle por hoja" a partir de las listas que se
+  // le pasen: se usa tanto para el archivo completo como, filtrando cada
+  // lista por unidad, para el desglose por dependencia de mas abajo.
+  const buildHojas = (main, cultural, events, human, beneficiary, grouped) => [
+    buildHoja('Actividades de Bienestar', main.length, analyzeActivityGroup(main)),
+    buildHoja('Actividades Culturales', cultural.length, analyzeActivityGroup(cultural)),
+    buildHoja('Eventos Culturales', events.length, analyzeActivityGroup(events)),
+    buildHoja('Recurso Humano', human.length, analyzeHumanResourceRows(human)),
+    buildHoja('Lista de Beneficiarios', beneficiary.length, analyzeBeneficiaryListRows(beneficiary)),
+    buildHoja('Beneficiarios Agrupados', grouped.length, analyzeGroupedBeneficiaryRows(grouped)),
+  ];
+
+  const hojas = buildHojas(mainActivities, culturalActivities, culturalEvents, humanResources, beneficiaryList, groupedBeneficiaries);
+
+  // Detalle por dependencia (unidad): reutiliza los mismos mapas ya
+  // calculados arriba (actividades/beneficiarios/recurso humano por unidad)
+  // para armar una sola tabla filtrable, en vez de recalcular desde cero.
+  const unidades = new Set([
+    ...activitiesByUnit.keys(),
+    ...beneficiariesByUnit.keys(),
+    ...humanResourcesByUnit.keys(),
+  ]);
+  const porDependencia = Array.from(unidades)
+    .map((unidad) => ({
+      dependencia: unidad,
+      actividades: activitiesByUnit.get(unidad) || 0,
+      beneficiarios: beneficiariesByUnit.get(unidad) || 0,
+      recursoHumano: humanResourcesByUnit.get(unidad) || 0,
+    }))
+    .sort((a, b) => b.actividades - a.actividades);
+
+  // El mismo "Detalle por hoja" pero recalculado solo con las filas de cada
+  // dependencia, para que el filtro de arriba tambien afecte esta seccion.
+  const hojasPorDependencia = {};
+  unidades.forEach((unidad) => {
+    hojasPorDependencia[unidad] = buildHojas(
+      mainActivities.filter((row) => row.__UNIT === unidad),
+      culturalActivities.filter((row) => row.__UNIT === unidad),
+      culturalEvents.filter((row) => row.__UNIT === unidad),
+      humanResources.filter((row) => humanResourceUnit(row) === unidad),
+      beneficiaryList.filter((row) => beneficiaryUnit(row) === unidad),
+      groupedBeneficiaries.filter((row) => groupedBeneficiaryUnit(row) === unidad)
+    );
+  });
+
   return {
     fileId: String(document._id),
     fileName: document.file_name,
@@ -203,6 +390,9 @@ const buildActividadBienestarAnalytics = (document) => {
     beneficiariesByUnit: sortedDistribution(beneficiariesByUnit),
     humanResourcesByUnit: sortedDistribution(humanResourcesByUnit),
     humanResourcesByCategory: sortedDistribution(humanResourcesByCategory),
+    hojas,
+    porDependencia,
+    hojasPorDependencia,
   };
 };
 
@@ -254,6 +444,13 @@ const buildRepresentacionEstudiantilAnalytics = (document) => {
     porCandidato: sortedDistribution(candidatoCounts),
     porInstancia: sortedDistribution(instanciaCounts),
     porPrograma: sortedDistribution(programaCounts),
+    hojas: [
+      buildHoja('Representación Estudiantil', rows.length, [
+        donutBreakdown('Principal vs. Suplente', candidatoCounts),
+        barBreakdown('Por instancia', instanciaCounts, 15),
+        barBreakdown('Por programa', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -312,6 +509,16 @@ const buildPublicacionesAutoresAnalytics = (document) => {
     porPrograma: sortedDistribution(programaCounts, 10),
     publicacionesPorMes: sortedDistribution(publicacionesPorMesCounts)
       .sort((a, b) => a.name.localeCompare(b.name)),
+    hojas: [
+      buildHoja('Publicaciones', publicaciones.length, [
+        donutBreakdown('Por tipo', tipoCounts),
+        barBreakdown('Por dependencia', dependenciaCounts, 10),
+      ]),
+      buildHoja('Autores de publicaciones', autores.length, [
+        donutBreakdown('Origen del autor', origenCounts),
+        barBreakdown('Por programa', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -393,6 +600,16 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     escalafonPeriodoActual: sortedDistribution(escalafonCounts),
     dependenciaPeriodoActual: sortedDistribution(dependenciaCounts, 10),
     nivelFormacionPeriodoActual: sortedDistribution(nivelFormacionCounts),
+    hojas: [
+      buildHoja(`Contrato (${latestSemestre ? `${latestAno}-${latestSemestre}` : latestAno})`, latestContratoRows.length, [
+        donutBreakdown('Dedicación', dedicacionCounts),
+        donutBreakdown('Escalafón', escalafonCounts),
+        barBreakdown('Por dependencia', dependenciaCounts, 10),
+      ]),
+      buildHoja(`Estudio / formación (${latestSemestre ? `${latestAno}-${latestSemestre}` : latestAno})`, latestEstudioRows.length, [
+        donutBreakdown('Máximo nivel de formación', nivelFormacionCounts),
+      ]),
+    ],
   };
 };
 
@@ -440,6 +657,18 @@ const buildRutasAprendizajeAnalytics = (document) => {
     totalInsigniasEntregadas: totalInsignias,
     rutas: Array.from(rutaCounts.values()).sort((a, b) => b.matriculados - a.matriculados),
     porPrograma: sortedDistribution(programaCounts, 10),
+    hojas: [
+      buildHoja('Rutas de Aprendizaje', rows.length, [
+        barBreakdown(
+          'Top rutas (matriculados)',
+          Array.from(rutaCounts.values())
+            .sort((a, b) => b.matriculados - a.matriculados)
+            .slice(0, 10)
+            .map((r) => ({ name: r.ruta, value: r.matriculados }))
+        ),
+        barBreakdown('Por programa', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -496,6 +725,16 @@ const buildPracticasAcademicasAnalytics = (document) => {
     porPrograma: sortedDistribution(programaCounts, 10),
     porEmpresa: sortedDistribution(empresaCounts, 10),
     porSectorEmpresasRegistradas: sortedDistribution(sectorCounts),
+    hojas: [
+      buildHoja('Estadística de prácticas', estadistica.length, [
+        donutBreakdown('Por modalidad', modalidadCounts),
+        barBreakdown('Por programa', programaCounts, 10),
+        barBreakdown('Por empresa', empresaCounts, 10),
+      ]),
+      buildHoja('Empresas registradas', empresas.length, [
+        donutBreakdown('Por sector', sectorCounts),
+      ]),
+    ],
   };
 };
 
@@ -547,6 +786,16 @@ const buildEstrategiasCurricularesAnalytics = (document) => {
     porFuncionSustantiva: sortedDistribution(funcionCounts),
     porDimensionFormacion: sortedDistribution(dimensionCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
+    hojas: [
+      buildHoja('Estrategias Curriculares', rows.length, [
+        donutBreakdown('Por tipo', tipoCounts),
+        donutBreakdown('Nacional / internacional', nacionalCounts),
+        barBreakdown('Función sustantiva', funcionCounts),
+        barBreakdown('Dimensión de formación', dimensionCounts),
+        barBreakdown('Enfoques y contribuciones', analyzeEnfoques(rows)),
+        barBreakdown('Por programa', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -593,6 +842,14 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
     porTipoCurso: sortedDistribution(tipoCursoCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
     topCursos: sortedDistribution(cursoCounts, 10),
+    hojas: [
+      buildHoja('Capacitación y Formación de Funcionarios', rows.length, [
+        donutBreakdown('Por tipo de capacitación', tipoCapacitacionCounts),
+        donutBreakdown('Por tipo de curso', tipoCursoCounts),
+        barBreakdown('Por programa/dependencia', programaCounts, 10),
+        barBreakdown('Top cursos', cursoCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -637,6 +894,19 @@ const buildConveniosCooperacionAnalytics = (document) => {
     totalUsuarios += asNumber(row.NDEUSUARIOS);
   });
 
+  const actividadCounts = new Map();
+  const ACTIVIDAD_CONVENIO_FLAGS = [
+    { key: 'ACTIVIDADFORMACION', label: 'Formación' },
+    { key: 'ACTIVIDADINVESTIGACION', label: 'Investigación' },
+    { key: 'ACTIVIDADEXTENSION', label: 'Extensión' },
+    { key: 'ACTIVIDADADMINISTRATIVA', label: 'Administrativa' },
+  ];
+  rows.forEach((row) => {
+    ACTIVIDAD_CONVENIO_FLAGS.forEach((flag) => {
+      if (String(row[flag.key] ?? '').trim().toUpperCase().startsWith('S')) addCount(actividadCounts, flag.label);
+    });
+  });
+
   return {
     fileId: String(document._id),
     fileName: document.file_name,
@@ -650,6 +920,15 @@ const buildConveniosCooperacionAnalytics = (document) => {
     porAcademicoNoAcademico: sortedDistribution(academicoCounts),
     porAlcance: sortedDistribution(alcanceCounts),
     porAreaResponsable: sortedDistribution(areaResponsableCounts, 10),
+    hojas: [
+      buildHoja('Convenios de Cooperación', rows.length, [
+        donutBreakdown('Por tipo de convenio', tipoConvenioCounts),
+        donutBreakdown('Académico / no académico', academicoCounts),
+        barBreakdown('Por tipología', tipologiaCounts, 10),
+        barBreakdown('Por área responsable', areaResponsableCounts, 10),
+        barBreakdown('Actividades que cubre', actividadCounts),
+      ]),
+    ],
   };
 };
 
@@ -691,6 +970,13 @@ const buildEstimulosFuncionariosAnalytics = (document) => {
     porTipoEstimulo: sortedDistribution(tipoEstimuloCounts),
     porDependenciaQueReporta: sortedDistribution(dependenciaCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
+    hojas: [
+      buildHoja('Estímulos a Funcionarios', rows.length, [
+        donutBreakdown('Por tipo de estímulo', tipoEstimuloCounts),
+        barBreakdown('Dependencia que reporta', dependenciaCounts, 10),
+        barBreakdown('Por programa/dependencia beneficiaria', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -765,6 +1051,17 @@ const buildOtrasEstrategiasAnalytics = (document) => {
     porComunidadSectorExterno: sortedDistribution(comunidadCounts, 10),
     porPoblacionImpactada: sortedDistribution(poblacionCounts),
     topEstrategiasPorParticipantes,
+    hojas: [
+      buildHoja('Otras Estrategias', estrategiaRows.length, [
+        donutBreakdown('Por categoría', categoriaCounts),
+        barBreakdown('Por tipología', tipologiaCounts, 10),
+        barBreakdown('Población impactada', poblacionCounts),
+        barBreakdown('Enfoques y contribuciones', analyzeEnfoques(estrategiaRows)),
+      ]),
+      buildHoja('Participantes de otras estrategias', participanteRows.length, [
+        barBreakdown('Top estrategias por participantes', topEstrategiasPorParticipantes),
+      ]),
+    ],
   };
 };
 
@@ -833,6 +1130,16 @@ const buildPazYRegionAnalytics = (document) => {
     porTipoEntidad: sortedDistribution(tipoEntidadCounts, 10),
     porPrograma: sortedDistribution(programaCounts, 10),
     topMunicipios: sortedDistribution(municipios, 10),
+    hojas: [
+      buildHoja('Paz y Región', rows.length, [
+        donutBreakdown('Por zona', zonaCounts),
+        barBreakdown('Top municipios', municipios, 10),
+        barBreakdown('Por ODS', odsCounts, 10),
+        barBreakdown('Por línea de proyecto', lineaCounts, 10),
+        barBreakdown('Por tipo de entidad', tipoEntidadCounts, 10),
+        barBreakdown('Enfoques y contribuciones', analyzeEnfoques(rows)),
+      ]),
+    ],
   };
 };
 
@@ -861,6 +1168,12 @@ const buildGruposInvestigacionAnalytics = (document) => {
     totalGrupos: rows.length,
     porClasificacion: sortedDistribution(clasificacionCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
+    hojas: [
+      buildHoja('Grupos de Investigación', rows.length, [
+        donutBreakdown('Por clasificación Minciencias', clasificacionCounts),
+        barBreakdown('Por programa/dependencia', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -891,6 +1204,11 @@ const buildLineasInvestigacionAnalytics = (document) => {
     totalLineas: rows.length,
     totalGrupos: grupos.size,
     porGrupo: sortedDistribution(porGrupoCounts, 12),
+    hojas: [
+      buildHoja('Líneas de Investigación', rows.length, [
+        barBreakdown('Líneas por grupo', porGrupoCounts, 12),
+      ]),
+    ],
   };
 };
 
@@ -933,6 +1251,13 @@ const buildRedesInvestigacionAnalytics = (document) => {
     porRed: sortedDistribution(redCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
     topInstituciones: sortedDistribution(institucionCounts, 10),
+    hojas: [
+      buildHoja('Redes de Investigación', rows.length, [
+        donutBreakdown('Por red', redCounts),
+        barBreakdown('Por programa/dependencia', programaCounts, 10),
+        barBreakdown('Top instituciones', institucionCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -985,6 +1310,14 @@ const buildSemillerosParticipantesAnalytics = (document) => {
     totalParticipantesUnicos: participantesUnicos.size,
     porPrograma: sortedDistribution(programaCounts, 10),
     topSemilleros,
+    hojas: [
+      buildHoja('Semilleros', semilleroRows.length, [
+        barBreakdown('Top semilleros por participantes', topSemilleros),
+      ]),
+      buildHoja('Participantes de semilleros', participanteRows.length, [
+        barBreakdown('Por programa/dependencia', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -1035,6 +1368,14 @@ const buildTrabajoGradoAnalytics = (document) => {
     porMencion: sortedDistribution(mencionCounts),
     porGrupo: sortedDistribution(grupoCounts, 10),
     porPrograma: sortedDistribution(programaCounts, 10),
+    hojas: [
+      buildHoja('Trabajo de Grado', rows.length, [
+        donutBreakdown('Por modalidad', modalidadCounts),
+        donutBreakdown('Por estado', estadoCounts),
+        barBreakdown('Por grupo de investigación', grupoCounts, 10),
+        barBreakdown('Por programa', programaCounts, 10),
+      ]),
+    ],
   };
 };
 
@@ -1109,6 +1450,16 @@ const buildMovilidadAnalyticsCore = (document) => {
     porPais: sortedDistribution(paisCounts, 10),
     porPrograma: sortedDistribution(programaCounts, 10),
     topInstituciones: sortedDistribution(institucionCounts, 10),
+    hojas: [
+      buildHoja(sheet.name, rows.length, [
+        donutBreakdown('Nacional / internacional', nacionalInternacionalCounts),
+        donutBreakdown('Por modalidad', modalidadCounts),
+        barBreakdown('Por tipo de movilidad', tipoMovilidadCounts, 10),
+        barBreakdown('Por país', paisCounts, 10),
+        barBreakdown('Top instituciones', institucionCounts, 10),
+        barBreakdown('Enfoques y contribuciones', analyzeEnfoques(rows)),
+      ]),
+    ],
   };
 };
 
