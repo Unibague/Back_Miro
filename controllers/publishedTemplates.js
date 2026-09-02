@@ -4056,6 +4056,23 @@ const resolveProgramaFromDepCode = (depCode, dependencyByCode) => {
   return faculty?.name || dependency?.name || "";
 };
 
+// ESCALAFON: SIGA entrega "nom_escalafon" como texto libre (ej. "AUXILIAR CON
+// PREGRADO"). Solo se toma la primera palabra cuando corresponde a una
+// categoría de escalafón docente (Auxiliar/Asistente/Asociado/Titular);
+// cualquier otro contenido (administrativos, etc.) se deja vacío en vez de
+// guardar el texto libre completo.
+const ESCALAFON_LABELS = {
+  AUXILIAR: "Auxiliar",
+  ASISTENTE: "Asistente",
+  ASOCIADO: "Asociado",
+  TITULAR: "Titular",
+};
+
+const resolveEscalafonFromNombre = (nomEscalafon) => {
+  const firstWord = normalizeDependencyName(nomEscalafon).trim().split(/\s+/)[0] || "";
+  return ESCALAFON_LABELS[firstWord] || "";
+};
+
 const safeGetSigaUsers = async () => {
   if (!process.env.USERS_ENDPOINT) return [];
   try {
@@ -4067,13 +4084,14 @@ const safeGetSigaUsers = async () => {
   }
 };
 
-// Dado un listado de números de documento, retorna un mapa cédula → nombre
-// de programa/facultad, cruzando SIGA (funcionarios) y la base local de
-// usuarios.
+// Dado un listado de números de documento, retorna un mapa cédula →
+// { programa, escalafon }, cruzando SIGA (funcionarios) y la base local de
+// usuarios. La base local no trae escalafón, así que ese dato solo se
+// completa cuando SIGA responde.
 const buildDocenteProgramMap = async (identifications) => {
   const ids = [...new Set(identifications.map(normalizeDocenteId).filter(Boolean))];
-  const programByIdentification = new Map();
-  if (ids.length === 0) return programByIdentification;
+  const infoByIdentification = new Map();
+  if (ids.length === 0) return infoByIdentification;
 
   const numericIds = ids.map((id) => Number(id)).filter((id) => Number.isFinite(id));
   const [usersDb, sigaUsers, dependencyByCode] = await Promise.all([
@@ -4085,18 +4103,23 @@ const buildDocenteProgramMap = async (identifications) => {
   usersDb.forEach((user) => {
     const id = normalizeDocenteId(user.identification);
     if (id && user.dep_code) {
-      programByIdentification.set(id, resolveProgramaFromDepCode(user.dep_code, dependencyByCode));
+      infoByIdentification.set(id, {
+        programa: resolveProgramaFromDepCode(user.dep_code, dependencyByCode),
+        escalafon: "",
+      });
     }
   });
   // SIGA (API en vivo) tiene prioridad sobre la copia local por si el dato cambió recientemente.
   sigaUsers.forEach((user) => {
     const id = normalizeDocenteId(user.identification);
-    if (id && ids.includes(id) && user.dep_code) {
-      programByIdentification.set(id, resolveProgramaFromDepCode(user.dep_code, dependencyByCode));
-    }
+    if (!id || !ids.includes(id)) return;
+    const current = infoByIdentification.get(id) || { programa: "", escalafon: "" };
+    if (user.dep_code) current.programa = resolveProgramaFromDepCode(user.dep_code, dependencyByCode);
+    if (user.nom_escalafon) current.escalafon = resolveEscalafonFromNombre(user.nom_escalafon);
+    infoByIdentification.set(id, current);
   });
 
-  return programByIdentification;
+  return infoByIdentification;
 };
 
 // Envío final al SNIES — solo el productor responsable puede ejecutarlo
@@ -4242,11 +4265,11 @@ publTempController.confirmFinalSubmit = async (req, res) => {
           info.idsByEntry.forEach((vals) => allIdentifications.push(...vals));
         });
         console.log(`[HistoricoDocentes] PROGRAMA: ${allIdentifications.length} cédula(s) recolectada(s) en total.`);
-        let programByIdentification = new Map();
+        let docenteInfoByIdentification = new Map();
         if (allIdentifications.length > 0) {
           try {
-            programByIdentification = await buildDocenteProgramMap(allIdentifications);
-            console.log(`[HistoricoDocentes] PROGRAMA: SIGA resolvió programa para ${programByIdentification.size} de ${allIdentifications.length} cédula(s).`);
+            docenteInfoByIdentification = await buildDocenteProgramMap(allIdentifications);
+            console.log(`[HistoricoDocentes] PROGRAMA: SIGA resolvió programa para ${docenteInfoByIdentification.size} de ${allIdentifications.length} cédula(s).`);
           } catch (programError) {
             console.error("[HistoricoDocentes] Error calculando PROGRAMA (SIGA/Iceberg), se guarda sin esa columna:", programError.message);
           }
@@ -4269,15 +4292,23 @@ publTempController.confirmFinalSubmit = async (req, res) => {
           const programaColumn = flatIds.length === maxRows
             ? flatIds.map((id) => {
                 const normalized = normalizeDocenteId(id);
-                return normalized ? (programByIdentification.get(normalized) || "") : "";
+                return normalized ? (docenteInfoByIdentification.get(normalized)?.programa || "") : "";
+              })
+            : null;
+          const escalafonColumn = flatIds.length === maxRows
+            ? flatIds.map((id) => {
+                const normalized = normalizeDocenteId(id);
+                return normalized ? (docenteInfoByIdentification.get(normalized)?.escalafon || "") : "";
               })
             : null;
           if (programaColumn) headers.push("PROGRAMA");
+          if (escalafonColumn) headers.push("ESCALAFON");
 
           const rows = [];
           for (let i = 0; i < maxRows; i++) {
             const row = info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? ""));
             if (programaColumn) row.push(programaColumn[i] || "");
+            if (escalafonColumn) row.push(escalafonColumn[i] || "");
             rows.push(row);
           }
           sheets.push({ name, headers, rows });
@@ -4330,6 +4361,76 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     });
 
     return res.status(200).json({ status: 'Envío final realizado exitosamente' });
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ status: 'Internal server error', details: error.message });
+  }
+};
+
+// Deshace el envío final a SNIES SIN borrar la información cargada
+// (loaded_data/data_confirmations quedan intactos): la plantilla vuelve a
+// aparecer como "Pendiente" para que el productor responsable pueda
+// corregir/ajustar datos y volver a hacer el envío final cuando quiera.
+// Mismo criterio de permisos que confirmFinalSubmit (solo el productor
+// responsable), pero un Administrador puede deshacer cualquier envío aunque
+// su dependencia no sea productora de esa plantilla.
+publTempController.undoFinalSubmit = async (req, res) => {
+  const { pubTem_id, email } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'User not found' });
+    }
+
+    const pubTem = await PublishedTemplate.findById(pubTem_id)
+      .populate({ path: 'template', populate: { path: 'producers', model: 'dependencies' } });
+
+    if (!pubTem) {
+      return res.status(404).json({ status: 'Published template not found' });
+    }
+
+    if (!pubTem.final_submitted) {
+      return res.status(400).json({ status: 'Esta plantilla no ha sido enviada a SNIES.' });
+    }
+
+    const isAdmin = user.activeRole === 'Administrador' || (user.roles || []).includes('Administrador');
+
+    if (!isAdmin) {
+      const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+      const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+      const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+
+      const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
+      if (!canSubmit) {
+        return res.status(403).json({ status: 'User is not assigned to this published template' });
+      }
+
+      const rawResponsibleFinal = pubTem.responsible_producers?.length > 0
+        ? pubTem.responsible_producers
+        : pubTem.template?.responsible_producers;
+      const responsibleProducers = (rawResponsibleFinal || []).map(id => id.toString());
+      if (responsibleProducers.length > 0) {
+        const isResponsible = userDependencyIds.some(id => responsibleProducers.includes(id));
+        if (!isResponsible) {
+          return res.status(403).json({ status: 'Solo el productor responsable puede deshacer el envío final' });
+        }
+      }
+    }
+
+    pubTem.final_submitted = false;
+    pubTem.final_submitted_by = null;
+    pubTem.final_submitted_date = null;
+    await pubTem.save();
+
+    await auditLogger.logUpdate(req, user, 'finalSubmitToSnies', {
+      publishedTemplateId: pubTem_id,
+      templateName: pubTem.name,
+      dependency: user.dep_code,
+      action: 'undo',
+    });
+
+    return res.status(200).json({ status: 'Envío a SNIES deshecho correctamente. La información cargada se mantuvo intacta.' });
   } catch (error) {
     console.log(error.message);
     return res.status(500).json({ status: 'Internal server error', details: error.message });
