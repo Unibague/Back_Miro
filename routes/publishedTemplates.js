@@ -16,6 +16,7 @@ router.put("/producer/submitEmpty", controller.submitEmptyData);
 router.put("/producer/confirmExisting", controller.confirmExistingData);
 router.put("/producer/confirmDraft", controller.confirmDraftData);
 router.put("/producer/confirmFinalSubmit", controller.confirmFinalSubmit);
+router.put("/producer/undoFinalSubmit", controller.undoFinalSubmit);
 router.get("/uploaded", controller.getUploadedTemplatesByProducer);
 router.delete("/producer/delete", controller.deleteLoadedDataDependency);
 
