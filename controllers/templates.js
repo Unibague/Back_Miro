@@ -87,6 +87,11 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
   const search = req.query.search || "";
   const periodId = req.query.periodId;
   const onlyPublishedInPeriod = req.query.onlyPublishedInPeriod === "true";
+  // Los selectores de plantilla (categorizar) solo necesitan _id y name;
+  // el path completo abajo popula dimensiones, valida dropdowns y re-escribe
+  // el workbook base64 de cada plantilla, lo que infla la respuesta a varios
+  // MB y puede tardar segundos en un catalogo grande.
+  const minimal = req.query.minimal === "true";
 
   try {
     const query = search
@@ -115,6 +120,14 @@ templateController.getTemplatesWithoutPagination = async (req,res) => {
 
       if (!query.$and) query.$and = [];
       query.$and.push({ _id: { $in: publishedTemplateIds } });
+    }
+
+    if (minimal) {
+      const templates = await Template.find(query, { name: 1 })
+        .collation({ locale: 'es', strength: 1 })
+        .sort({ name: 1 })
+        .lean();
+      return res.status(200).json({ templates });
     }
 
     const templates = await Template.find(query)
