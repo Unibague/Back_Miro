@@ -4199,11 +4199,12 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     await pubTem.save();
 
     // Guardar automáticamente en Consulta de Información > Plantillas (fire-and-forget).
-    // Se excluyen los campos de cédula/documento (dato personal sensible: no
-    // debe quedar visible en esta copia de consulta) y se etiqueta con TODOS
-    // los ámbitos de la plantilla, para que aparezca en la carpeta de cada
-    // uno. Un reenvío final (misma plantilla publicada) reemplaza la copia
-    // anterior en vez de acumular una nueva.
+    // La cédula/documento SÍ se incluye como columna (en Consulta de
+    // Información solo se muestra al rol Administrador, ver isAdmin en
+    // controllers/historicoDocentes.js) y se etiqueta con TODOS los ámbitos
+    // de la plantilla, para que aparezca en la carpeta de cada uno. Un
+    // reenvío final (misma plantilla publicada) reemplaza la copia anterior
+    // en vez de acumular una nueva.
     // "TIPO_DOCUMENTO"/"ID_TIPO_DOCUMENTO" (CC, CE, TI...) NO es la cédula en
     // sí — sin este chequeo, isIdentificationFieldName lo confundía con el
     // campo de identificación (ambos contienen "DOCUMENTO"), y el cruce con
@@ -4230,21 +4231,14 @@ publTempController.confirmFinalSubmit = async (req, res) => {
         (pubTem.loaded_data || []).forEach((loadedEntry) => {
           // Cédulas de este productor por hoja, en el mismo orden en que se
           // van concatenando las filas de esa hoja más abajo — permiten
-          // calcular PROGRAMA sin que la cédula quede guardada en el resultado.
+          // calcular PROGRAMA (además de quedar como columna propia, ver
+          // abajo) sin desalinear filas si algún productor no la incluyó.
           const identificationValsBySheet = new Map();
 
           (loadedEntry.filled_data || []).forEach((fieldData) => {
             const fieldName = fieldData.field_name;
             if (!fieldName) return;
             const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
-
-            if (isIdentificationFieldName(fieldName)) {
-              if (!identificationValsBySheet.has(sheetName)) {
-                const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
-                identificationValsBySheet.set(sheetName, vals.map((v) => String(v ?? "").trim()));
-              }
-              return;
-            }
 
             if (!sheetMap.has(sheetName)) {
               sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
@@ -4257,12 +4251,13 @@ publTempController.confirmFinalSubmit = async (req, res) => {
             }
             const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
             info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
+
+            if (isIdentificationFieldName(fieldName) && !identificationValsBySheet.has(sheetName)) {
+              identificationValsBySheet.set(sheetName, vals.map((v) => String(v ?? "").trim()));
+            }
           });
 
           identificationValsBySheet.forEach((vals, sheetName) => {
-            if (!sheetMap.has(sheetName)) {
-              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
-            }
             sheetMap.get(sheetName).idsByEntry.push(vals);
           });
         });
