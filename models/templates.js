@@ -51,6 +51,16 @@ const fieldSchema = new Schema({
         type: String,
         required: false
     }, // Campo para comentarios
+    content_type: {
+        type: String,
+        enum: ["", "alphabetic", "numeric", "alphanumeric"],
+        default: ""
+    },
+    max_length: { type: Number, min: 1, required: false },
+    min_value: { type: Number, required: false },
+    max_value: { type: Number, required: false },
+    integer_only: { type: Boolean, default: false },
+    percentage_group: { type: String, required: false, default: "" },
     multiple: {
         type: Boolean,
         required: true,

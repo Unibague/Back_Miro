@@ -13,6 +13,7 @@ const {
     normalizeOptionKey: normalizeDropdownOptionKey,
 } = require('../helpers/dropdownOptions');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
+const { validateFieldValue } = require('../helpers/fieldConstraints');
 
 const validatorController = {}
 
@@ -914,17 +915,7 @@ validatorController.validateColumn = async (column, periodId = null) => {
     });
   }
 
-  if (datatype === "Entero") {
-  values = values.map(value => {
-    const isEmpty = isBlankValue(value);
-    if (!required && isEmpty) return null;
-    
-    // Convertir directamente a entero
-    const num = parseInt(value);
-    console.log(`DEBUG - Convirtiendo '${value}' a entero: ${num}`);
-    return isNaN(num) ? value : num;
-  });
-} else if (datatype === "Decimal" || datatype === "Porcentaje") {
+  if (datatype === "Decimal" || datatype === "Porcentaje") {
   if (!multiple) {
     values = values.map(value => {
       const isEmpty = isBlankValue(value);
@@ -1070,6 +1061,17 @@ const realIndex = index;
   }
 
 // Validación de tipo eliminada: solo se valida obligatorio/opcional y lista de valores permitidos
+
+const constraintErrors = validateFieldValue(column, value);
+if (constraintErrors.length > 0) {
+  result.status = false;
+  constraintErrors.forEach((message) => result.errors.push({
+    register: realIndex + 1,
+    message: `El campo "${name}" ${message} (fila ${realIndex + 1})`,
+    value: typeof value === 'object' ? JSON.stringify(value) : String(value),
+  }));
+  return;
+}
 
 if (columnToValidate && validValuesSet) {
   // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también

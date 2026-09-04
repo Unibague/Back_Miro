@@ -19,6 +19,7 @@ const RemindersService = require('../services/reminders');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
 const { collapseRepeatedCompositeOption } = require('../helpers/dropdownOptions');
 const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
+const { validateDatasetRules } = require('../helpers/fieldConstraints');
 const HistoricoDocentes = require('../models/historicoDocentes');
 const simpleCache = require('../helpers/simpleCache');
 
@@ -2049,9 +2050,6 @@ publTempController.loadProducerData = async (req, res) => {
         templateField.required = getEffectiveRequired(templateField);
         templateField.values = fieldData.values;
         // Si bypassValidation=true (carga desde Excel), saltar validación de opciones del validador
-        if (bypassValidation) {
-          return { status: true, sheet_name: templateField.sheet_name };
-        }
         const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
         return {
           ...validationResult,
@@ -2060,7 +2058,16 @@ publTempController.loadProducerData = async (req, res) => {
       });
 
       const validationResults = await Promise.all(validations);
-      const validationErrors = validationResults.filter(v => v.status === false);
+      const datasetValidationErrors = incomingSheetsData.flatMap((sheet) => validateDatasetRules({
+        templateName,
+        sheetName: sheet.name,
+        fields: fieldsForLoad.filter((field) => field.sheet_name === sheet.name),
+        rows: sheet.data || [],
+      }));
+      const validationErrors = [
+        ...validationResults.filter(v => v.status === false),
+        ...datasetValidationErrors,
+      ];
 
       if (validationErrors.length > 0) {
         const sanitizedErrors = validationErrors.map(err => ({
@@ -2336,15 +2343,20 @@ if (field.multiple) {
       templateField.values = field.values;
 
       // Si bypassValidation=true (carga desde Excel o correccion del encargado), saltar validación de opciones del validador
-      if (bypassValidation) {
-        return { status: true };
-      }
       const validationResult = await Validator.validateColumn(templateField, pubTem.period?._id || pubTem.period);
       return validationResult;
     });
 
     const validationResults = await Promise.all(validations);
-    const validationErrors = validationResults.filter(v => v.status === false);
+    const datasetValidationErrors = validateDatasetRules({
+      templateName,
+      fields: pubTem.template.fields || [],
+      rows: Array.isArray(data) ? data : [],
+    });
+    const validationErrors = [
+      ...validationResults.filter(v => v.status === false),
+      ...datasetValidationErrors,
+    ];
 
 
 

@@ -11,6 +11,7 @@ const Period = require("../models/periods");
 const Student = require("../models/students");
 const Validator = require("./validators");
 const UserService = require("../services/users");
+const auditLogger = require("../services/auditLogger");
 const {
   uploadFileToGoogleDrive,
   updateFileInGoogleDrive,
@@ -21,6 +22,7 @@ const {
   collapseRepeatedCompositeOption,
   extractDropdownOptionsFromComment,
 } = require("../helpers/dropdownOptions");
+const { parseCommentConstraints } = require("../helpers/fieldConstraints");
 
 const axios = require("axios");
 
@@ -104,6 +106,18 @@ const parseFieldsInput = (value) => {
       required: normalizeBoolean(field?.required, true),
       validate_with: String(field?.validate_with || "").trim(),
       comment: String(field?.comment || "").trim(),
+      content_type: ["alphabetic", "numeric", "alphanumeric"].includes(field?.content_type)
+        ? field.content_type
+        : "",
+      max_length: Number(field?.max_length) > 0 ? Number(field.max_length) : undefined,
+      min_value: field?.min_value !== "" && field?.min_value !== null && field?.min_value !== undefined
+        ? Number(field.min_value)
+        : undefined,
+      max_value: field?.max_value !== "" && field?.max_value !== null && field?.max_value !== undefined
+        ? Number(field.max_value)
+        : undefined,
+      integer_only: normalizeBoolean(field?.integer_only, false),
+      percentage_group: String(field?.percentage_group || "").trim(),
       dropdown_options: normalizeDropdownOptionArray(field?.dropdown_options),
       excel_validation_options: normalizeDropdownOptionArray(field?.excel_validation_options),
       validator_options: normalizeDropdownOptionArray(field?.validator_options),
@@ -1285,6 +1299,49 @@ const applyHeaderHelpPromptsToWorkbook = (workbook, commentsPlan, endRow = 1000)
   });
 };
 
+const applyHeaderContentRulesFromComments = (workbook, commentsPlan, endRow = 1000) => {
+  if (!commentsPlan || commentsPlan.size === 0) return;
+
+  commentsPlan.forEach((comments, worksheetName) => {
+    const worksheet = workbook.getWorksheet(worksheetName);
+    if (!worksheet || !Array.isArray(comments)) return;
+
+    comments.forEach((comment) => {
+      if (extractDropdownOptionsFromComment(comment.text, { preserveLeadingCodes: true }).length > 0) return;
+      const constraints = parseCommentConstraints(comment.text);
+      if (!constraints.content_type && !constraints.max_length) return;
+
+      for (let row = comment.rowNumber + 1; row <= endRow; row += 1) {
+        const cell = worksheet.getCell(row, comment.columnNumber);
+        const address = cell.address;
+        const lengthPart = constraints.max_length ? `,LEN(${address})<=${constraints.max_length}` : '';
+        let formula = constraints.max_length
+          ? `OR(${address}="",LEN(${address})<=${constraints.max_length})`
+          : 'TRUE';
+        let error = constraints.max_length ? `Máximo ${constraints.max_length} caracteres.` : 'Contenido no válido.';
+
+        if (constraints.content_type === 'numeric') {
+          formula = `OR(${address}="",AND(ISNUMBER(--${address})${lengthPart}))`;
+          error = `Ingrese únicamente dígitos${constraints.max_length ? ` (máximo ${constraints.max_length})` : ''}.`;
+          cell.numFmt = '@';
+        } else if (constraints.content_type === 'alphabetic') {
+          formula = `OR(${address}="",AND(SUMPRODUCT(--ISNUMBER(SEARCH({0,1,2,3,4,5,6,7,8,9},${address})))=0${lengthPart}))`;
+          error = `Ingrese únicamente letras${constraints.max_length ? ` (máximo ${constraints.max_length})` : ''}.`;
+        }
+
+        cell.dataValidation = {
+          type: 'custom',
+          allowBlank: true,
+          formulae: [formula],
+          showErrorMessage: true,
+          errorTitle: 'Contenido no válido',
+          error,
+        };
+      }
+    });
+  });
+};
+
 const applyHeaderDropdownsFromComments = (workbook, commentsPlan, endRow = 1000) => {
   if (!commentsPlan || commentsPlan.size === 0) {
     return;
@@ -2076,6 +2133,7 @@ const buildWorkbookWithConfiguredFields = async (
     configuredFields,
     originalCommentsBySheet
   );
+  applyHeaderContentRulesFromComments(workbook, headerCommentsPlan);
   applyHeaderDropdownsFromComments(workbook, headerCommentsPlan);
   applyHeaderHelpPromptsToWorkbook(workbook, headerCommentsPlan);
 
@@ -3982,6 +4040,12 @@ controller.getTemplateById = async (req, res) => {
         required: field.required ?? true,
         validate_with: field.validate_with || "",
         comment: field.comment || "",
+        content_type: field.content_type || "",
+        max_length: field.max_length,
+        min_value: field.min_value,
+        max_value: field.max_value,
+        integer_only: field.integer_only ?? false,
+        percentage_group: field.percentage_group || "",
         dropdown_options: normalizeDropdownOptionArray(field.dropdown_options),
         excel_validation_options: normalizeDropdownOptionArray(field.excel_validation_options),
         validator_options: normalizeDropdownOptionArray(field.validator_options),
@@ -4238,20 +4302,50 @@ controller.deleteTemplate = async (req, res) => {
     const { id } = req.params;
     const { email } = req.query;
 
-    await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
+    const user = await UserService.findUserByEmailAndRoles(email, ["Administrador", "Responsable"]);
 
     const template = await SniesTemplate.findById(id);
     if (!template) {
       return res.status(404).json({ error: "SNIES template not found" });
     }
 
-    if (template.drive_file_id) {
-      await deleteDriveFile(template.drive_file_id);
-    }
+    const sourceTemplateIds = getConfiguredSourceTemplates(template)
+      .map((source) => source.template_id)
+      .filter(Boolean);
 
+    // Primero se restablece el estado funcional en MongoDB. Si la limpieza
+    // remota de Drive falla, no se deja en MIRÓ una plantilla activa que
+    // apunte a un archivo inexistente.
+    if (sourceTemplateIds.length > 0) {
+      await PublishedTemplate.updateMany(
+        { _id: { $in: sourceTemplateIds } },
+        { $set: { final_submitted: false, final_submitted_by: null, final_submitted_date: null } }
+      );
+    }
     await SniesTemplate.findByIdAndDelete(id);
 
-    return res.status(200).json({ message: "SNIES template deleted" });
+    let driveCleanupPending = false;
+    if (template.drive_file_id) {
+      try {
+        await deleteDriveFile(template.drive_file_id);
+      } catch (driveError) {
+        driveCleanupPending = true;
+        console.error("SNIES template deleted in MIRÓ but Drive cleanup failed:", driveError);
+      }
+    }
+
+    await auditLogger.logDelete(req, user, 'sniesTemplate', {
+      templateId: id,
+      templateName: template.name,
+      restoredPublishedTemplates: sourceTemplateIds.map(String),
+      driveCleanupPending,
+    });
+
+    return res.status(200).json({
+      message: "SNIES template deleted and source templates restored",
+      restoredPublishedTemplates: sourceTemplateIds.length,
+      driveCleanupPending,
+    });
   } catch (error) {
     console.error("Error deleting SNIES template:", error);
     return res.status(500).json({
