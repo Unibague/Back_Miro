@@ -1,9 +1,6 @@
 const fs = require("fs");
-const axios = require("axios");
 const ExcelJS = require("exceljs");
 const HistoricoDocentes = require("../models/historicoDocentes");
-const User = require("../models/users");
-const Student = require("../models/students");
 const UserService = require("../services/users");
 const {
   downloadDriveFileBuffer,
@@ -487,9 +484,12 @@ const normalizeHeader = (h) =>
 const collapseHeader = (h) =>
   String(h || "").trim().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Z]/g, "");
 
-const EMAIL_HEADER_NAMES = new Set(["EMAILINSTITUCIONAL", "EMAIL", "CORREO", "CORREOINSTITUCIONAL"]);
 // Mismos nombres que HIDDEN_COLUMN_NAMES en el frontend (FileLibraryPanel.tsx):
-// si la hoja ya trae una de estas columnas, no se agrega una nueva.
+// la cedula/documento ya viene en los datos guardados (ver saveToHistorico en
+// controllers/publishedTemplates.js), pero solo debe salir del servidor para
+// el rol Administrador — para cualquier otro rol se quita aqui antes de
+// responder, tanto en la vista como en la descarga (ocultarla solo en el
+// frontend no alcanza: el JSON/Excel seguirian trayendo el dato).
 const DOCUMENT_HEADER_NAMES = new Set([
   "DOCUMENTO", "NUMDOCUMENTO", "NERODOCUMENTO", "NUMERODOCUMENTO",
   "NERODEDOCUMENTO", "NUMERODEDOCUMENTO", "NRODOCUMENTO", "NODOCUMENTO",
@@ -501,48 +501,33 @@ const DOCUMENT_HEADER_NAMES = new Set([
   "DOCIDENTIDAD",
 ]);
 
-const safeGetEndpoint = async (endpoint, timeout = 15000) => {
-  if (!endpoint) return [];
+const isRequesterAdmin = async (email) => {
   try {
-    const response = await axios.get(endpoint, { timeout });
-    return Array.isArray(response.data) ? response.data : [];
-  } catch (error) {
-    console.warn(`[historico-docentes] No fue posible consultar endpoint externo: ${error.message}`);
-    return [];
+    await UserService.findUserByEmailAndRoles(email, ["Administrador"]);
+    return true;
+  } catch {
+    return false;
   }
 };
 
-// Resuelve la cedula de cada correo consultando primero las bases locales
-// (User/Student) y, de respaldo, la API en vivo de SIGA (USERS_ENDPOINT /
-// STUDENTS_ENDPOINT) — mismo mecanismo que ya usa el cruce de apoyos
-// SIGA/Iceberg (controllers/supportTemplates.js) para resolver personas por
-// correo cuando el numero de documento no vino en el archivo.
-const resolveIdentificationsByEmail = async (emails) => {
-  const normalizedEmails = [...new Set(emails.map((e) => String(e || "").trim().toLowerCase()).filter(Boolean))];
-  const byEmail = new Map();
-  if (normalizedEmails.length === 0) return byEmail;
+// Quita las columnas de documento/cedula de un header+rows (una sola hoja).
+const stripDocumentColumn = (headers, rows) => {
+  const dropIndexes = headers
+    .map((h, index) => (DOCUMENT_HEADER_NAMES.has(collapseHeader(h)) ? index : -1))
+    .filter((index) => index >= 0);
+  if (dropIndexes.length === 0) return { headers, rows };
 
-  const [usersDb, studentsDb, usersApi, studentsApi] = await Promise.all([
-    User.find({ email: { $in: normalizedEmails } }, "email identification").lean(),
-    Student.find({ email: { $in: normalizedEmails } }, "email identification").lean(),
-    safeGetEndpoint(process.env.USERS_ENDPOINT),
-    safeGetEndpoint(process.env.STUDENTS_ENDPOINT),
-  ]);
-
-  // Las bases locales tienen prioridad sobre la API externa (se procesan
-  // al final, para que sobrescriban con Map.set si hay coincidencia).
-  const put = (email, identification) => {
-    const key = String(email || "").trim().toLowerCase();
-    const id = String(identification || "").trim();
-    if (key && id) byEmail.set(key, id);
-  };
-  usersApi.forEach((u) => put(u.email, u.identification));
-  studentsApi.forEach((s) => put(s.email, s.identification));
-  usersDb.forEach((u) => put(u.email, u.identification));
-  studentsDb.forEach((s) => put(s.email, s.identification));
-
-  return byEmail;
+  const keep = (arr) => arr.filter((_, index) => !dropIndexes.includes(index));
+  return { headers: keep(headers), rows: rows.map((row) => keep(row)) };
 };
+
+// Igual que stripDocumentColumn, pero para todas las hojas de un archivo
+// (usado en la descarga completa del Excel).
+const stripDocumentColumnFromSheets = (sheets) =>
+  (sheets || []).map((sheet) => {
+    const { headers, rows } = stripDocumentColumn(sheet.headers || [], sheet.rows || []);
+    return { name: sheet.name, headers, rows };
+  });
 
 // GET /historico-docentes/data?email=&category=&id=&sheet=&page=&limit=&year=&search=
 controller.getData = async (req, res) => {
@@ -619,46 +604,14 @@ controller.getData = async (req, res) => {
     const start = (pageNum - 1) * limitNum;
     const paginatedRows = filteredRows.slice(start, start + limitNum);
 
-    // La cedula (numero de documento) esta oculta para todos los roles en
-    // Consulta de Informacion, salvo Administrador. Algunas plantillas (ej.
-    // Docentes_IES) no traen esa columna en el Excel original, solo el
-    // correo institucional — para el Administrador se resuelve la cedula a
-    // partir del correo (bases locales + API en vivo de SIGA) y se agrega
-    // como columna extra, igual que si hubiera venido en el archivo.
-    let outputHeaders = sheetData.headers;
-    let outputRows = paginatedRows;
-
-    const collapsedHeaders = sheetData.headers.map(collapseHeader);
-    const emailColIndex = collapsedHeaders.findIndex((h) => EMAIL_HEADER_NAMES.has(h));
-    const hasDocumentColumn = collapsedHeaders.some((h) => DOCUMENT_HEADER_NAMES.has(h));
-
-    if (emailColIndex >= 0 && !hasDocumentColumn) {
-      let isAdmin = false;
-      try {
-        await UserService.findUserByEmailAndRoles(email, ["Administrador"]);
-        isAdmin = true;
-      } catch {
-        isAdmin = false;
-      }
-
-      if (isAdmin) {
-        const idByEmail = await resolveIdentificationsByEmail(
-          paginatedRows.map((row) => row[emailColIndex])
-        );
-        const tipoDocIndex = collapsedHeaders.findIndex((h) => h.includes("TIPODOCUMENTO"));
-        const insertAt = tipoDocIndex >= 0 ? tipoDocIndex + 1 : sheetData.headers.length;
-
-        outputHeaders = [...sheetData.headers];
-        outputHeaders.splice(insertAt, 0, "DOCUMENTO");
-
-        outputRows = paginatedRows.map((row) => {
-          const rowEmail = String(row[emailColIndex] || "").trim().toLowerCase();
-          const newRow = [...row];
-          newRow.splice(insertAt, 0, idByEmail.get(rowEmail) || "");
-          return newRow;
-        });
-      }
-    }
+    // La cedula (numero de documento) solo debe salir del servidor para el
+    // rol Administrador — para cualquier otro rol se quita aqui antes de
+    // responder (ocultarla solo en el frontend no alcanza: el JSON seguiria
+    // trayendo el dato para quien inspeccione la respuesta de red).
+    const isAdmin = await isRequesterAdmin(email);
+    const { headers: outputHeaders, rows: outputRows } = isAdmin
+      ? { headers: sheetData.headers, rows: paginatedRows }
+      : stripDocumentColumn(sheetData.headers, paginatedRows);
 
     return res.status(200).json({
       _id: registro._id,
@@ -672,7 +625,7 @@ controller.getData = async (req, res) => {
         index: i,
         name: s.name,
         totalRows: s.rows.length,
-        headers: s.headers,
+        headers: isAdmin ? s.headers : stripDocumentColumn(s.headers, []).headers,
       })),
       availableYears,
       currentSheet: {
@@ -738,7 +691,12 @@ controller.downloadFile = async (req, res) => {
     }
 
     if (!buffer) {
-      buffer = await buildWorkbookBufferFromSheets(registro.sheets);
+      // Reconstruido a partir de "sheets" (no hay archivo original en Drive/
+      // local): igual que en getData, la cedula solo va en la descarga si
+      // quien la pide es Administrador.
+      const isAdmin = await isRequesterAdmin(email);
+      const sheetsToExport = isAdmin ? registro.sheets : stripDocumentColumnFromSheets(registro.sheets);
+      buffer = await buildWorkbookBufferFromSheets(sheetsToExport);
     }
 
     if (!buffer) {

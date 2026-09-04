@@ -693,7 +693,7 @@ const DATE_TOSTRING_MONTHS = {
 const padDatePart = (n) => String(n).padStart(2, "0");
 
 // HECAA (la plataforma de cargue del SNIES) solo acepta fechas en formato
-// D/M/A; los valores llegan desde Mongo como string ISO (2026-03-02T00:00:00Z)
+// DD/MM/AAAA; los valores llegan desde Mongo como string ISO (2026-03-02T00:00:00Z)
 // o como Date.toString() de JS. Se usan los componentes UTC a proposito: una
 // fecha sin hora se guarda como medianoche UTC, y convertirla a hora de
 // Colombia desplazaria el dia calendario un dia hacia atras.
@@ -3364,9 +3364,14 @@ const buildSniesDataset = async (template, fallbackPubTemId = null) => {
         // validador configurado en la plantilla SNIES; ahora se aplica
         // siempre que el nombre de columna sea de ese tipo, tenga o no
         // validador asociado.
-        acc[header] = shouldUseValidatorCodeOnly(header) && hasUsableValue(normalizedValue)
+        const outputValue = shouldUseValidatorCodeOnly(header) && hasUsableValue(normalizedValue)
           ? extractInitialValidatorCode(normalizedValue)
           : normalizedValue;
+        // La misma normalizacion usada al escribir el Excel debe aplicarse al
+        // dataset de la API. De lo contrario, la vista previa recibe fechas
+        // crudas de Mongo/Excel (ISO o Date.toString) aunque la descarga si se
+        // genere correctamente en DD/MM/AAAA.
+        acc[header] = sanitizeExcelValue(outputValue, header);
         return acc;
       }, {});
     });
