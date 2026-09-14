@@ -1199,8 +1199,11 @@ dimensionController.getDimensionsByUser = async (req, res) => {
     let dimensions;
 
     // Administrador y Usuario (rol base, sin ambito propio que consultar)
-    // ven siempre todos los ambitos.
-    if (user.activeRole === 'Administrador' || user.activeRole === 'Usuario') {
+    // ven siempre todos los ambitos. Los Productores tambien: aunque sean
+    // lideres/responsables de un ambito puntual, en este modulo de Consulta
+    // de Informacion deben poder ver la informacion de TODOS los ambitos,
+    // no solo del suyo.
+    if (user.activeRole === 'Administrador' || user.activeRole === 'Usuario' || user.activeRole === 'Productor') {
       dimensions = await Dimension.find({}, '_id name');
     } else {
       const userDependencies = await Dependency.find({

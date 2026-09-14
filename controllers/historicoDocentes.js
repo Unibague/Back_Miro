@@ -57,6 +57,36 @@ const buildWorkbookBufferFromSheets = async (sheets = []) => {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 };
 
+// Violeta institucional (el mismo acento usado en los iconos y titulos del
+// modulo Consulta de Informacion), con texto blanco para que el encabezado
+// resalte con fuerza en el Excel descargado.
+const HEADER_FILL_COLOR = "FF7C3AED";
+const HEADER_FONT_COLOR = "FFFFFFFF";
+
+const applyHeaderRowStyle = (workbook) => {
+  workbook.worksheets.forEach((worksheet) => {
+    if (worksheet.rowCount === 0) return;
+
+    let headerRowIndex = 1;
+    let maxCells = 0;
+    for (let r = 1; r <= Math.min(10, worksheet.rowCount); r++) {
+      const row = worksheet.getRow(r);
+      let cellCount = 0;
+      row.eachCell({ includeEmpty: false }, () => cellCount++);
+      if (cellCount > maxCells) {
+        maxCells = cellCount;
+        headerRowIndex = r;
+      }
+    }
+
+    const headerRow = worksheet.getRow(headerRowIndex);
+    headerRow.eachCell({ includeEmpty: false }, (cell) => {
+      cell.font = { ...(cell.font || {}), bold: true, color: { argb: HEADER_FONT_COLOR } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: HEADER_FILL_COLOR } };
+    });
+  });
+};
+
 const safeDownloadFileName = (fileName, fallback = "archivo.xlsx") => {
   const cleanName = String(fileName || "").trim() || fallback;
   return cleanName.replace(/[\r\n"]/g, "");
@@ -701,6 +731,15 @@ controller.downloadFile = async (req, res) => {
 
     if (!buffer) {
       return res.status(404).json({ message: "No hay archivo disponible para descargar." });
+    }
+
+    try {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      applyHeaderRowStyle(workbook);
+      buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    } catch (styleError) {
+      console.warn("No se pudo resaltar el encabezado del Excel a descargar:", styleError?.message || styleError);
     }
 
     setAttachmentHeaders(res, registro.file_name || "archivo.xlsx", EXCEL_CONTENT_TYPE);
