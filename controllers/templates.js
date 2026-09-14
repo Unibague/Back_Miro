@@ -80,6 +80,60 @@ const datetime_now = () => {
   return new Date(dateWithOffset.setMilliseconds(now.getMilliseconds()));
 };
 
+// Publica `templateId` en `periodId` si todavía no lo está — usado al crear,
+// duplicar y editar una plantilla, para que nunca haga falta el paso manual
+// de "Asignar" mientras la plantilla ya tenga un periodo asignado (si no
+// tiene periodo, no hay nada que hacer: sigue necesitando que un admin la
+// edite y le ponga uno). No-blocking: quien llama solo debe registrar el
+// error si esto falla, sin interrumpir la operación principal.
+const autoPublishTemplateForPeriod = async (req, templateId, periodId, publishingUser) => {
+  if (!periodId || !mongoose.Types.ObjectId.isValid(periodId) || !publishingUser) return;
+
+  const existing = await PublishedTemplate.findOne({
+    $or: getPublishedTemplateIdConditions(templateId),
+    period: periodId,
+  });
+  if (existing) return;
+
+  const templateForPublish = await Template.findById(templateId);
+  if (!templateForPublish) return;
+
+  const sanitizedForPublish = await sanitizeTemplateDropdownPayload(templateForPublish);
+  const userForPublish = {
+    ...publishingUser.toObject(),
+    position: publishingUser.position || 'Administrador',
+    identification: publishingUser.identification || 0,
+  };
+  const newPublTemp = new PublishedTemplate({
+    name: sanitizedForPublish.name,
+    published_by: userForPublish,
+    template: sanitizedForPublish,
+    period: periodId,
+    deadline: sanitizedForPublish.fecha_final || null,
+    fecha_inicio: sanitizedForPublish.fecha_inicio || null,
+    fecha_final_productores: sanitizedForPublish.fecha_final_productores || null,
+    fecha_final_responsables: sanitizedForPublish.fecha_final_responsables || null,
+    fecha_final: sanitizedForPublish.fecha_final || null,
+    responsible_producers: sanitizedForPublish.responsible_producers || [],
+    qr_authorized_producers: sanitizedForPublish.qr_authorized_producers || [],
+    notify_producers: sanitizedForPublish.notify_producers || false,
+    published_date: datetime_now(),
+    category: templateForPublish.category,
+  });
+  await newPublTemp.save();
+
+  try {
+    await AuditLogger.logCreate(req, publishingUser, 'publishedTemplate', {
+      publishedTemplateId: newPublTemp._id.toString(),
+      templateName: newPublTemp.name,
+      templateId: String(templateId),
+      periodId: String(periodId),
+    });
+  } catch (auditPublishError) {
+    console.warn('Audit logging for auto-publish failed (non-critical):', auditPublishError.message);
+  }
+};
+
 const templateController = {};
 
 
@@ -466,6 +520,16 @@ templateController.createPlantilla = async (req, res) => {
       console.warn('Category sync failed (non-critical):', categoryError.message);
     }
 
+    // Publicar automáticamente en el periodo con el que se creó la
+    // plantilla: antes había que abrir "Asignar" manualmente después de
+    // crearla para que quedara disponible a las dependencias. No-blocking:
+    // si falla, la plantilla queda creada de todas formas.
+    try {
+      await autoPublishTemplateForPeriod(req, plantilla._id, sanitizedBody.period, user);
+    } catch (autoPublishError) {
+      console.warn('Auto-publish on template creation failed (non-critical):', autoPublishError.message);
+    }
+
     res.status(200).json({ status: "Plantilla creada", _id: plantilla._id, template: plantilla });
   } catch (error) {
     console.error("Error al crear la plantilla:", error);
@@ -574,6 +638,15 @@ templateController.duplicatePlantilla = async (req, res) => {
       console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
     }
 
+    // Publicar automáticamente en el periodo destino elegido, igual que al
+    // crear una plantilla nueva: no-blocking, si falla la copia igual queda
+    // creada.
+    try {
+      await autoPublishTemplateForPeriod(req, duplicated._id, targetPeriodId, user);
+    } catch (autoPublishError) {
+      console.warn('Auto-publish on template duplication failed (non-critical):', autoPublishError.message);
+    }
+
     res.status(200).json({ status: "Plantilla duplicada", _id: duplicated._id, template: duplicated });
   } catch (error) {
     console.error("Error al duplicar la plantilla:", error);
@@ -666,6 +739,12 @@ templateController.updatePlantilla = async (req, res) => {
       return res.status(404).json({ error: "Plantilla no encontrada" });
     }
 
+    // Admin que edita, resuelto una sola vez para usarlo en la auto-
+    // publicación de ambas ramas de abajo (con y sin cambio de producers).
+    // No-blocking: si no se resuelve, simplemente no se auto-publica y la
+    // edición sigue su curso normal.
+    const publishingUser = await UserService.findUserByEmailAndRole(updatedFields.email, "Administrador").catch(() => null);
+
     if (!updatedFields.producers) {
       const updatedTemplate = await Template.findByIdAndUpdate(id, updatedFields, { new: true });
       if (Array.isArray(updatedFields.fields)) {
@@ -682,6 +761,13 @@ templateController.updatePlantilla = async (req, res) => {
         await syncTemplateCategories(updatedTemplate);
       } catch (categoryError) {
         console.warn('Category sync failed (non-critical):', categoryError.message);
+      }
+      // Si esta edición le puso periodo a una plantilla que no lo tenía (o
+      // se lo cambió), y todavía no está publicada ahí, se publica sola.
+      try {
+        await autoPublishTemplateForPeriod(req, updatedTemplate._id, updatedTemplate.period, publishingUser);
+      } catch (autoPublishError) {
+        console.warn('Auto-publish on template update failed (non-critical):', autoPublishError.message);
       }
       return res.status(200).json(updatedTemplate);
     }
@@ -787,7 +873,15 @@ templateController.updatePlantilla = async (req, res) => {
     } catch (auditError) {
       console.warn('Audit logging failed (non-critical):', auditError.message);
     }
-    
+
+    // Si esta edición le puso periodo a una plantilla que no lo tenía (o se
+    // lo cambió), y todavía no está publicada ahí, se publica sola.
+    try {
+      await autoPublishTemplateForPeriod(req, updatedTemplate._id, updatedTemplate.period, publishingUser);
+    } catch (autoPublishError) {
+      console.warn('Auto-publish on template update failed (non-critical):', autoPublishError.message);
+    }
+
     return res.status(200).json(updatedTemplate);
 
   } catch (error) {

@@ -22,6 +22,44 @@ const addCount = (map, key, amount = 1) => {
   map.set(cleanKey, (map.get(cleanKey) || 0) + amount);
 };
 
+// El campo "Programa/Dependencia" de varias plantillas (Docentes SNIES,
+// Capacitación de Funcionarios, Estímulos a Funcionarios, etc.) mezcla
+// programas académicos puntuales (Psicología, Derecho, Diseño...) con
+// dependencias/áreas de apoyo transversales que no son un programa al que un
+// estudiante se matricula (Facultades, Áreas, Institutos, Departamentos,
+// Direcciones, Vicerrectoría). Se separan por prefijo del nombre para poder
+// graficarlos aparte en vez de mezclados en una sola lista.
+const AREA_APOYO_PREFIXES = [
+  'FACULTAD', 'AREA', 'INSTITUTO', 'DEPARTAMENTO', 'DIRECCION',
+  'VICERRECTORIA', 'RECTORIA', 'OFICINA', 'COORDINACION',
+];
+const isAreaApoyoNombre = (nombre) => {
+  const normalized = normalizeKey(nombre);
+  return AREA_APOYO_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
+// Dentro de las áreas de apoyo, distingue las Facultades propiamente dichas
+// del resto (Vicerrectoría, Dirección, Rectoría, Instituto, Departamento,
+// Oficina, Coordinación), para poder graficarlas aparte en vez de mezcladas
+// bajo el rótulo "Facultades".
+const isFacultadNombre = (nombre) => normalizeKey(nombre).startsWith('FACULTAD');
+
+// En la hoja "Recurso Humano" la columna Programa/Dependencia identifica la
+// dependencia donde trabaja quien prestó el servicio, pero algunas filas
+// traen por error el título de un programa de posgrado que cursó esa
+// persona (ej. "Maestría en Administración de Negocios") o su estado
+// laboral (ej. "Pensionado") en vez de su dependencia real. Se descartan
+// esos casos obvios por palabra clave; nombres de dependencia legítimos que
+// no siguen ningún patrón fijo (Psicología, Sede Deportiva, Bienestar
+// Universitario...) se dejan tal cual.
+const NON_DEPENDENCIA_KEYWORDS = [
+  'MAESTRIA', 'ESPECIALIZACION', 'DOCTORADO', 'PREGRADO', 'DIPLOMADO',
+  'TECNOLOGIA EN', 'TECNICO EN', 'PENSIONADO', 'JUBILADO', 'RETIRADO',
+];
+const looksLikeNonDependencia = (nombre) => {
+  const normalized = normalizeKey(nombre);
+  return NON_DEPENDENCIA_KEYWORDS.some((keyword) => normalized.indexOf(normalizeKey(keyword)) !== -1);
+};
+
 // Encuentra la clave normalizada de un encabezado a partir de palabras clave
 // que debe contener, en vez de exigir el texto exacto: los encabezados de
 // algunas plantillas (ej. Estrategias Curriculares) son preguntas largas que
@@ -56,6 +94,12 @@ const sortedDistribution = (map, limit) => {
     .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
   return limit ? values.slice(0, limit) : values;
 };
+
+// Para series por año (ej. "grupos por año de creación") interesa el orden
+// cronológico, no el de mayor a menor cantidad como en sortedDistribution.
+const sortedByYear = (map) => Array.from(map.entries())
+  .map(([name, value]) => ({ name, value }))
+  .sort((a, b) => Number(a.name) - Number(b.name));
 
 // "Detalle por hoja": cada plantilla curada arma un arreglo de hojas, y cada
 // hoja un arreglo de desgloses generico (dona o barra) en vez de un campo
@@ -141,6 +185,18 @@ const parseDate = (value) => {
   if (Number.isNaN(parsed.getTime())) return null;
   const year = parsed.getFullYear();
   return year >= 2000 && year <= 2100 ? parsed : null;
+};
+
+// A diferencia de parseDate (que descarta años previos al 2000, pensado para
+// fechas de actividades recientes), esta variante solo filtra basura de
+// parseo: fechas como la de creación de un grupo de investigación llevan
+// décadas y son perfectamente anteriores al 2000.
+const parseYear = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const year = parsed.getFullYear();
+  return year >= 1900 && year <= 2100 ? year : null;
 };
 
 // Coincide por nombre de archivo sin importar mayusculas/tildes/espacios NI
@@ -248,24 +304,39 @@ const buildActividadBienestarAnalytics = (document) => {
   // Detalle por hoja: cada hoja fuente que compone este archivo trae su
   // propio mini-analisis (por unidad/categoria/mes/tipo, segun aplique),
   // en vez de mezclarse todas en el resumen general de arriba.
-  const analyzeOrigenBeneficiarios = (list) => {
-    let internos = 0;
+  // "Internos sin registro"/"Externos" vienen de los conteos que la propia
+  // actividad reporta (columnas CANTIDAD_BENEFICIARIOS_*); "Internos con
+  // registro" en cambio son personas identificadas una por una en la hoja
+  // Lista de Beneficiarios — se cuentan aparte (relatedBeneficiaries) para
+  // que el origen quede completo sin duplicar lo que ya trae esa hoja.
+  const analyzeOrigenBeneficiarios = (list, relatedBeneficiaries = []) => {
+    let internosSinRegistro = 0;
     let externos = 0;
     list.forEach((row) => {
-      internos += asNumber(row.CANTIDADBENEFICIARIOSINTERNOSSINREGISTRO);
+      internosSinRegistro += asNumber(row.CANTIDADBENEFICIARIOSINTERNOSSINREGISTRO);
       externos += asNumber(row.CANTIDADBENEFICIARIOEXTERNO || row.CANTIDADBENEFICIARIOSEXTERNOS);
     });
     const result = [];
-    if (internos > 0) result.push({ name: 'Internos sin registro', value: internos });
+    if (relatedBeneficiaries.length > 0) result.push({ name: 'Internos con registro', value: relatedBeneficiaries.length });
+    if (internosSinRegistro > 0) result.push({ name: 'Internos sin registro', value: internosSinRegistro });
     if (externos > 0) result.push({ name: 'Externos', value: externos });
     return result;
   };
 
-  const analyzeActivityGroup = (list) => {
+  // Beneficiarios de la hoja "Lista de Beneficiarios" cuyo codigo de
+  // actividad pertenece a este grupo (Bienestar/Cultural/Evento), para
+  // sumarlos como "Internos con registro" del origen de ESE grupo.
+  const beneficiariesForActivities = (activities, beneficiaries) => {
+    const codes = new Set(activities.map((a) => a.__CODE).filter(Boolean));
+    if (codes.size === 0) return [];
+    return beneficiaries.filter((row) => codes.has(String(row.CODIGOACTIVIDAD || row.CODIGOACTIVIDADEVENTO || '').trim()));
+  };
+
+  const analyzeActivityGroup = (list, relatedBeneficiaries = []) => {
     const porCategoria = new Map();
     list.forEach((activity) => addCount(porCategoria, activity.__CATEGORY));
     return [
-      donutBreakdown('Origen de beneficiarios', analyzeOrigenBeneficiarios(list)),
+      donutBreakdown('Origen de beneficiarios', analyzeOrigenBeneficiarios(list, relatedBeneficiaries)),
       barBreakdown('Por categoría', porCategoria),
       barBreakdown('Enfoques y contribuciones', analyzeEnfoques(list)),
     ];
@@ -284,20 +355,24 @@ const buildActividadBienestarAnalytics = (document) => {
 
   const analyzeHumanResourceRows = (rows) => {
     const porCategoria = new Map();
-    const porPrograma = new Map();
+    // Aqui "Programa o Dependencia" identifica al PERSONAL que presto el
+    // servicio (una oficina como Bienestar Universitario, Sede Deportiva,
+    // etc.), no un programa academico de estudiante — por eso se rotula
+    // como dependencia y no como "programa academico".
+    const porDependencia = new Map();
     const porActividad = new Map();
     rows.forEach((row) => {
       const code = String(row.CODIGOACTIVIDAD || '').trim();
       const activity = activityByCode.get(code) || {};
       addCount(porCategoria, activity.__CATEGORY || 'Sin categoría');
-      const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
-      if (programa) addCount(porPrograma, programa);
+      const dependencia = String(row.PROGRAMAODEPENDENCIA || '').trim();
+      if (dependencia && !isUnresolved(dependencia) && !looksLikeNonDependencia(dependencia)) addCount(porDependencia, dependencia);
       const nombreActividad = String(row.NOMBREACTIVIDADEVENTO || '').trim();
       if (nombreActividad) addCount(porActividad, nombreActividad);
     });
     return [
       barBreakdown('Por categoría', porCategoria),
-      barBreakdown('Top programas académicos', porPrograma, 10),
+      barBreakdown('Top dependencias del personal', porDependencia, 10),
       barBreakdown('Top actividades', porActividad, 10),
     ];
   };
@@ -306,16 +381,24 @@ const buildActividadBienestarAnalytics = (document) => {
     const porTipo = new Map();
     const porActividad = new Map();
     const porPrograma = new Map();
+    const porFacultad = new Map();
+    const porOtrasDependencias = new Map();
     rows.forEach((row) => {
       addCount(porTipo, row.ACTIVIDAD || row.RORESDISPONIBLES || 'Beneficiario registrado');
       const actividad = String(row.NOMBREACTIVIDADEVENTO || '').trim();
       if (actividad) addCount(porActividad, actividad);
       const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
-      if (programa) addCount(porPrograma, programa);
+      if (programa && !isUnresolved(programa)) {
+        if (isFacultadNombre(programa)) addCount(porFacultad, programa);
+        else if (isAreaApoyoNombre(programa)) addCount(porOtrasDependencias, programa);
+        else addCount(porPrograma, programa);
+      }
     });
     return [
       donutBreakdown('Por tipo', porTipo),
       barBreakdown('Top programas académicos', porPrograma, 10),
+      barBreakdown('Top Facultades', porFacultad, 10),
+      barBreakdown('Top otras dependencias', porOtrasDependencias, 10),
       barBreakdown('Top actividades', porActividad, 10),
     ];
   };
@@ -330,9 +413,9 @@ const buildActividadBienestarAnalytics = (document) => {
   // le pasen: se usa tanto para el archivo completo como, filtrando cada
   // lista por unidad, para el desglose por dependencia de mas abajo.
   const buildHojas = (main, cultural, events, human, beneficiary, grouped) => [
-    buildHoja('Actividades de Bienestar', main.length, analyzeActivityGroup(main)),
-    buildHoja('Actividades Culturales', cultural.length, analyzeActivityGroup(cultural)),
-    buildHoja('Eventos Culturales', events.length, analyzeActivityGroup(events)),
+    buildHoja('Actividades de Bienestar', main.length, analyzeActivityGroup(main, beneficiariesForActivities(main, beneficiary))),
+    buildHoja('Actividades Culturales', cultural.length, analyzeActivityGroup(cultural, beneficiariesForActivities(cultural, beneficiary))),
+    buildHoja('Eventos Culturales', events.length, analyzeActivityGroup(events, beneficiariesForActivities(events, beneficiary))),
     buildHoja('Recurso Humano', human.length, analyzeHumanResourceRows(human)),
     buildHoja('Lista de Beneficiarios', beneficiary.length, analyzeBeneficiaryListRows(beneficiary)),
     buildHoja('Beneficiarios Agrupados', grouped.length, analyzeGroupedBeneficiaryRows(grouped)),
@@ -378,6 +461,11 @@ const buildActividadBienestarAnalytics = (document) => {
     totalActivities: activityByCode.size,
     registeredBeneficiaries: beneficiaryList.length,
     totalParticipations,
+    // Solo algunas plantillas de Bienestar traen la hoja de beneficiarios
+    // agrupados (conteos por actividad, sin identificar a cada persona); sin
+    // esa hoja el total real es "no aplica", no cero, asi que se distingue
+    // con este flag para no mostrar la tarjeta como si fuera un dato en 0.
+    hasGroupedBeneficiaries: groupedBeneficiaries.length > 0,
     groupedBeneficiaries: groupedBeneficiaryTotal,
     externalBeneficiaries,
     humanResourceRecords: humanResources.length,
@@ -537,7 +625,10 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
   const estudio = rowsAsObjects(sheets.get('SNIESESTUDIO'));
   if (contrato.length === 0) return null;
 
-  const docentesPorAnoSets = new Map();
+  // Se discrimina por PERIODO (año-semestre), no solo por año, para que la
+  // grafica "Docentes por periodo" muestre la evolucion semestre a semestre
+  // (ej. 2022A, 2022B) en vez de mezclar ambos semestres en un solo punto.
+  const docentesPorPeriodoSets = new Map();
   const allDocumentos = new Set();
   let latestPeriodKey = '';
   let latestAno = '';
@@ -548,11 +639,11 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     const ano = String(row.ANO || '').trim();
     const semestre = String(row.SEMESTRE || '').trim();
     if (documento) allDocumentos.add(documento);
-    if (ano && documento) {
-      if (!docentesPorAnoSets.has(ano)) docentesPorAnoSets.set(ano, new Set());
-      docentesPorAnoSets.get(ano).add(documento);
-    }
     const periodKey = `${ano}-${semestre}`;
+    if (ano && semestre && documento) {
+      if (!docentesPorPeriodoSets.has(periodKey)) docentesPorPeriodoSets.set(periodKey, new Set());
+      docentesPorPeriodoSets.get(periodKey).add(documento);
+    }
     if (periodKey > latestPeriodKey) {
       latestPeriodKey = periodKey;
       latestAno = ano;
@@ -560,24 +651,65 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     }
   });
 
-  const docentesPorAno = Array.from(docentesPorAnoSets.entries())
-    .map(([ano, set]) => ({ name: ano, value: set.size }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const SEMESTRE_LABEL = { '1': 'A', '2': 'B' };
+  const docentesPorAno = Array.from(docentesPorPeriodoSets.entries())
+    .map(([periodKey, set]) => {
+      const [ano, semestre] = periodKey.split('-');
+      return { name: `${ano}${SEMESTRE_LABEL[semestre] || semestre}`, value: set.size, sortKey: periodKey };
+    })
+    .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+    .map(({ name, value }) => ({ name, value }));
 
   const latestContratoRows = contrato.filter(
     (row) => String(row.ANO || '').trim() === latestAno && String(row.SEMESTRE || '').trim() === latestSemestre
   );
+  // El escalafón (Auxiliar/Asistente/Asociado/Titular) solo aplica a planta
+  // de Tiempo Completo/Exclusiva o Medio Tiempo; los cátedra no escalafonan,
+  // asi que se excluyen de este conteo puntual (si se cuentan, ensucian el
+  // % con un bloque grande de "Sin escalafón" que no es real).
+  const isCatedra = (dedicacion) => normalizeKey(dedicacion).includes('CATEDRA');
+
+  // El campo "Dependencia"/"Programa o dependencia" mezcla programas
+  // académicos puntuales (Derecho, Psicología, Ingeniería Civil...) con
+  // áreas de apoyo transversales que dictan cursos generales a varios
+  // programas en vez de pertenecer a uno solo (llegan como "Facultad Ciencias
+  // Naturales y Matemáticas" = Ciencias Básicas, "Facultad Humanidades Artes
+  // y Ciencias Sociales" = Humanidades, etc.). Se separan en dos grupos, y en
+  // cada uno se cuenta cuántos son planta (Tiempo Completo/Medio Tiempo) vs
+  // cátedra.
   const dedicacionCounts = new Map();
   const escalafonCounts = new Map();
   const dependenciaCounts = new Map();
+  const dependenciaDetalleMap = new Map();
   latestContratoRows.forEach((row) => {
     addCount(dedicacionCounts, row.DEDICACION || 'Sin dato');
-    addCount(escalafonCounts, row.ESCALAFON || 'Sin escalafón');
+    const catedra = isCatedra(row.DEDICACION);
+    if (!catedra) {
+      addCount(escalafonCounts, row.ESCALAFON || 'Sin escalafón');
+    }
     // Algunos periodos (ej. 2025-2) llegan con "Dependencia" vacio aunque
     // "Programa o dependencia" si este diligenciado; se usa como respaldo
     // para no perder el dato de a que programa/dependencia pertenece.
-    addCount(dependenciaCounts, row.DEPENDENCIA || row.PROGRAMAODEPENDENCIA || 'Sin dependencia');
+    const nombreDependencia = String(row.DEPENDENCIA || row.PROGRAMAODEPENDENCIA || '').trim() || 'Sin dependencia';
+    addCount(dependenciaCounts, nombreDependencia);
+
+    if (!dependenciaDetalleMap.has(nombreDependencia)) {
+      dependenciaDetalleMap.set(nombreDependencia, {
+        nombre: nombreDependencia,
+        tipo: isAreaApoyoNombre(nombreDependencia) ? 'apoyo' : 'programa',
+        total: 0,
+        tiempoCompleto: 0,
+        catedra: 0,
+      });
+    }
+    const detalle = dependenciaDetalleMap.get(nombreDependencia);
+    detalle.total += 1;
+    if (catedra) detalle.catedra += 1; else detalle.tiempoCompleto += 1;
   });
+
+  const dependenciaDetalle = Array.from(dependenciaDetalleMap.values()).sort((a, b) => b.total - a.total);
+  const programasPeriodoActual = dependenciaDetalle.filter((d) => d.tipo === 'programa').slice(0, 10);
+  const areasApoyoPeriodoActual = dependenciaDetalle.filter((d) => d.tipo === 'apoyo');
 
   const latestEstudioRows = estudio.filter(
     (row) => String(row.ANO || '').trim() === latestAno && String(row.SEMESTRE || '').trim() === latestSemestre
@@ -599,6 +731,8 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     dedicacionPeriodoActual: sortedDistribution(dedicacionCounts),
     escalafonPeriodoActual: sortedDistribution(escalafonCounts),
     dependenciaPeriodoActual: sortedDistribution(dependenciaCounts, 10),
+    programasPeriodoActual,
+    areasApoyoPeriodoActual,
     nivelFormacionPeriodoActual: sortedDistribution(nivelFormacionCounts),
     hojas: [
       buildHoja(`Contrato (${latestSemestre ? `${latestAno}-${latestSemestre}` : latestAno})`, latestContratoRows.length, [
@@ -677,10 +811,14 @@ const isPracticasAcademicasFile = (fileName) => hasAllKeywords(fileNameKey(fileN
 // Resumen a la medida de Prácticas Académicas (Estructura y Procesos
 // Académicos): un registro por estudiante en práctica (ESTADISTICA_PRACTICAS),
 // mas el catalogo de empresas registradas (EMPRESAS_PRACTICAS) para mostrar
-// en que sectores estan esas empresas. NOTA: no se cruzan ambas hojas por
-// empresa porque EMPRESAS_PRACTICAS no guarda el NIT en un campo propio (su
-// "ID_EMPRESA" es en realidad el TIPO de documento), asi que no hay forma de
-// unirla con el ID numerico de empresa que si trae ESTADISTICA_PRACTICAS.
+// en que sectores estan esas empresas. Antes no se cruzaban ambas hojas por
+// empresa porque EMPRESAS_PRACTICAS no guardaba el NIT en un campo propio (su
+// "ID_EMPRESA" traia el TIPO de documento en vez del numero); ya corregido en
+// el Excel se cruza por ID_EMPRESA para mostrar el nombre en vez del codigo.
+// El catalogo de empresas registradas es mas chico que el total de empresas
+// donde hicieron practica los estudiantes, asi que el cruce solo resuelve
+// nombre para las que si estan en ese catalogo — el resto se deja con su
+// codigo (mejor que inventar un nombre) hasta que se registren tambien ahi.
 const buildPracticasAcademicasAnalytics = (document) => {
   if (!document || !Array.isArray(document.sheets)) return null;
   const sheets = new Map(document.sheets.map((sheet) => [normalizeKey(sheet.name), sheet]));
@@ -688,19 +826,32 @@ const buildPracticasAcademicasAnalytics = (document) => {
   const empresas = rowsAsObjects(sheets.get('EMPRESASPRACTICAS'));
   if (estadistica.length === 0) return null;
 
+  const nombreEmpresaById = new Map();
+  empresas.forEach((row) => {
+    const id = String(row.IDEMPRESA || '').trim();
+    const nombre = String(row.NOMBREEMPRESA || '').trim();
+    if (id && nombre) nombreEmpresaById.set(id, nombre);
+  });
+
   const empresaCounts = new Map();
+  // Subconjunto de empresaCounts que sí tiene nombre resuelto (está en el
+  // catálogo EMPRESAS_PRACTICAS): se muestra aparte porque casi siempre son
+  // pocos estudiantes cada una y quedan fuera del "top 10 por volumen".
+  const empresaRegistradaCounts = new Map();
   const modalidadCounts = new Map();
   const programaCounts = new Map();
   let logroSum = 0;
   let logroCount = 0;
 
   estadistica.forEach((row) => {
-    const empresa = String(row.IDEMPRESA || '').trim();
+    const empresaId = String(row.IDEMPRESA || '').trim();
     const modalidad = String(row.TIPOMODALIDAD || '').trim();
     const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
     const logro = asNumber(row.LOGRO);
+    const nombreEmpresa = empresaId ? nombreEmpresaById.get(empresaId) : null;
 
-    if (empresa) addCount(empresaCounts, empresa);
+    if (empresaId) addCount(empresaCounts, nombreEmpresa || empresaId);
+    if (nombreEmpresa) addCount(empresaRegistradaCounts, nombreEmpresa);
     if (modalidad) addCount(modalidadCounts, modalidad);
     if (programa) addCount(programaCounts, programa);
     if (String(row.LOGRO || '').trim() && logro > 0) {
@@ -724,12 +875,14 @@ const buildPracticasAcademicasAnalytics = (document) => {
     porModalidad: sortedDistribution(modalidadCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
     porEmpresa: sortedDistribution(empresaCounts, 10),
+    porEmpresaRegistrada: sortedDistribution(empresaRegistradaCounts),
     porSectorEmpresasRegistradas: sortedDistribution(sectorCounts),
     hojas: [
       buildHoja('Estadística de prácticas', estadistica.length, [
         donutBreakdown('Por modalidad', modalidadCounts),
         barBreakdown('Por programa', programaCounts, 10),
         barBreakdown('Por empresa', empresaCounts, 10),
+        barBreakdown('Estudiantes en empresas registradas', empresaRegistradaCounts),
       ]),
       buildHoja('Empresas registradas', empresas.length, [
         donutBreakdown('Por sector', sectorCounts),
@@ -758,6 +911,9 @@ const buildEstrategiasCurricularesAnalytics = (document) => {
   const enfoqueMetodologiaKey = findHeaderKey(sheet.headers, ['ENFOQUE', 'METODOLOG']);
   const funcionKey = findHeaderKey(sheet.headers, ['FUNCION', 'SUSTANTIVA']);
   const dimensionKey = findHeaderKey(sheet.headers, ['DIMENSION', 'FORMACION']);
+  const comunidadSectorKey = findHeaderKey(sheet.headers, ['COMUNIDAD', 'SECTOR', 'EXTERNO']);
+  const participantesInternosKey = findHeaderKey(sheet.headers, ['PARTICIPANTES', 'INTERNOS']);
+  const participantesExternosKey = findHeaderKey(sheet.headers, ['PARTICIPANTES', 'EXTERNOS']);
 
   const programaCounts = new Map();
   const tipoCounts = new Map();
@@ -765,6 +921,9 @@ const buildEstrategiasCurricularesAnalytics = (document) => {
   const enfoqueMetodologiaCounts = new Map();
   const funcionCounts = new Map();
   const dimensionCounts = new Map();
+  const comunidadSectorCounts = new Map();
+  let totalParticipantesInternos = 0;
+  let totalParticipantesExternos = 0;
 
   rows.forEach((row) => {
     if (programaKey) addCount(programaCounts, row[programaKey]);
@@ -773,6 +932,12 @@ const buildEstrategiasCurricularesAnalytics = (document) => {
     if (enfoqueMetodologiaKey) addCount(enfoqueMetodologiaCounts, row[enfoqueMetodologiaKey]);
     if (funcionKey) addCount(funcionCounts, row[funcionKey]);
     if (dimensionKey) addCount(dimensionCounts, row[dimensionKey]);
+    if (comunidadSectorKey) {
+      const comunidad = String(row[comunidadSectorKey] || '').trim();
+      if (comunidad) addCount(comunidadSectorCounts, comunidad);
+    }
+    if (participantesInternosKey) totalParticipantesInternos += asNumber(row[participantesInternosKey]);
+    if (participantesExternosKey) totalParticipantesExternos += asNumber(row[participantesExternosKey]);
   });
 
   return {
@@ -780,20 +945,24 @@ const buildEstrategiasCurricularesAnalytics = (document) => {
     fileName: document.file_name,
     totalEstrategias: rows.length,
     totalProgramas: programaCounts.size,
+    totalParticipantesInternos,
+    totalParticipantesExternos,
     porTipo: sortedDistribution(tipoCounts),
     porNacionalInternacional: sortedDistribution(nacionalCounts),
     porEnfoqueMetodologia: sortedDistribution(enfoqueMetodologiaCounts),
     porFuncionSustantiva: sortedDistribution(funcionCounts),
     porDimensionFormacion: sortedDistribution(dimensionCounts),
     porPrograma: sortedDistribution(programaCounts, 10),
+    porComunidadSectorExterno: sortedDistribution(comunidadSectorCounts, 10),
     hojas: [
       buildHoja('Estrategias Curriculares', rows.length, [
         donutBreakdown('Por tipo', tipoCounts),
         donutBreakdown('Nacional / internacional', nacionalCounts),
         barBreakdown('Función sustantiva', funcionCounts),
         barBreakdown('Dimensión de formación', dimensionCounts),
-        barBreakdown('Enfoques y contribuciones', analyzeEnfoques(rows)),
+        barBreakdown('Contribuciones formativas', analyzeEnfoques(rows)),
         barBreakdown('Por programa', programaCounts, 10),
+        barBreakdown('Comunidad o sector externo vinculado', comunidadSectorCounts, 10),
       ]),
     ],
   };
@@ -813,7 +982,8 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
   const beneficiarios = new Set();
   const tipoCapacitacionCounts = new Map();
   const tipoCursoCounts = new Map();
-  const programaCounts = new Map();
+  const programaAcademicoCounts = new Map();
+  const areaApoyoCounts = new Map();
   const cursoCounts = new Map();
   let totalHoras = 0;
 
@@ -825,7 +995,7 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
     const curso = String(row.NOMBRECURSO || '').trim();
 
     if (beneficiario && normalizeKey(beneficiario) !== 'NOIDENTIFICADO') beneficiarios.add(beneficiario);
-    if (programa) addCount(programaCounts, programa);
+    if (programa) addCount(isAreaApoyoNombre(programa) ? areaApoyoCounts : programaAcademicoCounts, programa);
     if (tipoCapacitacion) addCount(tipoCapacitacionCounts, tipoCapacitacion);
     if (tipoCurso) addCount(tipoCursoCounts, tipoCurso);
     if (curso) addCount(cursoCounts, curso);
@@ -840,13 +1010,15 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
     totalHorasCursadas: totalHoras,
     porTipoCapacitacion: sortedDistribution(tipoCapacitacionCounts),
     porTipoCurso: sortedDistribution(tipoCursoCounts),
-    porPrograma: sortedDistribution(programaCounts, 10),
+    porProgramaAcademico: sortedDistribution(programaAcademicoCounts, 10),
+    porAreaApoyo: sortedDistribution(areaApoyoCounts, 10),
     topCursos: sortedDistribution(cursoCounts, 10),
     hojas: [
       buildHoja('Capacitación y Formación de Funcionarios', rows.length, [
         donutBreakdown('Por tipo de capacitación', tipoCapacitacionCounts),
         donutBreakdown('Por tipo de curso', tipoCursoCounts),
-        barBreakdown('Por programa/dependencia', programaCounts, 10),
+        barBreakdown('Por programa académico', programaAcademicoCounts, 10),
+        barBreakdown('Por área de apoyo', areaApoyoCounts, 10),
         barBreakdown('Top cursos', cursoCounts, 10),
       ]),
     ],
@@ -948,7 +1120,8 @@ const buildEstimulosFuncionariosAnalytics = (document) => {
   const funcionarios = new Set();
   const tipoEstimuloCounts = new Map();
   const dependenciaCounts = new Map();
-  const programaCounts = new Map();
+  const programaAcademicoCounts = new Map();
+  const areaApoyoCounts = new Map();
 
   rows.forEach((row) => {
     const funcionario = String(row.NOMBREIDENTIFICADO || '').trim();
@@ -959,7 +1132,7 @@ const buildEstimulosFuncionariosAnalytics = (document) => {
     if (funcionario && normalizeKey(funcionario) !== 'NOIDENTIFICADO') funcionarios.add(funcionario);
     if (tipo) addCount(tipoEstimuloCounts, tipo);
     if (dependencia) addCount(dependenciaCounts, dependencia);
-    if (programa) addCount(programaCounts, programa);
+    if (programa) addCount(isAreaApoyoNombre(programa) ? areaApoyoCounts : programaAcademicoCounts, programa);
   });
 
   return {
@@ -969,12 +1142,14 @@ const buildEstimulosFuncionariosAnalytics = (document) => {
     totalFuncionariosUnicos: funcionarios.size,
     porTipoEstimulo: sortedDistribution(tipoEstimuloCounts),
     porDependenciaQueReporta: sortedDistribution(dependenciaCounts),
-    porPrograma: sortedDistribution(programaCounts, 10),
+    porProgramaAcademico: sortedDistribution(programaAcademicoCounts, 10),
+    porAreaApoyo: sortedDistribution(areaApoyoCounts, 10),
     hojas: [
       buildHoja('Estímulos a Funcionarios', rows.length, [
         donutBreakdown('Por tipo de estímulo', tipoEstimuloCounts),
         barBreakdown('Dependencia que reporta', dependenciaCounts, 10),
-        barBreakdown('Por programa/dependencia beneficiaria', programaCounts, 10),
+        barBreakdown('Por programa académico beneficiario', programaAcademicoCounts, 10),
+        barBreakdown('Por área de apoyo beneficiaria', areaApoyoCounts, 10),
       ]),
     ],
   };
@@ -1000,6 +1175,11 @@ const buildOtrasEstrategiasAnalytics = (document) => {
   const tipologiaCounts = new Map();
   const comunidadCounts = new Map();
   const poblacionCounts = new Map();
+  // "¿La estrategia tiene alguno de los siguientes enfoques?" es una
+  // pregunta aparte (Disciplinar/Interdisciplinar/Transdisciplinar/No
+  // aplica) del gate de los enfoques puntuales (Ética, Empatía, etc.) que ya
+  // se resumen en "Enfoques y contribuciones".
+  const tipoEnfoqueCounts = new Map();
   let cooperacionNacional = 0;
   let cooperacionInternacional = 0;
 
@@ -1016,6 +1196,9 @@ const buildOtrasEstrategiasAnalytics = (document) => {
     if (comunidad) addCount(comunidadCounts, comunidad);
     const poblacion = String(row.POBLACIONIMPACTADA || '').trim();
     if (poblacion) addCount(poblacionCounts, poblacion);
+
+    const tipoEnfoque = String(row.LAESTRATEGIATIENEALGUNODELOSSIGUIENTESENFOQUES || '').trim();
+    if (tipoEnfoque) addCount(tipoEnfoqueCounts, tipoEnfoque);
 
     if (String(row.ESUNAACTIVIDADDECOOPERACIONNACIONAL || '').trim().toUpperCase().startsWith('S')) cooperacionNacional += 1;
     if (String(row.ESUNAACTIVIDADDECOOPERACIONINTERNACIONAL || '').trim().toUpperCase().startsWith('S')) cooperacionInternacional += 1;
@@ -1050,12 +1233,14 @@ const buildOtrasEstrategiasAnalytics = (document) => {
     porTipologia: sortedDistribution(tipologiaCounts),
     porComunidadSectorExterno: sortedDistribution(comunidadCounts, 10),
     porPoblacionImpactada: sortedDistribution(poblacionCounts),
+    porTipoEnfoque: sortedDistribution(tipoEnfoqueCounts),
     topEstrategiasPorParticipantes,
     hojas: [
       buildHoja('Otras Estrategias', estrategiaRows.length, [
         donutBreakdown('Por categoría', categoriaCounts),
         barBreakdown('Por tipología', tipologiaCounts, 10),
         barBreakdown('Población impactada', poblacionCounts),
+        donutBreakdown('¿Tiene alguno de los siguientes enfoques?', tipoEnfoqueCounts),
         barBreakdown('Enfoques y contribuciones', analyzeEnfoques(estrategiaRows)),
       ]),
       buildHoja('Participantes de otras estrategias', participanteRows.length, [
@@ -1101,7 +1286,7 @@ const buildPazYRegionAnalytics = (document) => {
     if (entidad) entidades.add(entidad);
     if (municipio) addCount(municipios, municipio);
     if (asesor && normalizeKey(asesor) !== 'NOIDENTIFICADO') asesores.add(asesor);
-    if (programa) addCount(programaCounts, programa);
+    if (programa && normalizeKey(programa) !== 'NOIDENTIFICADO') addCount(programaCounts, programa);
 
     addCount(departamentoCounts, row.IDDEPARTAMENTO || 'Sin dato');
     addCount(zonaCounts, row.ZONA || 'Sin dato');
@@ -1128,7 +1313,11 @@ const buildPazYRegionAnalytics = (document) => {
     porOds: sortedDistribution(odsCounts),
     porLineaProyecto: sortedDistribution(lineaCounts),
     porTipoEntidad: sortedDistribution(tipoEntidadCounts, 10),
-    porPrograma: sortedDistribution(programaCounts, 10),
+    // Sin límite: a diferencia de otras listas "top 10", aquí interesa ver
+    // todos los programas con estudiantes vinculados, no solo los de mayor
+    // volumen (con pocos programas de más, un límite dejaba fuera programas
+    // reales con pocos estudiantes, como Diseño).
+    porPrograma: sortedDistribution(programaCounts),
     topMunicipios: sortedDistribution(municipios, 10),
     hojas: [
       buildHoja('Paz y Región', rows.length, [
@@ -1155,23 +1344,38 @@ const buildGruposInvestigacionAnalytics = (document) => {
   if (rows.length === 0) return null;
 
   const clasificacionCounts = new Map();
+  // "Programa o dependencia" del director mezcla Facultades (una unidad
+  // administrativa) con programas académicos puntuales (Derecho, Psicología,
+  // Ingeniería Industrial...) y otras unidades (Laboratorio Colibri, Paz y
+  // Región): se separan en dos gráficas para no leerlas como si fueran del
+  // mismo tipo de cosa.
+  const facultadCounts = new Map();
   const programaCounts = new Map();
+  const anioCreacionCounts = new Map();
   rows.forEach((row) => {
     addCount(clasificacionCounts, row.CLASIFICACIONDELGRUPOENMINCIENCIAS || 'Sin clasificar');
     const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
-    if (programa) addCount(programaCounts, programa);
+    if (programa) addCount(isFacultadNombre(programa) ? facultadCounts : programaCounts, programa);
+    const anio = parseYear(row.FECHADECREACION);
+    if (anio) addCount(anioCreacionCounts, String(anio));
   });
+
+  const porAnioCreacion = sortedByYear(anioCreacionCounts);
 
   return {
     fileId: String(document._id),
     fileName: document.file_name,
     totalGrupos: rows.length,
     porClasificacion: sortedDistribution(clasificacionCounts),
+    porFacultad: sortedDistribution(facultadCounts, 10),
     porPrograma: sortedDistribution(programaCounts, 10),
+    porAnioCreacion,
     hojas: [
       buildHoja('Grupos de Investigación', rows.length, [
         donutBreakdown('Por clasificación Minciencias', clasificacionCounts),
-        barBreakdown('Por programa/dependencia', programaCounts, 10),
+        barBreakdown('Por facultad', facultadCounts, 10),
+        barBreakdown('Por programa', programaCounts, 10),
+        barBreakdown('Grupos por año de creación', porAnioCreacion),
       ]),
     ],
   };
@@ -1226,21 +1430,41 @@ const buildRedesInvestigacionAnalytics = (document) => {
   const investigadores = new Set();
   const redes = new Set();
   const redCounts = new Map();
+  // Un mismo investigador puede aparecer en más de una fila de la misma red
+  // (ej. vinculado por más de una institución); para "profesores por red" se
+  // cuentan personas únicas, no filas, a diferencia de porRed (que cuenta
+  // registros).
+  const investigadoresPorRed = new Map();
+  // "Programa o dependencia" del investigador mezcla Facultades con
+  // programas académicos puntuales (igual que en Grupos de Investigación):
+  // se separan en dos gráficas en vez de una sola dona con ambos tipos.
+  const facultadCounts = new Map();
   const programaCounts = new Map();
   const institucionCounts = new Map();
 
   rows.forEach((row) => {
     const investigador = String(row.NOMBREIDENTIFICADO || '').trim();
     const red = String(row.CODIGORED || '').trim();
+    const nombreRed = String(row.NOMBRERED || '').trim() || 'Sin dato';
     const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
     const institucion = String(row.INSTITUCION || '').trim();
+    const investigadorIdentificado = investigador && normalizeKey(investigador) !== 'NOIDENTIFICADO';
 
-    if (investigador && normalizeKey(investigador) !== 'NOIDENTIFICADO') investigadores.add(investigador);
+    if (investigadorIdentificado) investigadores.add(investigador);
     if (red) redes.add(red);
-    if (programa) addCount(programaCounts, programa);
+    if (programa) addCount(isFacultadNombre(programa) ? facultadCounts : programaCounts, programa);
     if (institucion) addCount(institucionCounts, institucion);
-    addCount(redCounts, row.NOMBRERED || 'Sin dato');
+    addCount(redCounts, nombreRed);
+
+    if (investigadorIdentificado) {
+      if (!investigadoresPorRed.has(nombreRed)) investigadoresPorRed.set(nombreRed, new Set());
+      investigadoresPorRed.get(nombreRed).add(investigador);
+    }
   });
+
+  const profesoresPorRedCounts = new Map(
+    [...investigadoresPorRed.entries()].map(([red, set]) => [red, set.size])
+  );
 
   return {
     fileId: String(document._id),
@@ -1249,12 +1473,16 @@ const buildRedesInvestigacionAnalytics = (document) => {
     totalInvestigadoresUnicos: investigadores.size,
     totalRedes: redes.size,
     porRed: sortedDistribution(redCounts),
+    profesoresPorRed: sortedDistribution(profesoresPorRedCounts),
+    porFacultad: sortedDistribution(facultadCounts, 10),
     porPrograma: sortedDistribution(programaCounts, 10),
     topInstituciones: sortedDistribution(institucionCounts, 10),
     hojas: [
       buildHoja('Redes de Investigación', rows.length, [
         donutBreakdown('Por red', redCounts),
-        barBreakdown('Por programa/dependencia', programaCounts, 10),
+        barBreakdown('Profesores por red', profesoresPorRedCounts),
+        barBreakdown('Por facultad', facultadCounts, 10),
+        barBreakdown('Por programa', programaCounts, 10),
         barBreakdown('Top instituciones', institucionCounts, 10),
       ]),
     ],
@@ -1293,7 +1521,7 @@ const buildSemillerosParticipantesAnalytics = (document) => {
     const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
     if (codigo) addCount(participantesPorSemillero, codigo);
     if (nombre && normalizeKey(nombre) !== 'NOIDENTIFICADO') participantesUnicos.add(nombre);
-    if (programa) addCount(programaCounts, programa);
+    if (programa && !isUnresolved(programa)) addCount(programaCounts, programa);
   });
 
   const topSemilleros = sortedDistribution(participantesPorSemillero, 10).map((entry) => ({
@@ -1323,6 +1551,25 @@ const buildSemillerosParticipantesAnalytics = (document) => {
 
 const isTrabajoGradoFile = (fileName) => hasAllKeywords(fileNameKey(fileName), ['TRABAJO', 'GRADO']);
 
+// La columna MODALIDAD de Trabajo de Grado casi siempre trae ya el texto
+// resuelto (Presencial/Virtual/Mixta), pero algunas filas conservan el
+// código crudo del validador TIPO_MODALIDAD_TRABAJO_GRADO (1-5) en vez del
+// texto — se ven como una barra "5" sin significado en la gráfica en vez de
+// una modalidad real. Se resuelven esos códigos puntuales; el resto de
+// valores (ya en texto) se dejan tal cual.
+const TRABAJO_GRADO_MODALIDAD_CODES = {
+  '1': 'Monografía',
+  '2': 'Asistencia de investigación',
+  '3': 'Trabajo de investigación',
+  '4': 'Opción emprendimiento',
+  '5': 'Ciclo coterminal',
+};
+const resolveTrabajoGradoModalidad = (value) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return 'Sin dato';
+  return TRABAJO_GRADO_MODALIDAD_CODES[raw] || raw;
+};
+
 // Resumen a la medida de Trabajos de Grado (Investigación e Indagación): un
 // registro por estudiante en un trabajo de grado (un trabajo en equipo
 // aparece una vez por integrante, por eso se cuentan trabajos distintos por
@@ -1340,18 +1587,23 @@ const buildTrabajoGradoAnalytics = (document) => {
   const estadoCounts = new Map();
   const mencionCounts = new Map();
   const grupoCounts = new Map();
-  const programaCounts = new Map();
+  // "Programa o dependencia" (columna resuelta a partir de Nombre
+  // identificado) es la dependencia del DIRECTOR de la tesis, no el programa
+  // del estudiante — por eso para "estudiantes por programa" se usa la
+  // columna "Dependencia" del inicio de la fila, que es el programa/área
+  // académica al que pertenece el trabajo de grado en sí.
+  const programaEstudianteCounts = new Map();
 
   rows.forEach((row) => {
     const tesis = String(row.NOMBREDELATESIS || '').trim();
     const director = String(row.NOMBREIDENTIFICADO || '').trim();
-    const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
+    const programaEstudiante = String(row.DEPENDENCIA || '').trim();
 
     if (tesis) trabajos.add(tesis);
     if (director && normalizeKey(director) !== 'NOIDENTIFICADO') directores.add(director);
-    if (programa) addCount(programaCounts, programa);
+    if (programaEstudiante) addCount(programaEstudianteCounts, programaEstudiante);
 
-    addCount(modalidadCounts, row.MODALIDAD || 'Sin dato');
+    addCount(modalidadCounts, resolveTrabajoGradoModalidad(row.MODALIDAD));
     addCount(estadoCounts, row.ESTADO || 'Sin dato');
     addCount(mencionCounts, row.MENCIONMERITORIA || 'Sin dato');
     addCount(grupoCounts, row.CODGRUPODEINVESTIGACION || 'Sin grupo');
@@ -1367,13 +1619,13 @@ const buildTrabajoGradoAnalytics = (document) => {
     porEstado: sortedDistribution(estadoCounts),
     porMencion: sortedDistribution(mencionCounts),
     porGrupo: sortedDistribution(grupoCounts, 10),
-    porPrograma: sortedDistribution(programaCounts, 10),
+    porPrograma: sortedDistribution(programaEstudianteCounts, 10),
     hojas: [
       buildHoja('Trabajo de Grado', rows.length, [
         donutBreakdown('Por modalidad', modalidadCounts),
         donutBreakdown('Por estado', estadoCounts),
         barBreakdown('Por grupo de investigación', grupoCounts, 10),
-        barBreakdown('Por programa', programaCounts, 10),
+        barBreakdown('Estudiantes por programa', programaEstudianteCounts, 10),
       ]),
     ],
   };
@@ -1400,6 +1652,44 @@ const buildFullNameFromParts = (row) => [row.PRIMERNOMBRE, row.SEGUNDONOMBRE, ro
   .filter(Boolean)
   .join(' ');
 
+// ID_PAIS_DESTINO/ID_PAIS_PROCEDENCIA en las plantillas de Movilidad usan el
+// código numérico ISO 3166-1 (ej. 170 = Colombia), no el código alfa-2 que
+// trae el validador "PAIS" de la aplicación (BQ, AD, AE...) — por eso no se
+// podía resolver contra ese validador. Se traducen aquí solo los códigos que
+// realmente aparecen en los archivos cargados; uno no reconocido se deja
+// como código en vez de arriesgar un nombre incorrecto.
+const PAIS_ISO_NUMERIC = {
+  '0': 'No aplica',
+  '152': 'Chile',
+  '170': 'Colombia',
+  '188': 'Costa Rica',
+  '203': 'República Checa',
+  '320': 'Guatemala',
+  '380': 'Italia',
+  '484': 'México',
+  '578': 'Noruega',
+  '604': 'Perú',
+  '630': 'Puerto Rico',
+  '642': 'Rumania',
+  '724': 'España',
+};
+const paisLabel = (code) => {
+  const raw = String(code ?? '').trim();
+  if (!raw) return '';
+  return PAIS_ISO_NUMERIC[raw] || raw;
+};
+
+// TIPO_MOVILIDAD debe traer el tipo de actividad de movilidad (Pasantía o
+// práctica, Misión, Curso corto, Semestre académico de intercambio...), pero
+// algunas filas traen "Entrante"/"Saliente" — la DIRECCIÓN de la movilidad
+// (ya capturada por cuál de los 4 archivos es este), no un tipo real de la
+// tabla de validación. Esos valores no son una categoría válida de tipo de
+// movilidad, así que no se cuentan como si lo fueran.
+const isDireccionNoTipo = (value) => {
+  const normalized = normalizeKey(value);
+  return normalized === 'ENTRANTE' || normalized === 'SALIENTE';
+};
+
 const buildMovilidadAnalyticsCore = (document) => {
   if (!document || !Array.isArray(document.sheets)) return null;
   const candidateSheets = document.sheets.filter((sheet) => normalizeKey(sheet.name) !== 'LISTAS');
@@ -1424,7 +1714,7 @@ const buildMovilidadAnalyticsCore = (document) => {
     const programa = isUnresolved(programaLocal) ? String(row.PROGRAMAACADEMICORELACIONADO || '').trim() : programaLocal;
 
     // "Destino" para movilidad saliente, "procedencia" para entrante.
-    const pais = String(row.IDPAISDESTINO || row.IDPAISPROCEDENCIA || '').trim();
+    const pais = paisLabel(row.IDPAISDESTINO || row.IDPAISPROCEDENCIA);
     const institucion = String(row.INSTITUCIONDESTINO || row.INSTITUCIONPROCEDENCIA || '').trim();
 
     if (persona) personas.add(persona);
@@ -1433,7 +1723,8 @@ const buildMovilidadAnalyticsCore = (document) => {
     if (institucion) addCount(institucionCounts, institucion);
 
     addCount(nacionalInternacionalCounts, row.NACIONALINTERNACIONAL || 'Sin dato');
-    addCount(tipoMovilidadCounts, row.TIPOMOVILIDAD || 'Sin dato');
+    const tipoMovilidad = String(row.TIPOMOVILIDAD || '').trim();
+    if (tipoMovilidad && !isDireccionNoTipo(tipoMovilidad)) addCount(tipoMovilidadCounts, tipoMovilidad);
     addCount(modalidadCounts, row.MODALIDAD || 'Sin dato');
     totalDias += asNumber(row.NUMDIASMOVILIDAD);
   });
