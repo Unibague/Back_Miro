@@ -101,4 +101,23 @@ processRemindersController.getAll = async (req, res) => {
   }
 };
 
+/* DELETE /process-reminders/:id — elimina una alerta (proceso ALERTA o recordatorio legacy) */
+processRemindersController.remove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alerta = await Process.findOneAndDelete({ _id: id, tipo_proceso: 'ALERTA' });
+    if (alerta) {
+      const Phase = require('../models/phases');
+      await Phase.deleteMany({ proceso_id: id });
+      return res.status(200).json({ message: 'Alerta eliminada correctamente' });
+    }
+    const legacy = await ProcessReminder.findByIdAndDelete(id);
+    if (legacy) return res.status(200).json({ message: 'Recordatorio eliminado correctamente' });
+    res.status(404).json({ error: 'Alerta no encontrada' });
+  } catch (error) {
+    console.error('Error eliminando alerta / recordatorio:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 module.exports = processRemindersController;

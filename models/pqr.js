@@ -12,6 +12,9 @@ const pqrSchema = new mongoose.Schema(
     observacion_respuesta: { type: String, default: null },
     cedula_encargado:     { type: String, default: null },
     cerrado:               { type: Boolean, default: false },
+    enlaces_respuesta:     { type: [{ nombre: String, url: String, _id: false }], default: [] },
+    importacion_fuentes:   { type: [{ hoja: String, fila: Number, valores: { type: Map, of: String }, _id: false }], default: [] },
+    importacion_clave:     { type: String, unique: true, sparse: true },
   },
   { timestamps: true, versionKey: false }
 );
