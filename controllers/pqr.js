@@ -1,6 +1,61 @@
 const PQR = require('../models/pqr');
+const { parseWorkbook, classifyRows } = require('../services/pqrImport');
+const Program = require('../models/programs');
 
 const pqrController = {};
+
+async function readImport(req, res) {
+  try { return await parseWorkbook(req.file.buffer); }
+  catch (error) {
+    res.status(400).json({ error: error.message.startsWith('El archivo') || error.message.startsWith('Importa') || error.message.startsWith('No se encontraron')
+      ? error.message : 'No se pudo leer el Excel. Verifica que sea un archivo .xlsx válido.' });
+    return null;
+  }
+}
+
+pqrController.previewImport = async (req, res) => {
+  const parsed = await readImport(req, res);
+  if (!parsed) return;
+  try {
+    const existing = await PQR.find({}).lean();
+    res.json(classifyRows(parsed, existing));
+  } catch { res.status(500).json({ error: 'No se pudieron consultar las coincidencias de PQR.' }); }
+};
+
+pqrController.importExcel = async (req, res) => {
+  const parsed = await readImport(req, res);
+  if (!parsed) return;
+  let selected;
+  try {
+    selected = JSON.parse(req.body.seleccion || 'null');
+    if (!Array.isArray(selected) || !selected.length || selected.length > 2000 || selected.some(item => !item || typeof item.key !== 'string' || !parsed.rows.some(row => row.key === item.key) || (item.programa_id != null && !/^[a-f0-9]{24}$/i.test(item.programa_id)))) throw new Error();
+  } catch { return res.status(400).json({ error: 'Selecciona al menos un PQR válido de la vista previa.' }); }
+  try {
+    const programIds = [...new Set(selected.map(item => item.programa_id).filter(Boolean))];
+    if (programIds.length && await Program.countDocuments({ _id: { $in: programIds } }) !== programIds.length) return res.status(400).json({ error: 'Uno de los programas seleccionados ya no existe. Revisa la selección.' });
+    // The unique index makes repeat/concurrent imports of the same PQR idempotent.
+    await PQR.init();
+    const preview = classifyRows(parsed, await PQR.find({}).lean());
+    const result = { creados: 0, omitidos: 0, errores: [], pqrs: [] };
+    for (const row of preview.rows.filter(item => selected.some(selection => selection.key === item.key))) {
+      if (row.accion === 'existente') { result.omitidos++; continue; }
+      if (row.accion === 'error') { result.errores.push({ filas: row.filas, error: row.errors.join(' ') }); continue; }
+      try {
+        const now = new Date();
+        const doc = { ...row.data, programa_id: selected.find(item => item.key === row.key).programa_id || null, importacion_clave: row.key, cerrado: false, createdAt: now, updatedAt: now };
+        const write = await PQR.updateOne({ importacion_clave: row.key }, { $setOnInsert: doc }, { upsert: true, runValidators: true, timestamps: false });
+        if (write.upsertedCount) {
+          result.creados++;
+          result.pqrs.push(await PQR.findById(write.upsertedId).lean());
+        } else result.omitidos++;
+      } catch (error) {
+        if (error.code === 11000) result.omitidos++;
+        else result.errores.push({ filas: row.filas, error: 'No se pudo guardar este PQR. Puedes reintentar la importación.' });
+      }
+    }
+    res.json(result);
+  } catch { res.status(500).json({ error: 'No se pudo importar. Reintenta; los PQR ya guardados se omitirán.' }); }
+};
 
 /* GET /pqr?cerrado=false&programa_id=xxx */
 pqrController.getAll = async (req, res) => {
