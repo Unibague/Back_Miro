@@ -17,8 +17,14 @@ const rowsAsObjects = (sheet) => {
   ));
 };
 
+// Algunos Excel llegan con la Ñ dañada por la codificación ("DISE?O"): un "?"
+// entre dos letras solo puede ser una Ñ perdida, así que se restaura.
+const repairEnie = (value) => value.replace(/(?<=[A-Za-z])\?(?=[A-Za-z])/g, (_m, offset, str) => (
+  str[offset - 1] === str[offset - 1].toLowerCase() ? 'ñ' : 'Ñ'
+));
+
 const addCount = (map, key, amount = 1) => {
-  const cleanKey = String(key ?? '').trim() || 'Sin dato';
+  const cleanKey = repairEnie(String(key ?? '').trim()) || 'Sin dato';
   map.set(cleanKey, (map.get(cleanKey) || 0) + amount);
 };
 
@@ -32,6 +38,9 @@ const addCount = (map, key, amount = 1) => {
 const AREA_APOYO_PREFIXES = [
   'FACULTAD', 'AREA', 'INSTITUTO', 'DEPARTAMENTO', 'DIRECCION',
   'VICERRECTORIA', 'RECTORIA', 'OFICINA', 'COORDINACION',
+  // Dependencias administrativas que no siguen el patrón de prefijo anterior
+  // (normalizeKey quita espacios: "PAZ Y REGION" -> "PAZYREGION").
+  'GESTION', 'LABORATORIO', 'POSGRADO', 'PAZYREGION',
 ];
 const isAreaApoyoNombre = (nombre) => {
   const normalized = normalizeKey(nombre);
@@ -629,6 +638,10 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
   // grafica "Docentes por periodo" muestre la evolucion semestre a semestre
   // (ej. 2022A, 2022B) en vez de mezclar ambos semestres en un solo punto.
   const docentesPorPeriodoSets = new Map();
+  // Por periodo: documento -> true si es cátedra. Si un docente aparece con
+  // varias dedicaciones en el mismo periodo, cuenta como tiempo completo.
+  const dedicacionPorPeriodo = new Map();
+  const esCatedra = (dedicacion) => normalizeKey(dedicacion).includes('CATEDRA');
   const allDocumentos = new Set();
   let latestPeriodKey = '';
   let latestAno = '';
@@ -643,6 +656,10 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     if (ano && semestre && documento) {
       if (!docentesPorPeriodoSets.has(periodKey)) docentesPorPeriodoSets.set(periodKey, new Set());
       docentesPorPeriodoSets.get(periodKey).add(documento);
+      if (!dedicacionPorPeriodo.has(periodKey)) dedicacionPorPeriodo.set(periodKey, new Map());
+      const docentesDelPeriodo = dedicacionPorPeriodo.get(periodKey);
+      const catedra = esCatedra(row.DEDICACION);
+      docentesDelPeriodo.set(documento, docentesDelPeriodo.has(documento) ? docentesDelPeriodo.get(documento) && catedra : catedra);
     }
     if (periodKey > latestPeriodKey) {
       latestPeriodKey = periodKey;
@@ -655,10 +672,18 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
   const docentesPorAno = Array.from(docentesPorPeriodoSets.entries())
     .map(([periodKey, set]) => {
       const [ano, semestre] = periodKey.split('-');
-      return { name: `${ano}${SEMESTRE_LABEL[semestre] || semestre}`, value: set.size, sortKey: periodKey };
+      const dedicaciones = Array.from((dedicacionPorPeriodo.get(periodKey) || new Map()).values());
+      const catedra = dedicaciones.filter(Boolean).length;
+      return {
+        name: `${ano}${SEMESTRE_LABEL[semestre] || semestre}`,
+        value: set.size,
+        tiempoCompleto: dedicaciones.length - catedra,
+        catedra,
+        sortKey: periodKey,
+      };
     })
     .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
-    .map(({ name, value }) => ({ name, value }));
+    .map(({ sortKey, ...punto }) => punto);
 
   const latestContratoRows = contrato.filter(
     (row) => String(row.ANO || '').trim() === latestAno && String(row.SEMESTRE || '').trim() === latestSemestre
@@ -709,7 +734,8 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
 
   const dependenciaDetalle = Array.from(dependenciaDetalleMap.values()).sort((a, b) => b.total - a.total);
   const programasPeriodoActual = dependenciaDetalle.filter((d) => d.tipo === 'programa').slice(0, 10);
-  const areasApoyoPeriodoActual = dependenciaDetalle.filter((d) => d.tipo === 'apoyo');
+  // Solo Facultades: se excluyen Vicerrectoría, Direcciones, Oficinas, etc.
+  const facultadesPeriodoActual = dependenciaDetalle.filter((d) => d.tipo === 'apoyo' && isFacultadNombre(d.nombre));
 
   const latestEstudioRows = estudio.filter(
     (row) => String(row.ANO || '').trim() === latestAno && String(row.SEMESTRE || '').trim() === latestSemestre
@@ -732,7 +758,7 @@ const buildDocentesHistoricoSniesAnalytics = (document) => {
     escalafonPeriodoActual: sortedDistribution(escalafonCounts),
     dependenciaPeriodoActual: sortedDistribution(dependenciaCounts, 10),
     programasPeriodoActual,
-    areasApoyoPeriodoActual,
+    facultadesPeriodoActual,
     nivelFormacionPeriodoActual: sortedDistribution(nivelFormacionCounts),
     hojas: [
       buildHoja(`Contrato (${latestSemestre ? `${latestAno}-${latestSemestre}` : latestAno})`, latestContratoRows.length, [
@@ -995,7 +1021,9 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
     const curso = String(row.NOMBRECURSO || '').trim();
 
     if (beneficiario && normalizeKey(beneficiario) !== 'NOIDENTIFICADO') beneficiarios.add(beneficiario);
-    if (programa) addCount(isAreaApoyoNombre(programa) ? areaApoyoCounts : programaAcademicoCounts, programa);
+    if (programa && normalizeKey(programa) !== 'NOIDENTIFICADO') {
+      addCount(isAreaApoyoNombre(programa) ? areaApoyoCounts : programaAcademicoCounts, programa);
+    }
     if (tipoCapacitacion) addCount(tipoCapacitacionCounts, tipoCapacitacion);
     if (tipoCurso) addCount(tipoCursoCounts, tipoCurso);
     if (curso) addCount(cursoCounts, curso);
@@ -1011,7 +1039,7 @@ const buildCapacitacionFuncionariosAnalytics = (document) => {
     porTipoCapacitacion: sortedDistribution(tipoCapacitacionCounts),
     porTipoCurso: sortedDistribution(tipoCursoCounts),
     porProgramaAcademico: sortedDistribution(programaAcademicoCounts, 10),
-    porAreaApoyo: sortedDistribution(areaApoyoCounts, 10),
+    porAreaApoyo: sortedDistribution(areaApoyoCounts),
     topCursos: sortedDistribution(cursoCounts, 10),
     hojas: [
       buildHoja('Capacitación y Formación de Funcionarios', rows.length, [
@@ -1352,15 +1380,28 @@ const buildGruposInvestigacionAnalytics = (document) => {
   const facultadCounts = new Map();
   const programaCounts = new Map();
   const anioCreacionCounts = new Map();
+  const gruposPorAnio = new Map();
   rows.forEach((row) => {
     addCount(clasificacionCounts, row.CLASIFICACIONDELGRUPOENMINCIENCIAS || 'Sin clasificar');
     const programa = String(row.PROGRAMAODEPENDENCIA || '').trim();
     if (programa) addCount(isFacultadNombre(programa) ? facultadCounts : programaCounts, programa);
     const anio = parseYear(row.FECHADECREACION);
-    if (anio) addCount(anioCreacionCounts, String(anio));
+    if (anio) {
+      addCount(anioCreacionCounts, String(anio));
+      const nombreGrupo = repairEnie(String(row.NOMBREGRUPO || row.CODIGOGRUPOMINCIENCIAS || '').trim());
+      if (nombreGrupo) {
+        if (!gruposPorAnio.has(String(anio))) gruposPorAnio.set(String(anio), []);
+        gruposPorAnio.get(String(anio)).push(nombreGrupo);
+      }
+    }
   });
 
-  const porAnioCreacion = sortedByYear(anioCreacionCounts);
+  // Cada año lleva el nombre de los grupos creados en él, para mostrarlos en
+  // la gráfica "Grupos por año de creación".
+  const porAnioCreacion = sortedByYear(anioCreacionCounts).map((item) => ({
+    ...item,
+    grupos: (gruposPorAnio.get(item.name) || []).sort((a, b) => a.localeCompare(b, 'es')),
+  }));
 
   return {
     fileId: String(document._id),
@@ -1587,21 +1628,29 @@ const buildTrabajoGradoAnalytics = (document) => {
   const estadoCounts = new Map();
   const mencionCounts = new Map();
   const grupoCounts = new Map();
-  // "Programa o dependencia" (columna resuelta a partir de Nombre
-  // identificado) es la dependencia del DIRECTOR de la tesis, no el programa
-  // del estudiante — por eso para "estudiantes por programa" se usa la
-  // columna "Dependencia" del inicio de la fila, que es el programa/área
-  // académica al que pertenece el trabajo de grado en sí.
+  // "Estudiantes por programa" usa la columna PROGRAMA_ESTUDIANTE, que se
+  // calcula UNA sola vez al guardar el archivo en Consulta de Información (a
+  // partir de NUM_DOCUMENTO_Estudiante, ver services/studentsDirectory.js).
+  // Ni "Programa o dependencia" (es la del director) ni "Dependencia" (es el
+  // departamento que reporta) sirven para eso. Cada estudiante se cuenta una
+  // sola vez aunque aparezca en varias filas (varios trabajos).
+  const tieneProgramaEstudiante = (sheet?.headers || []).some((h) => normalizeKey(h) === 'PROGRAMAESTUDIANTE');
   const programaEstudianteCounts = new Map();
+  const estudiantesContados = new Set();
 
   rows.forEach((row) => {
     const tesis = String(row.NOMBREDELATESIS || '').trim();
     const director = String(row.NOMBREIDENTIFICADO || '').trim();
-    const programaEstudiante = String(row.DEPENDENCIA || '').trim();
 
     if (tesis) trabajos.add(tesis);
     if (director && normalizeKey(director) !== 'NOIDENTIFICADO') directores.add(director);
-    if (programaEstudiante) addCount(programaEstudianteCounts, programaEstudiante);
+
+    const programaEstudiante = String(row.PROGRAMAESTUDIANTE || '').trim();
+    const documentoEstudiante = String(row.NUMDOCUMENTOESTUDIANTE || '').trim();
+    if (programaEstudiante && !(documentoEstudiante && estudiantesContados.has(documentoEstudiante))) {
+      if (documentoEstudiante) estudiantesContados.add(documentoEstudiante);
+      addCount(programaEstudianteCounts, programaEstudiante);
+    }
 
     addCount(modalidadCounts, resolveTrabajoGradoModalidad(row.MODALIDAD));
     addCount(estadoCounts, row.ESTADO || 'Sin dato');
@@ -1619,7 +1668,10 @@ const buildTrabajoGradoAnalytics = (document) => {
     porEstado: sortedDistribution(estadoCounts),
     porMencion: sortedDistribution(mencionCounts),
     porGrupo: sortedDistribution(grupoCounts, 10),
-    porPrograma: sortedDistribution(programaEstudianteCounts, 10),
+    porPrograma: sortedDistribution(programaEstudianteCounts),
+    // false = archivo guardado antes de este cambio o sin
+    // NUM_DOCUMENTO_Estudiante: no trae el programa de los estudiantes.
+    tieneProgramaEstudiante,
     hojas: [
       buildHoja('Trabajo de Grado', rows.length, [
         donutBreakdown('Por modalidad', modalidadCounts),
@@ -1660,23 +1712,70 @@ const buildFullNameFromParts = (row) => [row.PRIMERNOMBRE, row.SEGUNDONOMBRE, ro
 // como código en vez de arriesgar un nombre incorrecto.
 const PAIS_ISO_NUMERIC = {
   '0': 'No aplica',
+  '32': 'Argentina',
+  '36': 'Australia',
+  '40': 'Austria',
+  '56': 'Bélgica',
+  '68': 'Bolivia',
+  '76': 'Brasil',
+  '124': 'Canadá',
   '152': 'Chile',
+  '156': 'China',
   '170': 'Colombia',
   '188': 'Costa Rica',
+  '192': 'Cuba',
   '203': 'República Checa',
+  '208': 'Dinamarca',
+  '214': 'República Dominicana',
+  '218': 'Ecuador',
+  '222': 'El Salvador',
+  '246': 'Finlandia',
+  '250': 'Francia',
+  '276': 'Alemania',
+  '300': 'Grecia',
   '320': 'Guatemala',
+  '340': 'Honduras',
+  '356': 'India',
+  '372': 'Irlanda',
+  '376': 'Israel',
   '380': 'Italia',
+  '392': 'Japón',
+  '410': 'Corea del Sur',
   '484': 'México',
+  '528': 'Países Bajos',
+  '554': 'Nueva Zelanda',
+  '558': 'Nicaragua',
   '578': 'Noruega',
+  '591': 'Panamá',
+  '600': 'Paraguay',
   '604': 'Perú',
+  '616': 'Polonia',
+  '620': 'Portugal',
   '630': 'Puerto Rico',
   '642': 'Rumania',
+  '643': 'Rusia',
   '724': 'España',
+  '752': 'Suecia',
+  '756': 'Suiza',
+  '826': 'Reino Unido',
+  '840': 'Estados Unidos',
+  '858': 'Uruguay',
+  '862': 'Venezuela',
 };
+// El valor puede venir como código solo ("170") o como "código - descripción"
+// ("170 - SIN DESCRIPCION", "170 - Colombia"): se toma el código numérico del
+// inicio para traducirlo; si no está en la tabla, se usa la descripción que
+// traiga (salvo "SIN DESCRIPCION") y, como último recurso, el valor tal cual.
 const paisLabel = (code) => {
   const raw = String(code ?? '').trim();
   if (!raw) return '';
-  return PAIS_ISO_NUMERIC[raw] || raw;
+  const match = raw.match(/^(\d+)\s*(?:-\s*(.*))?$/);
+  if (!match) return raw;
+  const numeric = String(Number(match[1]));
+  if (PAIS_ISO_NUMERIC[numeric]) return PAIS_ISO_NUMERIC[numeric];
+  const descripcion = String(match[2] || '').trim();
+  if (descripcion && normalizeKey(descripcion) !== 'SINDESCRIPCION') return descripcion;
+  return raw;
 };
 
 // TIPO_MOVILIDAD debe traer el tipo de actividad de movilidad (Pasantía o

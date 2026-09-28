@@ -49,6 +49,10 @@ const historicoDocentesSchema = new mongoose.Schema(
     // Plantilla), referencia el archivo original — permite reemplazar la
     // copia si se vuelve a agregar, en vez de duplicarla.
     cloned_from: { type: mongoose.Schema.Types.ObjectId, ref: 'HistoricoDocentes', default: null },
+    // Cifras calculadas UNA sola vez al guardar el archivo (ej. total de
+    // matriculados), para que el Tablero las lea tal cual sin recontar. Ver
+    // services/historicoResumen.js. null = aún no calculado.
+    resumen: { type: mongoose.Schema.Types.Mixed, default: null },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

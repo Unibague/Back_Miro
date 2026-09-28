@@ -2,6 +2,8 @@ const fs = require("fs");
 const ExcelJS = require("exceljs");
 const HistoricoDocentes = require("../models/historicoDocentes");
 const UserService = require("../services/users");
+const { addStudentProgramColumn } = require("../services/studentsDirectory");
+const { buildResumenArchivo } = require("../services/historicoResumen");
 const {
   downloadDriveFileBuffer,
 } = require("../config/googleDrive");
@@ -267,6 +269,7 @@ controller.cloneToDimension = async (req, res) => {
           excel_data: source.excel_data,
           pdf_data: source.pdf_data,
           sheets: source.sheets,
+          resumen: source.resumen || buildResumenArchivo(source.file_name, source.sheets),
           category,
           // El listado de un ámbito filtra por período seleccionado (igual
           // que las demás plantillas): sin esto, la copia quedaba con
@@ -349,6 +352,9 @@ controller.upload = async (req, res) => {
         fs.unlinkSync(req.file.path);
         return res.status(400).json({ message: "El archivo no contiene hojas válidas." });
       }
+      // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
+      // vez al subir y guardado como columna fija PROGRAMA_ESTUDIANTE.
+      sheets = await addStudentProgramColumn(sheets);
     }
 
     // Solo para SNIES se reemplaza el archivo anterior
@@ -363,6 +369,8 @@ controller.upload = async (req, res) => {
       excel_data: isExcel ? buffer : null,
       pdf_data: isPdf ? buffer : null,
       sheets,
+      // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
+      resumen: isExcel ? buildResumenArchivo(fileName, sheets) : null,
       category,
       period: (category !== 'snies' && req.body.periodId) ? req.body.periodId : null,
       dimension: (category !== 'snies' && req.body.dimensionId) ? req.body.dimensionId : null,
@@ -530,6 +538,18 @@ const DOCUMENT_HEADER_NAMES = new Set([
   "CEDULA", "NUMEROCEDULA", "CEDULACIUDADANIA", "CEDULADECIUDADANIA",
   "DOCIDENTIDAD",
 ]);
+// Variantes con sufijo de rol (ej. "NUM_DOCUMENTO_Estudiante",
+// "NUM_DOCUMENTO_Docente Tutor", "Cédula del director"): se ocultan por
+// prefijo. Ninguno empieza por "TIPO", así que ID_TIPO_DOCUMENTO_* se conserva.
+const DOCUMENT_HEADER_PREFIXES = [
+  "NUMDOCUMENTO", "NUMERODOCUMENTO", "NUMERODEDOCUMENTO", "NRODOCUMENTO", "NODOCUMENTO",
+  "NUMEROIDENTIFICACION", "NUMERODEIDENTIFICACION", "NROIDENTIFICACION", "NOIDENTIFICACION",
+  "CEDULA", "NUMEROCEDULA",
+];
+const isDocumentHeader = (h) => {
+  const collapsed = collapseHeader(h);
+  return DOCUMENT_HEADER_NAMES.has(collapsed) || DOCUMENT_HEADER_PREFIXES.some((prefix) => collapsed.startsWith(prefix));
+};
 
 const isRequesterAdmin = async (email) => {
   try {
@@ -543,7 +563,7 @@ const isRequesterAdmin = async (email) => {
 // Quita las columnas de documento/cedula de un header+rows (una sola hoja).
 const stripDocumentColumn = (headers, rows) => {
   const dropIndexes = headers
-    .map((h, index) => (DOCUMENT_HEADER_NAMES.has(collapseHeader(h)) ? index : -1))
+    .map((h, index) => (isDocumentHeader(h) ? index : -1))
     .filter((index) => index >= 0);
   if (dropIndexes.length === 0) return { headers, rows };
 
@@ -707,8 +727,12 @@ controller.downloadFile = async (req, res) => {
       return res.send(registro.pdf_data);
     }
 
+    // El Excel original (Drive/excel_data) trae la cédula tal como se subió:
+    // solo se entrega al Administrador. Para cualquier otro rol se reconstruye
+    // desde "sheets" sin las columnas de documento, igual que en getData.
+    const isAdmin = await isRequesterAdmin(email);
     let buffer = null;
-    if (registro.drive_file_id) {
+    if (isAdmin && registro.drive_file_id) {
       try {
         buffer = await downloadDriveFileBuffer(registro.drive_file_id);
       } catch (driveError) {
@@ -716,15 +740,11 @@ controller.downloadFile = async (req, res) => {
       }
     }
 
-    if (!buffer && registro.excel_data) {
+    if (isAdmin && !buffer && registro.excel_data) {
       buffer = registro.excel_data;
     }
 
     if (!buffer) {
-      // Reconstruido a partir de "sheets" (no hay archivo original en Drive/
-      // local): igual que en getData, la cedula solo va en la descarga si
-      // quien la pide es Administrador.
-      const isAdmin = await isRequesterAdmin(email);
       const sheetsToExport = isAdmin ? registro.sheets : stripDocumentColumnFromSheets(registro.sheets);
       buffer = await buildWorkbookBufferFromSheets(sheetsToExport);
     }
