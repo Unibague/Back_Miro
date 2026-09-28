@@ -24,6 +24,8 @@ const HistoricoDocentes = require('../models/historicoDocentes');
 const simpleCache = require('../helpers/simpleCache');
 
 const axios = require('axios');
+const { addStudentProgramColumn } = require('../services/studentsDirectory');
+const { buildResumenArchivo } = require('../services/historicoResumen');
 
 const publTempController = {};
 
@@ -4323,6 +4325,10 @@ publTempController.confirmFinalSubmit = async (req, res) => {
 
         if (sheets.length === 0) return;
 
+        // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
+        // vez aquí y guardado como columna fija PROGRAMA_ESTUDIANTE.
+        const sheetsToSave = await addStudentProgramColumn(sheets);
+
         const fileName = `${pubTem.name || "plantilla"}.xlsx`;
         const periodId = pubTem.period?._id || pubTem.period;
         const uploadedBy = { full_name: user.full_name || user.name || email, email };
@@ -4343,7 +4349,9 @@ publTempController.confirmFinalSubmit = async (req, res) => {
                 file_name: fileName,
                 uploaded_by: uploadedBy,
                 file_type: "excel",
-                sheets,
+                sheets: sheetsToSave,
+                // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
+                resumen: buildResumenArchivo(fileName, sheetsToSave),
                 category: "plantillas",
                 period: periodId,
                 dimension: dimensionId,

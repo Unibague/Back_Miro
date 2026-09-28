@@ -6,6 +6,7 @@ const Template = require('../models/templates');
 const PublishedTemplate = require('../models/publishedTemplates');
 const Validator = require('../models/validators');
 const HistoricoDocentes = require('../models/historicoDocentes');
+const { buildResumenArchivo, isMatriculadosFile } = require('../services/historicoResumen');
 const {
   buildActividadBienestarAnalytics,
   isActividadBienestarFile,
@@ -607,7 +608,7 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
       Validator.find().select('name columns').lean(),
       Dependency.find().select('dep_code name').lean(),
       HistoricoDocentes.find(historicQuery)
-        .select('_id file_name dimension period sheets createdAt')
+        .select('_id file_name dimension period sheets resumen createdAt')
         .sort({ createdAt: -1 })
         .lean(),
     ]);
@@ -634,6 +635,7 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
     var redesInvestigacionByDimension = new Map();
     var semillerosParticipantesByDimension = new Map();
     var trabajoGradoByDimension = new Map();
+    var matriculadosByDimension = new Map();
     var movilidadEntranteEstudiantesByDimension = new Map();
     var movilidadEntranteFuncionariosByDimension = new Map();
     var movilidadSalienteEstudiantesByDimension = new Map();
@@ -736,6 +738,23 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
       if (!semillerosParticipantesByDimension.has(dimensionId) && isSemillerosParticipantesFile(document.file_name)) {
         var semillerosAnalytics = buildSemillerosParticipantesAnalytics(document);
         if (semillerosAnalytics) semillerosParticipantesByDimension.set(dimensionId, semillerosAnalytics);
+      }
+
+      // Total de matriculados: se lee del "resumen" fijo calculado al guardar
+      // el archivo. Un archivo subido antes de este cambio no lo tiene: se
+      // calcula esta única vez y se deja guardado para no volver a contarlo.
+      if (!matriculadosByDimension.has(dimensionId) && isMatriculadosFile(document.file_name)) {
+        var resumenMatriculados = document.resumen;
+        if (!resumenMatriculados || resumenMatriculados.tipo !== 'matriculados') {
+          resumenMatriculados = buildResumenArchivo(document.file_name, document.sheets);
+          if (resumenMatriculados) {
+            HistoricoDocentes.updateOne({ _id: document._id }, { $set: { resumen: resumenMatriculados } })
+              .catch(function (err) { console.error('[Tablero] No se pudo guardar el resumen de matriculados:', err.message); });
+          }
+        }
+        if (resumenMatriculados) {
+          matriculadosByDimension.set(dimensionId, Object.assign({ fileName: document.file_name }, resumenMatriculados));
+        }
       }
 
       if (!trabajoGradoByDimension.has(dimensionId) && isTrabajoGradoFile(document.file_name)) {
@@ -934,6 +953,7 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
         redesInvestigacion: redesInvestigacionByDimension.get(dimId) || null,
         semillerosParticipantes: semillerosParticipantesByDimension.get(dimId) || null,
         trabajoGrado: trabajoGradoByDimension.get(dimId) || null,
+        matriculados: matriculadosByDimension.get(dimId) || null,
         movilidadEntranteEstudiantes: movilidadEntranteEstudiantesByDimension.get(dimId) || null,
         movilidadEntranteFuncionarios: movilidadEntranteFuncionariosByDimension.get(dimId) || null,
         movilidadSalienteEstudiantes: movilidadSalienteEstudiantesByDimension.get(dimId) || null,
