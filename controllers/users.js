@@ -10,6 +10,8 @@ const { default: mongoose } = require('mongoose');
 const periodController = require('./periods.js');
 const PendingUserChanges = require('../models/pendingUserChanges');
 const auditLogger = require('../services/auditLogger');
+const { isPdiAsignado } = require('../services/pdiAsignacion');
+const { getMergedViewPermissions, resolveProfiles, inferProfileRole, ROLES: PROFILE_ROLES } = require('../services/viewPermissionsResolver');
 
 const userController = {}
 
@@ -456,60 +458,40 @@ userController.getUserRoles = async (req, res) => {
             return res.status(404).json({ error: "User not found" });
         }
 
-        const normalizedPosition = normalizePosition(user.position);
-        const normalizedIdentification = normalizeIdentification(user.identification);
+        // Permisos del rol ACTIVO: solo cuentan los perfiles de ese rol, cada
+        // uno con sus propios permisos (ver services/viewPermissionsResolver.js).
+        const {
+            hasProfile,
+            profiles: roleProfiles,
+            viewPermissions: mergedPermissions,
+            allowedDependencies: mergedAllowedDependencies,
+            allowedDimensions: mergedAllowedDimensions,
+        } = await getMergedViewPermissions(user);
 
-        // Buscar perfiles que contengan este cargo (y no la hayan excluido
-        // individualmente) o que incluyan a la persona individualmente
-        const profilesWithPosition = await AccessProfile.find({
-            $or: [
-                { individualMembers: normalizedIdentification },
-                {
-                    positions: normalizedPosition,
-                    excludedMembers: { $ne: normalizedIdentification }
-                }
-            ]
-        }).lean();
+        console.log(`[getUserRoles] user=${email} role=${user.activeRole} profiles=${roleProfiles.map(p => p.name).join('|') || '-'} keys=${Object.keys(mergedPermissions).length}`);
 
-        // Recopilar todos los cargos: el del usuario + los de todos sus perfiles
-        const profilePositionNames = profilesWithPosition.flatMap(p => normalizePositions(p.positions || []));
-        const allPositionNames = Array.from(new Set([normalizedPosition, ...profilePositionNames]));
-
-        // Buscar permisos de todos esos cargos
-        const allPermissionDocs = await PositionViewPermission.find({ position: { $in: allPositionNames } });
-
-        // Fusionar todos los permisos encontrados
-        const mergedPermissions = allPermissionDocs.reduce((merged, doc) => {
-            const perms = typeof doc.permissions.toObject === 'function' ? doc.permissions.toObject() : doc.permissions || {};
-            Object.entries(perms).forEach(([key, levels]) => {
-                if (!merged[key]) merged[key] = [];
-                merged[key] = Array.from(new Set([...merged[key], ...(Array.isArray(levels) ? levels : [])]));
-            });
-            return merged;
-        }, {});
-
-        // Fusionar allowed_dependencies: [] = acceso a todos, lista = solo esos
-        // Si algún cargo tiene [] (sin restricción) o no hay docs, el resultado es [] (sin restricción)
-        // Si todos tienen listas específicas, el resultado es la unión
-        const mergedAllowedDependencies = (allPermissionDocs.length === 0 || allPermissionDocs.some(doc => (doc.allowed_dependencies || []).length === 0))
-            ? []
-            : Array.from(new Set(allPermissionDocs.flatMap(doc => (doc.allowed_dependencies || []).map(id => String(id)))));
-
-        const mergedAllowedDimensions = (allPermissionDocs.length === 0 || allPermissionDocs.some(doc => (doc.allowed_dimensions || []).length === 0))
-            ? []
-            : Array.from(new Set(allPermissionDocs.flatMap(doc => (doc.allowed_dimensions || []).map(id => String(id)))));
-
-        console.log(`[getUserRoles] user=${email} position=${normalizedPosition} profiles=${profilesWithPosition.length} permDocs=${allPermissionDocs.length} keys=${Object.keys(mergedPermissions).join(',')}`);
+        // Tiene proyectos/acciones/indicadores PDI a su cargo: ve "Mis
+        // proyectos PDI" sin importar rol ni perfil (ver services/pdiAsignacion.js).
+        let pdiAsignado = false;
+        try {
+            pdiAsignado = await isPdiAsignado({ email: user.email, fullName: user.full_name });
+        } catch (pdiError) {
+            console.error('[getUserRoles] No se pudo verificar asignación PDI:', pdiError.message);
+        }
 
         res.status(200).json({
             roles: user.roles,
             activeRole: user.activeRole,
             profiles: user.profiles || [],
             position: user.position,
-            accessProfiles: profilesWithPosition.map(p => p._id.toString()),
+            accessProfiles: roleProfiles.map(p => p._id.toString()),
+            // true = sus permisos los decide el perfil (aunque no tenga ninguno
+            // del rol activo); false = sin perfiles, el rol decide todo.
+            hasProfile,
             viewPermissions: normalizeViewPermissions(mergedPermissions),
             allowedDependencies: mergedAllowedDependencies,
-            allowedDimensions: mergedAllowedDimensions
+            allowedDimensions: mergedAllowedDimensions,
+            pdiAsignado
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -777,7 +759,7 @@ userController.getAccessProfiles = async (req, res) => {
 };
 
 userController.createAccessProfile = async (req, res) => {
-    const { name, positions = [], adminEmail } = req.body;
+    const { name, positions = [], adminEmail, role } = req.body;
 
     try {
         const normalizedName = normalizeProfileName(name);
@@ -804,9 +786,16 @@ userController.createAccessProfile = async (req, res) => {
             return res.status(409).json({ error: "A profile with that name already exists" });
         }
 
+        if (role && !PROFILE_ROLES.includes(role)) {
+            return res.status(400).json({ error: "Rol de perfil no válido" });
+        }
+
         const accessProfile = await AccessProfile.create({
             name: normalizedName,
             positions: normalizedPositions,
+            // Rol al que aplica el perfil; sin rol se deduce del nombre/vistas.
+            role: role || undefined,
+            permissions: {},
             createdBy: adminEmail,
             updatedBy: adminEmail
         });
@@ -1043,6 +1032,10 @@ userController.getPositionViewPermissions = async (req, res) => {
             : [];
         const excludedMembersSet = new Set(requestedExcludedMembers);
 
+        // Perfil: sus permisos PROPIOS (o, si aún no se han guardado, los que se
+        // deducen de su cargo) y su rol, en vez de la suma de los cargos.
+        const [resolvedProfile] = requestedProfile ? await resolveProfiles([requestedProfile]) : [];
+
         res.status(200).json({
             levels: profiles,
             views: viewPermissionOptions,
@@ -1052,6 +1045,8 @@ userController.getPositionViewPermissions = async (req, res) => {
                 ? {
                     _id: requestedProfile._id,
                     name: requestedProfile.name,
+                    role: resolvedProfile?.role || null,
+                    roleIsInferred: !requestedProfile.role,
                     positions: requestedPositions,
                     individualMembers: requestedIndividualMembers,
                     excludedMembers: requestedExcludedMembers,
@@ -1072,11 +1067,11 @@ userController.getPositionViewPermissions = async (req, res) => {
                     position: positionName,
                     usersCount: visibleUsers.length,
                     users: visibleUsers,
-                    permissions: normalizeViewPermissions(saved?.permissions || {}),
-                    allowed_dimensions: (saved?.allowed_dimensions || []).map(id => String(id)),
-                    allowed_dependencies: (saved?.allowed_dependencies || []).map(id => String(id)),
-                    updatedBy: saved?.updatedBy || null,
-                    updatedAt: saved?.updatedAt || null
+                    permissions: normalizeViewPermissions(resolvedProfile ? resolvedProfile.permissions : saved?.permissions || {}),
+                    allowed_dimensions: resolvedProfile ? resolvedProfile.allowed_dimensions : (saved?.allowed_dimensions || []).map(id => String(id)),
+                    allowed_dependencies: resolvedProfile ? resolvedProfile.allowed_dependencies : (saved?.allowed_dependencies || []).map(id => String(id)),
+                    updatedBy: (resolvedProfile && !resolvedProfile.fromLegacy ? requestedProfile.updatedBy : saved?.updatedBy) || null,
+                    updatedAt: (resolvedProfile && !resolvedProfile.fromLegacy ? requestedProfile.updatedAt : saved?.updatedAt) || null
                 };
             }),
             individualUsers
@@ -1343,7 +1338,7 @@ userController.removeUserFromPosition = async (req, res) => {
 };
 
 userController.updatePositionViewPermissions = async (req, res) => {
-    const { position, positions = [], profileId, permissions = {}, adminEmail, allowed_dimensions = [], allowed_dependencies = [] } = req.body;
+    const { position, positions = [], profileId, permissions = {}, adminEmail, allowed_dimensions = [], allowed_dependencies = [], role } = req.body;
 
     try {
         let accessProfile = null;
@@ -1382,6 +1377,57 @@ userController.updatePositionViewPermissions = async (req, res) => {
         const totalPermissions = Object.values(normalizedPermissions).reduce((count, profiles) => count + profiles.length, 0);
         if (totalPermissions === 0) {
             return res.status(400).json({ error: "Debe seleccionar al menos un permiso de vista antes de guardar" });
+        }
+
+        // Perfil: los permisos se guardan EN EL PERFIL (con su rol), no en los
+        // cargos. Antes se escribían en cada cargo del perfil y dos perfiles que
+        // compartían un cargo se sobrescribían entre sí.
+        if (accessProfile) {
+            if (role !== undefined && role !== null && !PROFILE_ROLES.includes(role)) {
+                return res.status(400).json({ error: "Rol de perfil no válido" });
+            }
+            const validIds = (ids) => (ids || []).filter(id => mongoose.Types.ObjectId.isValid(id));
+            const updatedProfile = await AccessProfile.findByIdAndUpdate(
+                accessProfile._id,
+                {
+                    permissions: normalizedPermissions,
+                    allowed_dimensions: validIds(allowed_dimensions),
+                    allowed_dependencies: validIds(allowed_dependencies),
+                    ...(role ? { role } : {}),
+                    updatedBy: adminEmail,
+                },
+                { new: true }
+            ).lean();
+
+            await auditLogger.logUpdate(req, adminUser, 'user', {
+                sectionTitle: `Permisos perfil ${updatedProfile.name}`,
+                userEmail: adminEmail,
+                profile: { id: updatedProfile._id, name: updatedProfile.name, role: updatedProfile.role },
+                positions: normalizedPositions,
+                viewPermissions: normalizedPermissions
+            });
+
+            const profilePermissions = normalizeViewPermissions(updatedProfile.permissions || {});
+            return res.status(200).json({
+                profile: {
+                    _id: updatedProfile._id,
+                    name: updatedProfile.name,
+                    role: updatedProfile.role,
+                    positions: normalizedPositions
+                },
+                positions: normalizedPositions.map((positionName) => ({
+                    position: positionName,
+                    permissions: profilePermissions,
+                    allowed_dimensions: (updatedProfile.allowed_dimensions || []).map(String),
+                    allowed_dependencies: (updatedProfile.allowed_dependencies || []).map(String),
+                    updatedBy: updatedProfile.updatedBy,
+                    updatedAt: updatedProfile.updatedAt
+                })),
+                position: normalizedPositions[0],
+                permissions: profilePermissions,
+                updatedBy: updatedProfile.updatedBy,
+                updatedAt: updatedProfile.updatedAt
+            });
         }
 
         const permissionConfigs = await Promise.all(

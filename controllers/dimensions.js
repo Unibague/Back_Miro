@@ -7,6 +7,8 @@ const PublishedTemplate = require('../models/publishedTemplates');
 const Validator = require('../models/validators');
 const HistoricoDocentes = require('../models/historicoDocentes');
 const { buildResumenArchivo, isMatriculadosFile } = require('../services/historicoResumen');
+const { getPoblacionEstudiantil } = require('../services/poblacionEstudiantil');
+const Period = require('../models/periods');
 const {
   buildActividadBienestarAnalytics,
   isActividadBienestarFile,
@@ -613,6 +615,10 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
         .lean(),
     ]);
     var dimensions = results[0];
+    // Población estudiantil oficial (Admisiones y Registro) del periodo
+    // elegido, para el ámbito Comunidad de Estudiantes.
+    var selectedPeriod = periodId ? await Period.findById(periodId).select('name').lean() : null;
+    var poblacionEstudiantil = selectedPeriod ? getPoblacionEstudiantil(selectedPeriod.name) : null;
     var templates = results[1];
     var resolversByValidator = buildValidatorResolvers(results[2]);
     var dependencyNameByCode = new Map(
@@ -954,6 +960,7 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
         semillerosParticipantes: semillerosParticipantesByDimension.get(dimId) || null,
         trabajoGrado: trabajoGradoByDimension.get(dimId) || null,
         matriculados: matriculadosByDimension.get(dimId) || null,
+        poblacionEstudiantil: normKey(dimension.name) === 'COMUNIDADDEESTUDIANTES' ? poblacionEstudiantil : null,
         movilidadEntranteEstudiantes: movilidadEntranteEstudiantesByDimension.get(dimId) || null,
         movilidadEntranteFuncionarios: movilidadEntranteFuncionariosByDimension.get(dimId) || null,
         movilidadSalienteEstudiantes: movilidadSalienteEstudiantesByDimension.get(dimId) || null,

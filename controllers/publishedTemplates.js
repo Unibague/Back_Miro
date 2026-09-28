@@ -7,8 +7,7 @@ const Period = require('../models/periods.js')
 const Dimension = require('../models/dimensions.js')
 const Dependency = require('../models/dependencies.js')
 const User = require('../models/users.js')
-const PositionViewPermission = require('../models/positionViewPermissions.js')
-const AccessProfile = require('../models/accessProfiles.js')
+const { getMergedViewPermissions } = require('../services/viewPermissionsResolver');
 const Validator = require('./validators.js');
 const Log = require('../models/logs');
 const UserService = require('../services/users.js');
@@ -1240,25 +1239,16 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
       const cacheKey = Number.isFinite(userIdentification)
         ? `positionPerms:${userPosition}:${userIdentification}`
         : `positionPerms:${userPosition}`;
-      const permDocs = await simpleCache.getOrSet(cacheKey, 60000, async () => {
-        const profilesWithPos = await AccessProfile.find({
-          $or: [
-            ...(Number.isFinite(userIdentification) ? [{ individualMembers: userIdentification }] : []),
-            {
-              positions: userPosition,
-              ...(Number.isFinite(userIdentification) ? { excludedMembers: { $ne: userIdentification } } : {})
-            }
-          ]
-        }).lean();
-        const profilePositionNames = profilesWithPos.flatMap(p => (p.positions || []).map(pos => (pos || '').trim() || 'Sin cargo'));
-        const allPositionNames = Array.from(new Set([userPosition, ...profilePositionNames]));
-        return PositionViewPermission.find({ position: { $in: allPositionNames } }).lean();
+      const allowedDependencies = await simpleCache.getOrSet(`${cacheKey}:${activeRole}`, 60000, async () => {
+        // Solo cuentan los perfiles del rol activo (ver services/viewPermissionsResolver.js)
+        const { allowedDependencies: deps } = await getMergedViewPermissions(user, activeRole);
+        return deps;
       });
 
-      // Si todos los docs tienen allowed_dependencies específicas (ninguna vacía), aplicar filtro
-      const hasSpecificDepFilter = permDocs.length > 0 && permDocs.every(doc => (doc.allowed_dependencies || []).length > 0);
+      // Si los perfiles del rol activo restringen dependencias, aplicar filtro
+      const hasSpecificDepFilter = allowedDependencies.length > 0;
       if (hasSpecificDepFilter) {
-        const allowedDepIds = Array.from(new Set(permDocs.flatMap(doc => (doc.allowed_dependencies || []).map(id => String(id)))));
+        const allowedDepIds = allowedDependencies;
         const allowedObjectIds = allowedDepIds.map(id => new mongoose.Types.ObjectId(id));
         // Combinar con el query existente usando $and para no sobreescribir filtros ya aplicados
         const baseQuery = { ...query };
