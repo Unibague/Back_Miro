@@ -3,7 +3,7 @@ const { buildUrl, deleteFile, MAX_FILE_SIZE_BYTES } = require('../services/pdiFo
 const Respuesta = require('../models/pdiFormularioRespuesta');
 const fs = require('fs/promises');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
-const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
+const { getHierarchyForIndicador, withCorte } = require('../services/pdiDriveHierarchy');
 const { sendIndicadorUploadNotification } = require('../services/pdiIndicadorUploadNotification');
 
 const ctrl = {};
@@ -12,11 +12,11 @@ function fixFilename(originalname) {
     try { return Buffer.from(originalname, 'latin1').toString('utf8'); } catch { return originalname; }
 }
 
-async function uploadFormularioFileToDrive(file, indicadorId) {
+async function uploadFormularioFileToDrive(file, indicadorId, corte) {
     if (!indicadorId) return null;
     const { jerarquia } = await getHierarchyForIndicador(indicadorId);
     const buffer = await fs.readFile(file.path);
-    return uploadDriveFile(buffer, fixFilename(file.originalname), file.mimetype, jerarquia);
+    return uploadDriveFile(buffer, fixFilename(file.originalname), file.mimetype, withCorte(jerarquia, corte));
 }
 
 function applyDriveFileData(base, uploaded) {
@@ -405,7 +405,7 @@ ctrl.uploadArchivo = async (req, res) => {
 
         const campoId = req.params.campoId;
         const idx = doc.respuestas.findIndex(r => r.campo_id.toString() === campoId);
-        uploaded = await uploadFormularioFileToDrive(req.file, doc.indicador_id);
+        uploaded = await uploadFormularioFileToDrive(req.file, doc.indicador_id, doc.corte);
         if (uploaded) deleteFile(req.file.filename);
 
         const archivoData = applyDriveFileData({
@@ -500,7 +500,7 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
         for (const file of files) {
             let driveData = null;
             try {
-                driveData = await uploadFormularioFileToDrive(file, doc.indicador_id);
+                driveData = await uploadFormularioFileToDrive(file, doc.indicador_id, doc.corte);
                 if (driveData) deleteFile(file.filename);
             } catch (_) { }
             doc.documentos.push(buildDocumentoFromFile(file, driveData));

@@ -15,6 +15,7 @@ const {
     getHierarchyForAccion,
     getHierarchyForProyecto,
     getHierarchyForMacro,
+    withCorte,
 } = require('../services/pdiDriveHierarchy');
 
 const ctrl = {};
@@ -48,12 +49,12 @@ function adjuntarRespuestasAIndicadores(indicadores, respuestasPorIndicador) {
     }));
 }
 
-async function uploadInformeToDrive(generated, jerarquia) {
+async function uploadInformeToDrive(generated, jerarquia, corte) {
     const uploaded = await uploadDriveFile(
         generated.buffer,
         generated.filename,
         generated.mimetype,
-        jerarquia
+        withCorte(jerarquia, corte)
     );
 
     return {
@@ -80,7 +81,7 @@ ctrl.informeIndicador = async (req, res) => {
             corte,
         });
         const { jerarquia } = await getHierarchyForIndicador(indicador);
-        const payload = await uploadInformeToDrive(generated, jerarquia);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
         res.json(payload);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -100,7 +101,7 @@ ctrl.informeAccion = async (req, res) => {
 
         const generated = await generarInformeAccion({ accion, indicadores, respuestasPorIndicador, corte });
         const { jerarquia } = await getHierarchyForAccion(accion);
-        const payload = await uploadInformeToDrive(generated, jerarquia);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
         res.json(payload);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -135,7 +136,7 @@ ctrl.informeProyecto = async (req, res) => {
 
         const generated = await generarInformeProyecto({ proyecto: proyecto.toObject(), acciones, indicadoresPorAccion, respuestasPorIndicador, corte });
         const { jerarquia } = await getHierarchyForProyecto(proyecto.toObject());
-        const payload = await uploadInformeToDrive(generated, jerarquia);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
 
         proyecto.informe_drive_file_id      = payload.drive_file_id;
         proyecto.informe_drive_web_view_link = payload.drive_web_view_link;
@@ -182,7 +183,7 @@ ctrl.informeMacro = async (req, res) => {
 
         const generated = await generarInformeMacro({ macro: macro.toObject(), proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador, corte });
         const { jerarquia } = await getHierarchyForMacro(macro.toObject());
-        const payload = await uploadInformeToDrive(generated, jerarquia);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
 
         macro.informe_drive_file_id      = payload.drive_file_id;
         macro.informe_drive_web_view_link = payload.drive_web_view_link;

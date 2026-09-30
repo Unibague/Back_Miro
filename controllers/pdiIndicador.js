@@ -5,7 +5,7 @@ const { recalcularProyecto } = require('./pdiAccionEstrategica');
 const { deleteFile, buildUrl } = require('../services/pdiFileStorage');
 const fs = require('fs/promises');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
-const { getHierarchyForIndicador } = require('../services/pdiDriveHierarchy');
+const { getHierarchyForIndicador, withCorte } = require('../services/pdiDriveHierarchy');
 const Historial = require('../models/pdiIndicadorHistorial');
 const User = require('../models/users');
 const AccionEstrategica = require('../models/pdiAccionEstrategica');
@@ -675,7 +675,7 @@ ctrl.uploadEvidencia = async (req, res) => {
             buffer,
             req.file.originalname,
             req.file.mimetype,
-            jerarquia
+            withCorte(jerarquia, req.body.periodo)
         );
         deleteFile(req.file.filename);
 
@@ -721,7 +721,7 @@ ctrl.uploadEvidencia = async (req, res) => {
                 buffer,
                 file.originalname,
                 file.mimetype,
-                jerarquia
+                withCorte(jerarquia, req.body.periodo)
             );
             uploadedFiles.push(uploaded);
             deleteFile(file.filename);
