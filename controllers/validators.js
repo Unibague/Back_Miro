@@ -150,21 +150,53 @@ const formatValidatorDisplayOption = (code, description) => {
     return codeText || descriptionText;
 };
 
-const getValidatorDisplayPair = (columns = []) => {
-    const descriptionColumn = (columns || []).find((column) => isDescriptionColumn(column?.name));
+const sameColumn = (a, b) => Boolean(a && b) && normalizeValidatorLookup(a?.name) === normalizeValidatorLookup(b?.name);
+
+// Columna de texto descriptivo cuando ninguna se llama NOMBRE/DESCRIPCION
+// (p. ej. "Líneas de investigación del grupo"): la de textos largos con espacios.
+const findLongTextDescriptionColumn = (columns = [], excluded = []) => {
+    let best = null;
+    let bestAverage = 0;
+    (columns || []).forEach((column) => {
+        if (excluded.some((item) => sameColumn(item, column)) || isValidatorCodeColumn(column?.name)) return;
+        const texts = (column?.values || []).map(cleanValidatorDisplayText).filter(Boolean);
+        if (texts.length === 0) return;
+        const average = texts.reduce((sum, text) => sum + text.length, 0) / texts.length;
+        const withSpaces = texts.filter((text) => /\s/.test(text)).length / texts.length;
+        if (average >= 15 && withSpaces >= 0.8 && average > bestAverage) {
+            best = column;
+            bestAverage = average;
+        }
+    });
+    return best;
+};
+
+// preferredCodeColumn: columna que el campo usa en "validar con". Si se indica
+// (y no es la de descripción), el texto "valor - descripción" se arma con ella
+// en vez de con la columna marcada como validadora en la tabla.
+const getValidatorDisplayPair = (columns = [], preferredCodeColumn = null) => {
+    const preferred = preferredCodeColumn && !isDescriptionColumn(preferredCodeColumn?.name)
+        ? (columns || []).find((column) => sameColumn(column, preferredCodeColumn)) || null
+        : null;
+
+    const defaultCodeColumn = (columns || []).find((column) => column?.is_validator && !isDescriptionColumn(column?.name));
+    const descriptionColumn =
+        (columns || []).find((column) => isDescriptionColumn(column?.name) && !sameColumn(column, preferred)) ||
+        findLongTextDescriptionColumn(columns, [preferred || defaultCodeColumn].filter(Boolean));
     if (!descriptionColumn) return null;
 
     const codeColumn =
+        preferred ||
         (columns || []).find((column) => column !== descriptionColumn && column?.is_validator && !isDescriptionColumn(column?.name)) ||
         (columns || []).find((column) => column !== descriptionColumn && isValidatorCodeColumn(column?.name)) ||
         (columns || []).find((column) => column !== descriptionColumn && !isDescriptionColumn(column?.name));
 
-    if (!codeColumn) return null;
+    if (!codeColumn || sameColumn(codeColumn, descriptionColumn)) return null;
     return { codeColumn, descriptionColumn };
 };
 
-const getValidatorDisplayValuesForColumn = (columns = [], column = {}) => {
-    const pair = getValidatorDisplayPair(columns);
+const getValidatorDisplayValuesForColumn = (columns = [], column = {}, preferredCodeColumn = null) => {
+    const pair = getValidatorDisplayPair(columns, preferredCodeColumn);
     if (!pair) return (column.values || []).map(cleanValidatorValue);
 
     const isDisplayColumn = [pair.codeColumn?.name, pair.descriptionColumn?.name]
@@ -311,6 +343,9 @@ const buildAcceptedValidatorStringSet = (validator, columnToValidate) => {
 
     columnToValidate.values.forEach(addAcceptedValue);
     getValidatorDisplayValuesForColumn(validator?.columns || [], columnToValidate)
+        .forEach(addAcceptedValue);
+    // También el texto que muestra la lista del Excel para esta columna.
+    getValidatorDisplayValuesForColumn(validator?.columns || [], columnToValidate, columnToValidate)
         .forEach(addAcceptedValue);
 
     return acceptedValues;
@@ -1753,7 +1788,12 @@ validatorController.giveValidatorToExcel = async (name, periodId = null) => {
         }));
         
         validatorFilled['values'] = validator.columns.reduce((acc, item) => {
-            const displayValues = getValidatorDisplayValuesForColumn(validator.columns || [], item);
+            // La columna usada en "validar con" se muestra compuesta con la descripción.
+            const displayValues = getValidatorDisplayValuesForColumn(
+                validator.columns || [],
+                item,
+                columnToValidate && sameColumn(item, columnToValidate) ? columnToValidate : null
+            );
             const maxLength = Math.max(item.values?.length || 0, displayValues.length);
             for (let index = 0; index < maxLength; index += 1) {
                 // Inicializar el objeto si no existe
