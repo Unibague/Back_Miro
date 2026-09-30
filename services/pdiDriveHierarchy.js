@@ -21,6 +21,13 @@ function buildJerarquia({ macro, proyecto, accion, indicador }) {
     };
 }
 
+// Agrega el periodo de reporte (p. ej. 2026B) como última carpeta de la jerarquía,
+// para que las evidencias queden separadas por periodo dentro del indicador.
+function withCorte(jerarquia, corte) {
+    const periodo = cleanCode(corte).toUpperCase();
+    return periodo ? { ...jerarquia, corte: periodo } : jerarquia;
+}
+
 async function getHierarchyForMacro(macroOrId) {
     const macro = typeof macroOrId === 'object' && macroOrId?._id
         ? macroOrId
@@ -70,6 +77,7 @@ async function getHierarchyForIndicador(indicadorOrId) {
 module.exports = {
     actionFolderName,
     buildJerarquia,
+    withCorte,
     getHierarchyForMacro,
     getHierarchyForProyecto,
     getHierarchyForAccion,

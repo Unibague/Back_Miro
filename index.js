@@ -104,6 +104,7 @@ apiRouter.use("/ai-assistant", require('./routes/aiAssistant'));
 apiRouter.use("/template-status", require('./routes/templateStatus'));
 apiRouter.use("/snies/templates", require('./routes/sniesTemplates'));
 apiRouter.use("/cna/templates", require('./routes/cnaTemplates'));
+apiRouter.use("/cna/plantillas", require('./routes/cnaPlantillas'));
 apiRouter.use("/support-templates", require('./routes/supportTemplates'));
 apiRouter.use("/historico-docentes", require('./routes/historicoDocentes'));
 apiRouter.use("/pdi/macroproyectos",   require('./routes/pdiMacroproyecto'));

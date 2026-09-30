@@ -6,7 +6,7 @@ const {
 } = require('docx');
 const { UPLOAD_DIR, buildUrl, deleteFile } = require('./pdiFormularioStorage');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
-const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
+const { getHierarchyForIndicador, withCorte } = require('./pdiDriveHierarchy');
 const {
     buildMembreteHeader: buildPdiMembreteHeader,
     applyMembreteDocxTemplate,
@@ -168,7 +168,7 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
                 generated.buffer,
                 generated.driveNombre,
                 generated.mimetype,
-                jerarquia
+                withCorte(jerarquia, respuesta.corte)
             );
         })()
         : null;

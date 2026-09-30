@@ -9,7 +9,7 @@ const fs              = require('fs/promises');
 const path            = require('path');
 const { deleteFile, UPLOAD_DIR, buildUrl, MAX_FILE_SIZE_BYTES } = require('./pdiFormularioStorage');
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
-const { getHierarchyForIndicador } = require('./pdiDriveHierarchy');
+const { getHierarchyForIndicador, withCorte } = require('./pdiDriveHierarchy');
 const { replaceWordDocument } = require('./pdiFormularioWordDocument');
 
 // ── Formularios ────────────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ const uploadDocumentoARespuesta = async (doc) => {
             buffer,
             documento.nombre_original || documento.filename,
             documento.mimetype || 'application/pdf',
-            jerarquia
+            withCorte(jerarquia, doc.corte)
         );
 
         documento.drive_file_id = uploaded.fileId;
