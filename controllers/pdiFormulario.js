@@ -457,9 +457,9 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             return res.status(400).json({ error: 'No se puede reemplazar una evidencia aprobada' });
         }
 
-        const documentosConservados = doc.estado_aval === 'Rechazado'
-            ? []
-            : (doc.documentos?.length ? doc.documentos : (hasLegacyDocumento(doc) ? [buildLegacyDocumento(doc)] : []));
+        const documentosConservados = doc.documentos?.length
+            ? doc.documentos
+            : (hasLegacyDocumento(doc) ? [buildLegacyDocumento(doc)] : []);
         const totalActual = getDocumentosTotalSize(documentosConservados);
         const totalNuevo = files.reduce((total, file) => total + (Number(file.size) || 0), 0);
         if (totalActual + totalNuevo > MAX_FILE_SIZE_BYTES) {
@@ -467,22 +467,12 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             return res.status(400).json({ error: 'El tamano total de las evidencias cargadas no debe superar los 50 MB.' });
         }
 
+        if (!doc.documentos?.length && hasLegacyDocumento(doc)) {
+            doc.documentos.push(buildLegacyDocumento(doc));
+        }
+
         if (doc.estado_aval === 'Rechazado') {
-            if (doc.documentos?.length) {
-                for (const documento of doc.documentos) {
-                    if (documento.drive_file_id) {
-                        try { await deleteDriveFile(documento.drive_file_id); } catch (_) {}
-                    }
-                    if (documento.filename) deleteFile(documento.filename);
-                }
-                doc.documentos.splice(0, doc.documentos.length);
-            } else if (hasLegacyDocumento(doc)) {
-                const legacy = buildLegacyDocumento(doc);
-                if (legacy.drive_file_id) {
-                    try { await deleteDriveFile(legacy.drive_file_id); } catch (_) {}
-                }
-                if (legacy.filename) deleteFile(legacy.filename);
-            }
+            // Las evidencias cambiaron: descartar el Word generado para el envío anterior
             if (doc.word_drive_file_id) {
                 try { await deleteDriveFile(doc.word_drive_file_id); } catch (_) {}
             }
@@ -493,8 +483,6 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             doc.word_drive_file_id = '';
             doc.word_drive_web_view_link = '';
             doc.word_drive_web_content_link = '';
-        } else if (!doc.documentos?.length && hasLegacyDocumento(doc)) {
-            doc.documentos.push(buildLegacyDocumento(doc));
         }
 
         for (const file of files) {
