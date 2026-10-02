@@ -464,7 +464,7 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
         const totalNuevo = files.reduce((total, file) => total + (Number(file.size) || 0), 0);
         if (totalActual + totalNuevo > MAX_FILE_SIZE_BYTES) {
             files.forEach((file) => deleteFile(file.filename));
-            return res.status(400).json({ error: 'El tamano total de las evidencias cargadas no debe superar los 10 MB.' });
+            return res.status(400).json({ error: 'El tamano total de las evidencias cargadas no debe superar los 50 MB.' });
         }
 
         if (doc.estado_aval === 'Rechazado') {
