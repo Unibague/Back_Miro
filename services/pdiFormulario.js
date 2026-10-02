@@ -678,7 +678,7 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
             ? existing.documentos
             : (hasLegacyDocumento(existing) ? [buildLegacyDocumento(existing)] : []);
         if (getDocumentosTotalSize(documentos) > MAX_FILE_SIZE_BYTES) {
-            throw new Error('El tamano total de las evidencias cargadas no debe superar los 10 MB.');
+            throw new Error('El tamano total de las evidencias cargadas no debe superar los 50 MB.');
         }
     }
 

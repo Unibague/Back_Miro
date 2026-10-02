@@ -19,7 +19,7 @@ const storage = multer.diskStorage({
     },
 });
 
-const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 const ALLOWED_MIMETYPES = new Set([
     'application/pdf',
     'application/x-pdf',

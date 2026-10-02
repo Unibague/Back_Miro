@@ -32,7 +32,7 @@ router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 // ── Error handler de multer (tipo de archivo o tamaño rechazado) ──────────
 function multerErrorHandler(err, req, res, next) {
     if (err && err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ error: 'El archivo supera el tamaño máximo permitido de 10 MB.' });
+        return res.status(400).json({ error: 'El archivo supera el tamaño máximo permitido de 50 MB.' });
     }
     if (err) {
         return res.status(400).json({ error: err.message || 'Formato de archivo no permitido.' });
