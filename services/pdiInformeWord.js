@@ -84,6 +84,20 @@ const separadorFino = () => new Paragraph({
     children: [],
 });
 
+// Porcentaje legible (máx. 2 decimales) en lugar del valor crudo con muchos decimales
+const formatPct = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? `${(Math.round(n * 100) / 100).toLocaleString('es-CO')}%` : '0%';
+};
+
+function cumplimientoPeriodo(p) {
+    const meta = Number(String(p.meta ?? '').replace('%', '').replace(',', '.'));
+    const avance = Number(String(p.avance ?? '').replace('%', '').replace(',', '.'));
+    if (p.avance === null || p.avance === undefined || p.avance === '' || !Number.isFinite(avance)) return null;
+    if (!Number.isFinite(meta) || meta <= 0) return null;
+    return Math.min((avance / meta) * 100, 100);
+}
+
 const formatCOP = (v) =>
     new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v ?? 0);
 
@@ -215,7 +229,7 @@ function crearTabla(headers, filas, options = {}) {
 // ── Tabla de periodos ──────────────────────────────────────────────────────────────
 function resolverEstadoPeriodo(p, corteActivo) {
     const estado = p.estado_reporte ?? '';
-    if (estado === 'Enviado' || estado === 'Aprobado' || estado === 'Rechazado') return estado;
+    if (['Enviado', 'Aprobado', 'Rechazado', 'Validado'].includes(estado)) return estado;
     if (corteActivo && normalizeCorte(p.periodo) === normalizeCorte(corteActivo)) return 'Pendiente';
     return 'Periodo no activo';
 }
@@ -225,16 +239,20 @@ function tablaPeriodos(periodos = [], corteActivo = null) {
     return [
         new Paragraph({ spacing: { before: 100, after: 60 }, children: [new TextRun({ text: 'Periodos reportados', bold: true })] }),
         crearTabla(
-            ['Periodo', 'Meta', 'Avance', 'Estado', 'Reportado por', 'Fecha envío'],
-            periodos.map((p) => [
-                p.periodo,
-                p.meta,
-                p.avance,
-                resolverEstadoPeriodo(p, corteActivo),
-                p.reportado_por,
-                p.fecha_envio ? new Date(p.fecha_envio).toLocaleDateString('es-CO') : '—',
-            ]),
-            { columnWidths: [1000, 950, 950, 1350, 3200, 1570] }
+            ['Periodo', 'Meta', 'Avance', '% Cumplimiento', 'Estado', 'Reportado por', 'Fecha envío'],
+            periodos.map((p) => {
+                const pct = cumplimientoPeriodo(p);
+                return [
+                    p.periodo,
+                    p.meta,
+                    p.avance,
+                    pct === null ? '—' : formatPct(pct),
+                    resolverEstadoPeriodo(p, corteActivo),
+                    p.reportado_por,
+                    p.fecha_envio ? new Date(p.fecha_envio).toLocaleDateString('es-CO') : '—',
+                ];
+            }),
+            { columnWidths: [950, 850, 850, 1150, 1250, 2500, 1470] }
         ),
     ];
 }
@@ -414,7 +432,7 @@ function seccionIndicador(ind, respuestasInd = [], corte = null) {
     const bloques = [
         h3(`${ind.codigo} · ${ind.nombre}`),
         campo('Responsable', ind.responsable),
-        campo('Avance actual', `${ind.avance_total_real ?? ind.avance ?? 0}%`),
+        campo('Porcentaje de avance', formatPct(ind.avance_total_real ?? ind.avance ?? 0)),
         campo('Meta final', ind.meta_final_2029),
         campo('Tipo de cálculo', ind.tipo_calculo),
         ...tablaPeriodos(periodosAMostrar, corte),
@@ -448,7 +466,7 @@ function seccionAccion(accion, indicadores, respuestasPorIndicador, corte = null
     return [
         h2(`Acción: ${accion.codigo} · ${accion.nombre}`),
         campo('Responsable', accion.responsable),
-        campo('Avance', `${accion.avance ?? 0}%`),
+        campo('Porcentaje de avance', formatPct(accion.avance ?? 0)),
         campo('Presupuesto asignado', formatCOP(accion.presupuesto)),
         campo('Presupuesto ejecutado', formatCOP(accion.presupuesto_ejecutado)),
         ...indicadores.flatMap((ind) =>
@@ -540,7 +558,7 @@ async function generarInformeProyecto({ proyecto, acciones, indicadoresPorAccion
         h1(`${proyecto.codigo} · ${proyecto.nombre}`),
         campo('Responsable', proyecto.responsable),
         campo('Formulador', proyecto.formulador),
-        campo('Avance del proyecto', `${proyecto.avance ?? 0}%`),
+        campo('Porcentaje de avance del proyecto', formatPct(proyecto.avance ?? 0)),
         campo('Presupuesto asignado', formatCOP(proyecto.presupuesto)),
         campo('Presupuesto ejecutado', formatCOP(proyecto.presupuesto_ejecutado)),
         campo('Fecha inicio', proyecto.fecha_inicio ?? '—'),
@@ -582,7 +600,7 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
         }),
         h1(`${macro.codigo} · ${macro.nombre}`),
         campo('Líder', macro.lider),
-        campo('Avance del macroproyecto', `${macro.avance ?? 0}%`),
+        campo('Porcentaje de avance del macroproyecto', formatPct(macro.avance ?? 0)),
         campo('Presupuesto asignado', formatCOP(macro.presupuesto)),
         campo('Presupuesto ejecutado', formatCOP(macro.presupuesto_ejecutado)),
         separador(),
@@ -592,7 +610,7 @@ async function generarInformeMacro({ macro, proyectos, accionesPorProyecto, indi
         children.push(
             h1(`Proyecto: ${proy.codigo} · ${proy.nombre}`),
             campo('Responsable', proy.responsable),
-            campo('Avance', `${proy.avance ?? 0}%`),
+            campo('Porcentaje de avance', formatPct(proy.avance ?? 0)),
             campo('Presupuesto asignado', formatCOP(proy.presupuesto)),
             campo('Presupuesto ejecutado', formatCOP(proy.presupuesto_ejecutado)),
             separador(),

@@ -73,7 +73,7 @@ const buildEmailHtmlResponsable = (respuesta, formulario, indicador) => {
               <div style="margin:32px 0;padding:20px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
                 <div style="font-size:11px;color:#166534;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Próximos Pasos</div>
                 <div style="font-size:14px;color:#166534;line-height:1.8;">
-                  Su información está siendo revisada. El líder del macroproyecto evaluará los datos y notificará el resultado en breve. Puede acceder a la plataforma para monitorear el estado.
+                  Su información está siendo revisada. Los evaluadores correspondientes (responsable del proyecto y líder del macroproyecto) revisarán los datos y se le notificará el resultado. Puede acceder a la plataforma para monitorear el estado.
                 </div>
               </div>
 
@@ -483,8 +483,18 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
       console.warn('[PDI-UPLOAD-NOTIFY] No se encontró email del productor');
     }
 
-    // 2. Enviar email a TODOS los líderes del macroproyecto (para que revisen)
-    if (respuesta.lider_email_aval && respuesta.lider_email_aval !== 'Por asignar') {
+    // 2. Responsables (líderes) del proyecto: el reporte llega primero a su revisión
+    if (respuesta.estado_aval_proyecto === 'Pendiente') {
+      const { notificarPendienteEvaluacion } = require('./pdiFormulario');
+      await notificarPendienteEvaluacion(respuesta, 'proyecto', {
+        titulo: 'Nueva información reportada',
+        intro: 'El responsable de una acción de su proyecto cargó información de avance. Ingrese a la plataforma para revisarla y aprobarla o devolverla con observaciones.',
+      });
+    }
+
+    // 3. Enviar email a TODOS los líderes del macroproyecto, solo si el reporte ya
+    // está pendiente de su evaluación (si fue aprobado automáticamente no aplica)
+    if (respuesta.estado_aval === 'Pendiente') {
       try {
         // Obtener todos los líderes del macroproyecto del indicador
         const svc = require('./pdiFormulario');
@@ -559,8 +569,8 @@ const sendIndicadorEvaluationNotification = async (respuesta, formulario, indica
     if (estado === 'Aprobado') {
       try {
         // Obtener correos de administradores
-        const User = require('../models/users');
-        const admins = await User.find({ rol: 'admin' }).select('email full_name').lean();
+        const { getPdiAdminUsers } = require('./pdiAdminRecipients');
+        const admins = await getPdiAdminUsers();
         
         if (admins && admins.length > 0) {
           const adminEmails = admins.map(admin => admin.email).filter(Boolean);

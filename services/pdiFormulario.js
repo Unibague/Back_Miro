@@ -11,6 +11,7 @@ const { deleteFile, UPLOAD_DIR, buildUrl, MAX_FILE_SIZE_BYTES } = require('./pdi
 const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
 const { getHierarchyForIndicador, withCorte } = require('./pdiDriveHierarchy');
 const { replaceWordDocument } = require('./pdiFormularioWordDocument');
+const { getPdiAdminUsers } = require('./pdiAdminRecipients');
 
 // ── Formularios ────────────────────────────────────────────────────────────
 
@@ -392,6 +393,95 @@ const getReportersEmailsForIndicador = async (indicador_id) => {
     }
 };
 
+// ── Notificaciones del flujo de aval ───────────────────────────────────────
+
+const NIVEL_LABEL = {
+    proyecto: 'el responsable del proyecto',
+    lider: 'el líder del macroproyecto',
+    planeacion: 'Planeación',
+};
+
+// Solo administradores con el perfil PDI (Planeación), no todos los administradores
+const { getPdiAdminEmails: getAdminEmails } = require('./pdiAdminRecipients');
+
+const getIndicadorConAccion = async (indicador_id) => {
+    const indicadorId = getRefId(indicador_id);
+    if (!indicadorId) return { indicador: null, accion: null };
+    const indicador = await Indicador.findById(indicadorId).select('codigo nombre accion_id').lean();
+    const accion = indicador?.accion_id
+        ? await Accion.findById(indicador.accion_id).select('codigo nombre').lean()
+        : null;
+    return { indicador, accion };
+};
+
+const buildMotivo = (razones = [], otroCual = '') =>
+    (razones || []).map((r) => (r === 'Otro' && otroCual ? `Otro: ${otroCual}` : r)).filter(Boolean);
+
+// Avisa a todos los involucrados que un reporte fue devuelto para correcciones:
+// quien reportó, responsables de la acción, responsables del proyecto, líderes del
+// macroproyecto (siempre) y, si el reporte ya había llegado a Planeación, también
+// a los administradores.
+const notificarDevolucion = async (doc, { nivel, por, comentario, razones = [], incluirAdmins = false, titulo, intro }) => {
+    try {
+        const { indicador, accion } = await getIndicadorConAccion(doc.indicador_id);
+        const [lideres, proyecto, accionEmails, admins] = await Promise.all([
+            getLideresEmailsForIndicador(doc.indicador_id),
+            getResponsablesEmailsForProyectoOfIndicador(doc.indicador_id),
+            accion?._id ? getResponsablesEmailsForAccion(accion._id) : [],
+            incluirAdmins ? getAdminEmails() : [],
+        ]);
+        const { sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
+        await sendRespuestaEstadoNotification({
+            recipients: [doc.respondido_por, ...accionEmails, ...proyecto, ...lideres, ...admins],
+            subject: `${titulo || 'Reporte devuelto'}: ${accion?.codigo || indicador?.codigo || 'PDI'} - ${doc.corte}`,
+            headerTitle: titulo || 'Reporte devuelto para correcciones',
+            introText: intro || `${NIVEL_LABEL[nivel] ? NIVEL_LABEL[nivel].charAt(0).toUpperCase() + NIVEL_LABEL[nivel].slice(1) : 'El evaluador'} devolvió el reporte de avance. El responsable de la acción debe realizar las correcciones y reenviarlo.`,
+            statusLabel: 'DEVUELTO',
+            statusColor: '#dc2626',
+            indicador,
+            accion,
+            corte: doc.corte,
+            respondidoPor: doc.respondido_por,
+            evaluadoPor: por,
+            razones,
+            comentario: comentario || '',
+            comentarioLabel: 'Observaciones',
+        });
+    } catch (e) {
+        console.error('[notificarDevolucion] Error:', e.message);
+    }
+};
+
+// Avisa a los evaluadores del nivel indicado que tienen un reporte pendiente.
+const notificarPendienteEvaluacion = async (doc, nivel, { titulo, intro } = {}) => {
+    try {
+        const recipients = nivel === 'proyecto'
+            ? await getResponsablesEmailsForProyectoOfIndicador(doc.indicador_id)
+            : nivel === 'lider'
+                ? await getLideresEmailsForIndicador(doc.indicador_id)
+                : await getAdminEmails();
+        const filtrados = recipients.filter((email) => email !== normalizeEmail(doc.respondido_por));
+        if (!filtrados.length) return;
+
+        const { indicador, accion } = await getIndicadorConAccion(doc.indicador_id);
+        const { sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
+        await sendRespuestaEstadoNotification({
+            recipients: filtrados,
+            subject: `[REVISIÓN] ${titulo || 'Reporte pendiente de evaluación'}: ${indicador?.codigo || 'PDI'} - ${doc.corte}`,
+            headerTitle: titulo || 'Reporte pendiente de su evaluación',
+            introText: intro || 'Se registró información de avance que requiere su revisión. Ingrese a la plataforma para aprobarla o devolverla con observaciones.',
+            statusLabel: 'PENDIENTE',
+            statusColor: '#f59e0b',
+            indicador,
+            accion,
+            corte: doc.corte,
+            respondidoPor: doc.respondido_por,
+        });
+    } catch (e) {
+        console.error('[notificarPendienteEvaluacion] Error:', e.message);
+    }
+};
+
 // ── Respuestas ─────────────────────────────────────────────────────────────
 
 const ensureWordDocumentIfSent = async (respuestaDoc) => {
@@ -662,6 +752,26 @@ const autoApproveAllPendingLeaderSubmittedResponses = async () => {
     return autoApproveLeaderSubmittedResponses(docs);
 };
 
+const ESTADO_FLUJO_FIELDS = [
+    'estado', 'fecha_envio',
+    'estado_aval_proyecto', 'proyecto_email_aval', 'aval_proyecto_por', 'aval_proyecto_comentario',
+    'aval_proyecto_razones', 'aval_proyecto_otro_cual', 'aval_proyecto_fecha',
+    'estado_aval', 'lider_email_aval', 'aval_por', 'aval_comentario', 'aval_razones', 'aval_otro_cual', 'aval_fecha',
+    'aval_planeacion', 'aval_planeacion_por', 'aval_planeacion_comentario', 'aval_planeacion_fecha',
+];
+
+const getPeriodoSnapshot = async (indicador_id, corte) => {
+    const indicador = indicador_id ? await Indicador.findById(indicador_id).select('periodos').lean() : null;
+    const periodo = (indicador?.periodos ?? []).find(
+        (p) => normalizePeriodo(p.periodo) === normalizePeriodo(corte)
+    );
+    return {
+        estado_reporte: periodo?.estado_reporte || 'Borrador',
+        reportado_por: periodo?.reportado_por ?? '',
+        fecha_envio: periodo?.fecha_envio ?? null,
+    };
+};
+
 // Crea o actualiza la respuesta de un responsable para un formulario+corte
 const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, corte, respuestas, estado }) => {
     // Borrador/reporte compartido: no se filtra por respondido_por, asi cualquier responsable
@@ -747,15 +857,12 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     }
 
     if (existing) {
-        const prevEstado       = existing.estado;
-        const prevFechaEnvio   = existing.fecha_envio;
-        const prevAval         = {
-            estado_aval:      existing.estado_aval,
-            lider_email_aval: existing.lider_email_aval,
-            aval_por:         existing.aval_por,
-            aval_comentario:  existing.aval_comentario,
-            aval_fecha:       existing.aval_fecha,
-        };
+        // Foto completa del estado previo (envío + los tres niveles de aval) para
+        // poder restaurarlo tal cual si el envío falla a mitad de camino.
+        const prevState = Object.fromEntries(
+            ESTADO_FLUJO_FIELDS.map((field) => [field, existing.get(field)])
+        );
+        const prevPeriodo = await getPeriodoSnapshot(indicador_id, corte);
 
         existing.respuestas    = respuestas ? mergeComentariosLider(respuestas, existing.respuestas) : existing.respuestas;
         existing.indicador_id  = indicador_id || null;
@@ -788,18 +895,9 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
         } catch (driveErr) {
             // Revertir: el envío falló, dejar todo como estaba
             await rollbackDocumentosSubidos(existing._id, docSubido);
-            await Respuesta.findByIdAndUpdate(existing._id, {
-                estado:      prevEstado,
-                fecha_envio: prevFechaEnvio,
-                ...prevAval,
-            });
-            if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
-                await syncPeriodoReporte({
-                    indicador_id, corte,
-                    estado_reporte: 'Borrador',
-                    reportado_por:  '',
-                    fecha_envio:    null,
-                });
+            await Respuesta.findByIdAndUpdate(existing._id, prevState);
+            if (estado === 'Enviado') {
+                await syncPeriodoReporte({ indicador_id, corte, ...prevPeriodo });
             }
             throw new Error(`No se pudo subir el documento a Google Drive. Verifica la configuración de la carpeta. Detalle: ${driveErr.message}`);
         }
@@ -877,7 +975,7 @@ const avalProyecto = async (respuestaId, { estado_aval_proyecto, aval_por, aval_
     if (!doc) throw new Error('Respuesta no encontrada');
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden evaluar respuestas enviadas');
     if (doc.estado_aval_proyecto !== 'Pendiente') {
-        throw new Error('Esta respuesta no está pendiente de evaluación del responsable del proyecto');
+        throw new Error('Esta respuesta no está pendiente de evaluación del responsable del proyecto. Si la aprobaste por error, usa "Deshacer aprobación".');
     }
     const razonesNormalizadas = estado_aval_proyecto === 'Rechazado'
         ? await normalizeAvalRazones(aval_razones)
@@ -918,6 +1016,25 @@ const avalProyecto = async (respuestaId, { estado_aval_proyecto, aval_por, aval_
         fecha_envio: doc.fecha_envio ?? new Date(),
     });
 
+    if (estado_aval_proyecto === 'Rechazado') {
+        await notificarDevolucion(doc, {
+            nivel: 'proyecto',
+            por: aval_por,
+            comentario: doc.aval_proyecto_comentario,
+            razones: buildMotivo(razonesNormalizadas, doc.aval_proyecto_otro_cual),
+            titulo: 'Devuelto por el responsable del proyecto',
+        });
+    } else if (doc.estado_aval === 'Pendiente') {
+        await notificarPendienteEvaluacion(doc, 'lider', {
+            intro: 'El responsable del proyecto aprobó el avance reportado. Ahora requiere su evaluación como líder del macroproyecto.',
+        });
+    } else if (doc.estado_aval === 'Aprobado') {
+        await notificarPendienteEvaluacion(doc, 'planeacion', {
+            titulo: 'Reporte pendiente de validación',
+            intro: 'Un reporte de avance fue aprobado y está pendiente de la validación de Planeación.',
+        });
+    }
+
     return doc;
 };
 
@@ -928,6 +1045,9 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden avalar respuestas enviadas');
     if (doc.estado_aval_proyecto && doc.estado_aval_proyecto !== 'Aprobado') {
         throw new Error('Esta respuesta aún no ha sido aprobada por el responsable del proyecto');
+    }
+    if (doc.estado_aval && doc.estado_aval !== 'Pendiente') {
+        throw new Error('Esta respuesta ya fue evaluada por el líder. Si fue un error, usa "Deshacer aprobación".');
     }
     const razonesNormalizadas = estado_aval === 'Rechazado'
         ? await normalizeAvalRazones(aval_razones)
@@ -967,51 +1087,14 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
 
     // Enviar notificaciones según el resultado de la evaluación
     try {
-        if (estado_aval === 'Rechazado' && doc.respondido_por) {
-            // Importar función para enviar correos de evaluación
-            const { sendRespuestaEvaluationNotification, sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
-
-            // Obtener información del indicador y formulario
-            const PdiIndicador = require('../models/pdiIndicador');
-            const Template = require('../models/templates');
-
-            const indicador = await PdiIndicador.findById(doc.indicador_id).lean();
-            const template = doc.formulario_id ? await Template.findById(doc.formulario_id).lean() : null;
-
-            console.log(`[avalRespuesta] Enviando notificación de rechazo a: ${doc.respondido_por}`);
-
-            await sendRespuestaEvaluationNotification(
-              {
-                respondido_por: doc.respondido_por,
-                corte: doc.corte,
-              },
-              {
-                codigo: indicador?.codigo || 'Sin código',
-                nombre: indicador?.nombre || 'Sin nombre',
-              },
-              'Rechazado',
-              aval_comentario || ''
-            );
-
-            // El responsable del proyecto también debe enterarse de que el líder rechazó el reporte.
-            const proyectoEmailsRechazo = await getResponsablesEmailsForProyectoOfIndicador(doc.indicador_id);
-            if (proyectoEmailsRechazo.length > 0) {
-                await sendRespuestaEstadoNotification({
-                    recipients: proyectoEmailsRechazo,
-                    subject: `Rechazado por el líder: ${indicador?.codigo || 'Sin código'} - ${doc.corte}`,
-                    headerTitle: 'Reporte rechazado por el líder del macroproyecto',
-                    introText: 'El líder del macroproyecto revisó el avance reportado y lo rechazó. El responsable de la acción debe corregirlo y reenviarlo.',
-                    statusLabel: 'RECHAZADO POR EL LÍDER',
-                    statusColor: '#dc2626',
-                    indicador,
-                    corte: doc.corte,
-                    respondidoPor: doc.respondido_por,
-                    comentario: aval_comentario || '',
-                    comentarioLabel: 'Comentarios del líder',
-                });
-            }
-
-            console.log(`[avalRespuesta] ✓ Notificación de rechazo enviada`);
+        if (estado_aval === 'Rechazado') {
+            await notificarDevolucion(doc, {
+                nivel: 'lider',
+                por: aval_por,
+                comentario: doc.aval_comentario,
+                razones: buildMotivo(razonesNormalizadas, doc.aval_otro_cual),
+                titulo: 'Devuelto por el líder del macroproyecto',
+            });
         } else if (estado_aval === 'Aprobado' && doc.respondido_por) {
             // Enviar notificación de aprobación al responsable + a administradores
             const { sendRespuestaEvaluationNotification, sendRespuestaApprovedToAdmins } = require('./pdiRespuestaNotification');
@@ -1046,8 +1129,8 @@ const avalRespuesta = async (respuestaId, { estado_aval, aval_por, aval_comentar
             try {
               console.log(`[avalRespuesta] Buscando administradores...`);
               
-              // Buscar por roles array - "Administrador" con mayúscula
-              const admins = await User.find({ roles: 'Administrador' }).select('email full_name').lean();
+              // Solo administradores con el perfil PDI (Planeación)
+              const admins = await getPdiAdminUsers();
               console.log(`[avalRespuesta] Administradores encontrados: ${admins ? admins.length : 0}`);
               
               if (admins && admins.length > 0) {
@@ -1119,6 +1202,9 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
         if (!autoApproved) throw new Error('Solo se pueden evaluar respuestas aprobadas por el líder');
     }
     if (!['Validado', 'Devuelto'].includes(estado)) throw new Error('estado debe ser Validado o Devuelto');
+    if (PLANEACION_EVALUATED_STATES.includes(doc.aval_planeacion)) {
+        throw new Error('Este reporte ya fue evaluado por Planeación. Si fue un error, usa "Deshacer aprobación".');
+    }
     doc.aval_planeacion            = estado;
     doc.aval_planeacion_por        = por ?? '';
     doc.aval_planeacion_comentario = comentario ?? '';
@@ -1140,33 +1226,13 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
 
         // Cuando Planeación devuelve, deben enterarse: el líder del macroproyecto, el
         // responsable del proyecto y el responsable/líder de la acción (quien reportó).
-        // Si la acción no tiene líder asignado, el correo igual llega al líder del macro
-        // y al responsable del proyecto (el conjunto de destinatarios simplemente queda
-        // más corto, sin necesidad de un caso especial).
-        try {
-            const indicadorPlaneacion = await Indicador.findById(doc.indicador_id).select('codigo nombre accion_id').lean();
-            const [liderMacroEmails, proyectoEmails, accionEmails] = await Promise.all([
-                getLideresEmailsForIndicador(doc.indicador_id),
-                getResponsablesEmailsForProyectoOfIndicador(doc.indicador_id),
-                indicadorPlaneacion?.accion_id ? getResponsablesEmailsForAccion(indicadorPlaneacion.accion_id) : [],
-            ]);
-            const { sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
-            await sendRespuestaEstadoNotification({
-                recipients: [...liderMacroEmails, ...proyectoEmails, ...accionEmails, doc.respondido_por],
-                subject: `Devuelto por Planeación: ${indicadorPlaneacion?.codigo || 'Sin código'} - ${doc.corte}`,
-                headerTitle: 'Reporte devuelto por Planeación',
-                introText: 'Planeación revisó el avance ya aprobado por el líder del macroproyecto y lo devolvió con observaciones. Debe corregirse y reenviarse.',
-                statusLabel: 'DEVUELTO POR PLANEACIÓN',
-                statusColor: '#dc2626',
-                indicador: indicadorPlaneacion,
-                corte: doc.corte,
-                respondidoPor: doc.respondido_por,
-                comentario: comentario || '',
-                comentarioLabel: 'Observaciones de Planeación',
-            });
-        } catch (notifyError) {
-            console.error('[avalPlaneacion] Error al enviar notificación de devolución:', notifyError.message);
-        }
+        await notificarDevolucion(doc, {
+            nivel: 'planeacion',
+            por,
+            comentario,
+            titulo: 'Devuelto por Planeación',
+            intro: 'Planeación revisó el avance ya aprobado por el líder del macroproyecto y lo devolvió con observaciones. Debe corregirse y reenviarse.',
+        });
     } else {
         await doc.save();
         await syncPeriodoReporte({
@@ -1176,6 +1242,238 @@ const avalPlaneacion = async (respuestaId, { estado, por, comentario }) => {
         });
     }
     return doc;
+};
+
+// ── Deshacer aprobación ────────────────────────────────────────────────────
+
+const clearPlaneacion = (doc) => {
+    doc.aval_planeacion = null;
+    doc.aval_planeacion_por = '';
+    doc.aval_planeacion_comentario = '';
+    doc.aval_planeacion_fecha = null;
+};
+
+const clearAvalLider = (doc) => {
+    doc.estado_aval = null;
+    doc.aval_por = '';
+    doc.aval_comentario = '';
+    doc.aval_razones = [];
+    doc.aval_otro_cual = '';
+    doc.aval_fecha = null;
+};
+
+const isAdminEmail = async (email) => {
+    const admins = await getAdminEmails();
+    return admins.includes(normalizeEmail(email));
+};
+
+// Permite a un evaluador deshacer su aprobación aunque el reporte ya haya avanzado
+// a los siguientes niveles (por si se equivocó). Las evaluaciones posteriores quedan
+// sin efecto. Modos:
+//  - 'reabrir':  el reporte vuelve a quedar pendiente de la evaluación de ese nivel.
+//  - 'devolver': el reporte regresa al responsable de la acción para correcciones.
+const revertirAprobacion = async (respuestaId, { nivel, modo, por, motivo }) => {
+    if (!['proyecto', 'lider', 'planeacion'].includes(nivel)) {
+        throw new Error('nivel debe ser proyecto, lider o planeacion');
+    }
+    if (!['reabrir', 'devolver'].includes(modo)) throw new Error('modo debe ser reabrir o devolver');
+    const motivoTexto = String(motivo ?? '').trim();
+    if (!motivoTexto) throw new Error('Debes indicar el motivo por el que deshaces la aprobación');
+
+    const doc = await Respuesta.findById(respuestaId);
+    if (!doc) throw new Error('Respuesta no encontrada');
+    if (doc.estado !== 'Enviado') {
+        throw new Error('El reporte ya no está enviado (fue devuelto o está en borrador); no hay aprobación que deshacer.');
+    }
+
+    const indicadorId = getRefId(doc.indicador_id);
+    const porEmail = normalizeEmail(por);
+    const responderEmail = normalizeEmail(doc.respondido_por);
+
+    if (nivel === 'proyecto') {
+        if (doc.estado_aval_proyecto !== 'Aprobado') {
+            throw new Error('Este reporte no tiene una aprobación del responsable del proyecto para deshacer.');
+        }
+        const emails = await getResponsablesEmailsForProyectoOfIndicador(indicadorId);
+        if (porEmail && !emails.includes(porEmail) && !(await isAdminEmail(porEmail))) {
+            throw new Error('Solo el responsable del proyecto puede deshacer esta aprobación.');
+        }
+        if (modo === 'reabrir' && (!emails.length || emails.includes(responderEmail))) {
+            throw new Error('Esta aprobación fue automática (quien reportó es el responsable del proyecto). Usa "Devolver para correcciones".');
+        }
+    } else if (nivel === 'lider') {
+        if (doc.estado_aval !== 'Aprobado') {
+            throw new Error('Este reporte no tiene una aprobación del líder para deshacer.');
+        }
+        const emails = await getLideresEmailsForIndicador(indicadorId);
+        if (porEmail && !emails.includes(porEmail) && !(await isAdminEmail(porEmail))) {
+            throw new Error('Solo el líder del macroproyecto puede deshacer esta aprobación.');
+        }
+        if (modo === 'reabrir' && (!emails.length || emails.includes(responderEmail))) {
+            throw new Error('Esta aprobación fue automática (quien reportó es el líder del macroproyecto). Usa "Devolver para correcciones".');
+        }
+    } else if (doc.aval_planeacion !== 'Validado') {
+        throw new Error('Este reporte no ha sido validado por Planeación; no hay validación que deshacer.');
+    }
+
+    const llegoAPlaneacion = doc.estado_aval === 'Aprobado';
+    const ahora = new Date();
+    let estadoPeriodo;
+
+    if (modo === 'reabrir') {
+        if (nivel === 'planeacion') {
+            clearPlaneacion(doc);
+            doc.aval_planeacion = 'Pendiente';
+            estadoPeriodo = 'Aprobado';
+        } else if (nivel === 'lider') {
+            clearPlaneacion(doc);
+            clearAvalLider(doc);
+            doc.estado_aval = 'Pendiente';
+            doc.lider_email_aval = (await getLideresEmailsForIndicador(indicadorId))[0] || doc.lider_email_aval;
+            estadoPeriodo = 'Enviado';
+        } else {
+            clearPlaneacion(doc);
+            clearAvalLider(doc);
+            doc.estado_aval_proyecto = 'Pendiente';
+            doc.aval_proyecto_por = '';
+            doc.aval_proyecto_comentario = '';
+            doc.aval_proyecto_razones = [];
+            doc.aval_proyecto_otro_cual = '';
+            doc.aval_proyecto_fecha = null;
+            doc.proyecto_email_aval = (await getResponsablesEmailsForProyectoOfIndicador(indicadorId))[0] || doc.proyecto_email_aval;
+            estadoPeriodo = 'Enviado';
+        }
+    } else {
+        if (nivel === 'planeacion') {
+            doc.aval_planeacion = 'Devuelto';
+            doc.aval_planeacion_por = por ?? '';
+            doc.aval_planeacion_comentario = motivoTexto;
+            doc.aval_planeacion_fecha = ahora;
+            clearAvalLider(doc);
+            estadoPeriodo = 'Borrador';
+        } else if (nivel === 'lider') {
+            clearPlaneacion(doc);
+            doc.estado_aval = 'Rechazado';
+            doc.aval_por = por ?? '';
+            doc.aval_comentario = motivoTexto;
+            doc.aval_razones = [];
+            doc.aval_otro_cual = '';
+            doc.aval_fecha = ahora;
+            estadoPeriodo = 'Rechazado';
+        } else {
+            clearPlaneacion(doc);
+            clearAvalLider(doc);
+            doc.estado_aval_proyecto = 'Rechazado';
+            doc.aval_proyecto_por = por ?? '';
+            doc.aval_proyecto_comentario = motivoTexto;
+            doc.aval_proyecto_razones = [];
+            doc.aval_proyecto_otro_cual = '';
+            doc.aval_proyecto_fecha = ahora;
+            estadoPeriodo = 'Rechazado';
+        }
+        doc.estado = 'Borrador';
+        doc.fecha_envio = null;
+    }
+
+    doc.reversiones.push({ nivel, modo, por: por ?? '', motivo: motivoTexto, fecha: ahora });
+    await doc.save();
+
+    await syncPeriodoReporte({
+        indicador_id: indicadorId,
+        corte: doc.corte,
+        estado_reporte: estadoPeriodo,
+        ...(estadoPeriodo === 'Borrador' ? { reportado_por: '', fecha_envio: null } : {}),
+    });
+
+    const quien = NIVEL_LABEL[nivel];
+    if (modo === 'devolver') {
+        await notificarDevolucion(doc, {
+            nivel,
+            por,
+            comentario: motivoTexto,
+            incluirAdmins: llegoAPlaneacion && nivel !== 'planeacion',
+            titulo: 'Aprobación deshecha - reporte devuelto',
+            intro: `${quien.charAt(0).toUpperCase() + quien.slice(1)} deshizo la aprobación que había dado y devolvió el reporte para correcciones. El responsable de la acción debe ajustarlo y reenviarlo.`,
+        });
+    } else {
+        const { indicador, accion } = await getIndicadorConAccion(indicadorId);
+        const [lideres, proyecto, admins] = await Promise.all([
+            getLideresEmailsForIndicador(indicadorId),
+            getResponsablesEmailsForProyectoOfIndicador(indicadorId),
+            llegoAPlaneacion || nivel === 'planeacion' ? getAdminEmails() : [],
+        ]);
+        const { sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
+        await sendRespuestaEstadoNotification({
+            recipients: [doc.respondido_por, ...proyecto, ...lideres, ...admins],
+            subject: `Aprobación deshecha: ${accion?.codigo || indicador?.codigo || 'PDI'} - ${doc.corte}`,
+            headerTitle: 'Aprobación deshecha - reporte en nueva revisión',
+            introText: `${quien.charAt(0).toUpperCase() + quien.slice(1)} deshizo la aprobación del reporte y lo volverá a evaluar. Por ahora el reporte queda nuevamente en revisión.`,
+            statusLabel: 'EN REVISIÓN',
+            statusColor: '#f59e0b',
+            indicador,
+            accion,
+            corte: doc.corte,
+            respondidoPor: doc.respondido_por,
+            evaluadoPor: por,
+            comentario: motivoTexto,
+            comentarioLabel: 'Motivo',
+        });
+    }
+
+    return doc;
+};
+
+// Describe quién devolvió el reporte y por qué (para las alertas del administrador)
+const describirDevolucion = (doc) => {
+    if (doc.aval_planeacion === 'Devuelto') {
+        return {
+            nivel: 'planeacion', nivel_label: 'Planeación',
+            por: doc.aval_planeacion_por, comentario: doc.aval_planeacion_comentario,
+            razones: [], fecha: doc.aval_planeacion_fecha,
+        };
+    }
+    if (doc.estado_aval === 'Rechazado') {
+        return {
+            nivel: 'lider', nivel_label: 'Líder del macroproyecto',
+            por: doc.aval_por, comentario: doc.aval_comentario,
+            razones: buildMotivo(doc.aval_razones, doc.aval_otro_cual), fecha: doc.aval_fecha,
+        };
+    }
+    return {
+        nivel: 'proyecto', nivel_label: 'Responsable del proyecto',
+        por: doc.aval_proyecto_por, comentario: doc.aval_proyecto_comentario,
+        razones: buildMotivo(doc.aval_proyecto_razones, doc.aval_proyecto_otro_cual), fecha: doc.aval_proyecto_fecha,
+    };
+};
+
+// Reportes devueltos que aún no han sido corregidos y reenviados
+const getRespuestasDevueltas = async () => {
+    const docs = await Respuesta.find({
+        estado: 'Borrador',
+        $or: [
+            { estado_aval_proyecto: 'Rechazado' },
+            { estado_aval: 'Rechazado' },
+            { aval_planeacion: 'Devuelto' },
+        ],
+    })
+        .select('-respuestas')
+        .populate('formulario_id', 'nombre')
+        .populate({
+            path: 'indicador_id',
+            select: 'codigo nombre accion_id',
+            populate: { path: 'accion_id', select: 'codigo nombre' },
+        })
+        .sort({ updatedAt: -1 })
+        .lean();
+
+    return docs.map((doc) => {
+        const accion = doc.indicador_id?.accion_id;
+        return {
+            ...withEvaluacionNavigation(doc, 'planeacion'),
+            accion: accion ? { _id: accion._id, codigo: accion.codigo, nombre: accion.nombre } : null,
+            devolucion: describirDevolucion(doc),
+        };
+    });
 };
 
 // Retorna todas las respuestas pendientes de evaluación para un responsable de proyecto
@@ -1309,6 +1607,7 @@ module.exports = {
     getAll, getById, create, update, remove,
     getRespuestas, getRespuestaById, upsertRespuesta, deleteRespuesta,
     avalProyecto, avalRespuesta, marcarComentarioCampoResuelto, avalPlaneacion,
+    revertirAprobacion, getRespuestasDevueltas, notificarPendienteEvaluacion,
     getRespuestasPendientesAvalProyecto, getRespuestasPendientesResponsableProyecto,
     getRespuestasPendientesAval, getRespuestasPendientesLider, getRespuestasPendientesPlaneacion, getLiderEmailForIndicador,
     getResponsableProyectoEmailForIndicador,

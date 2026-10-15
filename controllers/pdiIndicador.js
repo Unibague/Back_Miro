@@ -881,7 +881,8 @@ ctrl.updateEvidenciaEstado = async (req, res) => {
               const User = require('../models/users');
               
               try {
-                const admins = await User.find({ roles: 'Administrador' }).select('email full_name').lean();
+                const { getPdiAdminUsers } = require('../services/pdiAdminRecipients');
+                const admins = await getPdiAdminUsers();
                 console.log(`[updateEvidenciaEstado] Administradores encontrados: ${admins ? admins.length : 0}`);
                 
                 if (admins && admins.length > 0) {

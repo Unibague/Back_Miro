@@ -5,8 +5,9 @@ const {
     Document, Packer, Paragraph, TextRun, HeadingLevel,
 } = require('docx');
 const { UPLOAD_DIR, buildUrl, deleteFile } = require('./pdiFormularioStorage');
-const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('./pdiDriveStorage');
+const { uploadOrReplaceFile } = require('./pdiDriveStorage');
 const { getHierarchyForIndicador, withCorte } = require('./pdiDriveHierarchy');
+const Indicador = require('../models/pdiIndicador');
 const {
     buildMembreteHeader: buildPdiMembreteHeader,
     applyMembreteDocxTemplate,
@@ -103,7 +104,47 @@ const buildEvidenciaSection = (respuesta) => {
     return blocks;
 };
 
-const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicadorNombre, indicadorCodigo }) => {
+const toNumber = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(String(value).replace('%', '').replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const formatPct = (value) => `${(Math.round(value * 100) / 100).toLocaleString('es-CO')}%`;
+
+// Resumen del avance del indicador para el corte reportado: meta y avance del
+// periodo, % de cumplimiento del periodo y % de avance acumulado frente a la meta final.
+const buildAvanceSection = (indicador, corte) => {
+    if (!indicador) return [];
+    const corteKey = String(corte ?? '').trim().toUpperCase();
+    const periodo = (indicador.periodos ?? []).find(
+        (p) => String(p.periodo ?? '').trim().toUpperCase() === corteKey
+    );
+    const meta = toNumber(periodo?.meta);
+    const avance = toNumber(periodo?.avance);
+    const cumplimientoPeriodo = meta && avance !== null ? Math.min((avance / meta) * 100, 100) : null;
+    const avanceTotal = toNumber(indicador.avance_total_real ?? indicador.avance);
+
+    const fila = (label, value) => new Paragraph({
+        children: [new TextRun({ text: `${label}: `, bold: true }), new TextRun(value)],
+    });
+
+    return [
+        new Paragraph({
+            spacing: { before: 300, after: 100 },
+            children: [new TextRun({ text: 'Porcentaje de avance', bold: true, size: 26 })],
+        }),
+        fila('Meta del periodo', periodo?.meta != null && periodo?.meta !== '' ? String(periodo.meta) : 'Sin dato'),
+        fila('Avance reportado', periodo?.avance != null && periodo?.avance !== '' ? String(periodo.avance) : 'Sin dato'),
+        fila('Cumplimiento del periodo', cumplimientoPeriodo !== null ? formatPct(cumplimientoPeriodo) : 'Sin dato'),
+        fila(
+            `Avance total frente a la meta final${indicador.meta_final_2029 != null ? ` (${indicador.meta_final_2029})` : ''}`,
+            avanceTotal !== null ? formatPct(avanceTotal) : 'Sin dato'
+        ),
+    ];
+};
+
+const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicadorNombre, indicadorCodigo, indicador }) => {
     const membreteHeader = buildMembreteHeader();
     const section = {
         children: [
@@ -119,6 +160,7 @@ const generateWordForRespuesta = async ({ respuesta, formularioNombre, indicador
             new Paragraph({
                 children: [new TextRun(`Fecha de envío: ${respuesta.fecha_envio ? new Date(respuesta.fecha_envio).toLocaleDateString('es-CO') : 'Sin fecha'}`)],
             }),
+            ...buildAvanceSection(indicador, respuesta.corte),
             ...buildAnswerParagraphs(respuesta.respuestas),
         ],
     };
@@ -146,29 +188,35 @@ const replaceWordDocument = async ({ respuesta, formularioNombre, indicadorNombr
     if (respuesta.word_filename) {
         deleteFile(respuesta.word_filename);
     }
-    if (respuesta.word_drive_file_id) {
-        await deleteDriveFile(respuesta.word_drive_file_id);
-    }
+
+    const indicadorId = typeof respuesta.indicador_id === 'object'
+        ? respuesta.indicador_id?._id
+        : respuesta.indicador_id;
+    const indicador = indicadorId
+        ? await Indicador.findById(indicadorId)
+            .select('codigo nombre periodos meta_final_2029 avance avance_total_real')
+            .lean()
+        : null;
 
     const generated = await generateWordForRespuesta({
         respuesta,
         formularioNombre,
         indicadorNombre,
         indicadorCodigo,
+        indicador,
     });
 
-    const indicadorId = typeof respuesta.indicador_id === 'object'
-        ? respuesta.indicador_id?._id
-        : respuesta.indicador_id;
-
+    // Se reemplaza el reporte anterior en Drive (mismo archivo) para que solo
+    // exista la última versión y no se acumulen copias que generen confusión.
     const uploaded = indicadorId
         ? await (async () => {
             const { jerarquia } = await getHierarchyForIndicador(indicadorId);
-            return uploadDriveFile(
+            return uploadOrReplaceFile(
                 generated.buffer,
                 generated.driveNombre,
                 generated.mimetype,
-                withCorte(jerarquia, respuesta.corte)
+                withCorte(jerarquia, respuesta.corte),
+                { previousFileId: respuesta.word_drive_file_id }
             );
         })()
         : null;

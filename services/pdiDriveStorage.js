@@ -110,17 +110,80 @@ async function uploadFile(buffer, nombreOriginal, mimetype, jerarquia = {}) {
     };
 }
 
+// En unidades compartidas la cuenta de servicio no siempre puede borrar
+// definitivamente; en ese caso se envía a la papelera para que deje de verse.
+async function removeFile(drive, fileId) {
+    if (!fileId) return;
+    try {
+        await drive.files.delete({ fileId, supportsAllDrives: true });
+    } catch (e) {
+        try {
+            await drive.files.update({ fileId, requestBody: { trashed: true }, supportsAllDrives: true });
+        } catch (trashErr) {
+            console.error('Drive removeFile error:', trashErr.message);
+        }
+    }
+}
+
 /**
  * Elimina un archivo de Drive por su fileId.
  */
 async function deleteFile(fileId) {
     if (!fileId) return;
     try {
-        const drive = getDriveClient();
-        await drive.files.delete({ fileId, supportsAllDrives: true });
+        await removeFile(getDriveClient(), fileId);
     } catch (e) {
         console.error('Drive deleteFile error:', e.message);
     }
 }
 
-module.exports = { uploadFile, deleteFile, getOrCreateFolder, resolverJerarquia, getDriveClient };
+/**
+ * Sube un reporte garantizando que en la carpeta solo quede la ÚLTIMA versión:
+ * si ya existe un archivo con el mismo nombre se reemplaza su contenido (mismo
+ * fileId y mismo enlace), y cualquier copia duplicada o versión anterior en otra
+ * carpeta (previousFileId) se elimina.
+ */
+async function uploadOrReplaceFile(buffer, nombre, mimetype, jerarquia = {}, { previousFileId = '' } = {}) {
+    const drive = getDriveClient();
+    const folderId = await resolverJerarquia(drive, jerarquia);
+
+    const existing = await drive.files.list({
+        q: `name='${escapeDriveQueryValue(nombre)}' and '${folderId}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`,
+        fields: 'files(id, modifiedTime)',
+        orderBy: 'modifiedTime desc',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    const files = existing.data.files || [];
+    const target = files.find((f) => f.id === previousFileId) || files[0] || null;
+
+    let result = null;
+    if (target) {
+        try {
+            const res = await drive.files.update({
+                fileId: target.id,
+                media: { mimeType: mimetype, body: Readable.from(buffer) },
+                fields: 'id, webViewLink, webContentLink, name',
+                supportsAllDrives: true,
+            });
+            result = {
+                fileId: res.data.id,
+                webViewLink: res.data.webViewLink,
+                webContentLink: res.data.webContentLink,
+                nombre: res.data.name,
+            };
+        } catch (e) {
+            console.warn('Drive update warning, se crea un archivo nuevo:', e.message);
+        }
+    }
+    if (!result) result = await uploadFile(buffer, nombre, mimetype, jerarquia);
+
+    const obsoletos = new Set(files.map((f) => f.id));
+    if (previousFileId) obsoletos.add(previousFileId);
+    obsoletos.delete(result.fileId);
+    for (const fileId of obsoletos) await removeFile(drive, fileId);
+
+    return result;
+}
+
+module.exports = { uploadFile, uploadOrReplaceFile, deleteFile, getOrCreateFolder, resolverJerarquia, getDriveClient };

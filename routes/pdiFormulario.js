@@ -16,6 +16,7 @@ router.get('/respuestas/pendientes-responsable-proyecto', ctrl.getRespuestasPend
 router.get('/respuestas/pendientes-aval',          ctrl.getRespuestasPendientesAval);
 router.get('/respuestas/pendientes-lider',         ctrl.getRespuestasPendientesLider);
 router.get('/respuestas/pendientes-planeacion',    ctrl.getRespuestasPendientesPlaneacion);
+router.get('/respuestas/devueltas',               ctrl.getRespuestasDevueltas);
 router.get('/respuestas/por-indicador',            ctrl.getRespuestasPorIndicador);
 router.get('/respuestas/lider-email-indicador',    ctrl.getLiderEmailIndicador);
 router.get('/respuestas/responsable-proyecto-email-indicador', ctrl.getResponsableProyectoEmailIndicador);
@@ -27,6 +28,7 @@ router.put('/:id/respuestas/:respuestaId/aval-proyecto', ctrl.avalProyecto);
 router.put('/:id/respuestas/:respuestaId/aval',        ctrl.avalRespuesta);
 router.put('/:id/respuestas/:respuestaId/comentarios/:campoId/resuelto', ctrl.marcarComentarioCampoResuelto);
 router.put('/:id/respuestas/:respuestaId/planeacion',  ctrl.avalPlaneacion);
+router.put('/:id/respuestas/:respuestaId/revertir',    ctrl.revertirAprobacion);
 router.delete('/:id/respuestas/:respuestaId',    ctrl.deleteRespuesta);
 
 // ── Error handler de multer (tipo de archivo o tamaño rechazado) ──────────

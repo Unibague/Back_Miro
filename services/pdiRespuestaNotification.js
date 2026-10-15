@@ -309,7 +309,25 @@ const sendRespuestaApprovedToAdmins = async (respuesta, formulario, indicador, l
   }
 };
 
-const buildEmailHtmlEstadoGenerico = ({ headerTitle, introText, statusLabel, statusColor, indicadorCodigo, indicadorNombre, corteName, comentario, comentarioLabel, reportadoPor }) => {
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildEmailHtmlEstadoGenerico = ({ headerTitle, introText, statusLabel, statusColor, indicadorCodigo, indicadorNombre, corteName, comentario, comentarioLabel, reportadoPor, accionLabel, razones = [], evaluadoPor }) => {
+  comentario = comentario ? escapeHtml(comentario).split(/\r?\n/).join('<br>') : '';
+  const razonesHtml = (razones || []).filter(Boolean).map((r) => `<li style="margin:0 0 4px;">${escapeHtml(r)}</li>`).join('');
+  const filaExtra = (label, value) => value ? `
+                <tr>
+                  <td style="padding:12px 16px;border-right:1px solid #e5e7eb;border-top:1px solid #e5e7eb;width:40%;">
+                    <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">${label}</div>
+                  </td>
+                  <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
+                    <div style="font-size:14px;color:#475569;">${escapeHtml(value)}</div>
+                  </td>
+                </tr>` : '';
   return `
     <div style="margin:0;padding:0;background:#f5f7fa;font-family:'Segoe UI',Arial,Helvetica,sans-serif;">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7fa;padding:20px 15px;">
@@ -368,10 +386,19 @@ const buildEmailHtmlEstadoGenerico = ({ headerTitle, introText, statusLabel, sta
                     <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;">Reportado por</div>
                   </td>
                   <td style="padding:12px 16px;border-top:1px solid #e5e7eb;width:60%;">
-                    <div style="font-size:14px;color:#475569;">${reportadoPor || 'No especificado'}</div>
+                    <div style="font-size:14px;color:#475569;">${escapeHtml(reportadoPor || 'No especificado')}</div>
                   </td>
                 </tr>
+                ${filaExtra('Acción estratégica', accionLabel)}
+                ${filaExtra('Evaluado por', evaluadoPor)}
               </table>
+
+              ${razonesHtml ? `
+                <div style="margin:28px 0 0;padding:20px;background:#fef2f2;border-left:4px solid ${statusColor};border-radius:4px;">
+                  <div style="font-size:11px;color:#7c8fa3;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Motivo</div>
+                  <ul style="margin:0;padding-left:18px;font-size:14px;color:#2c3e50;line-height:1.7;">${razonesHtml}</ul>
+                </div>
+              ` : ''}
 
               <!-- Comments Section -->
               ${comentario ? `
@@ -413,7 +440,7 @@ const buildEmailHtmlEstadoGenerico = ({ headerTitle, introText, statusLabel, sta
 
 // Notificación genérica multi-destinatario (usada para "devuelto por Planeación" y para
 // avisar al responsable del proyecto cuando el líder del macroproyecto rechaza un reporte).
-const sendRespuestaEstadoNotification = async ({ recipients, subject, headerTitle, introText, statusLabel, statusColor, indicador, corte, respondidoPor, comentario, comentarioLabel }) => {
+const sendRespuestaEstadoNotification = async ({ recipients, subject, headerTitle, introText, statusLabel, statusColor, indicador, corte, respondidoPor, comentario, comentarioLabel, accion, razones, evaluadoPor }) => {
   const destinatarios = Array.from(new Set((recipients || []).map((e) => String(e || '').trim().toLowerCase()).filter(Boolean)));
   if (destinatarios.length === 0) {
     console.warn('[PDI-RESPUESTA-ESTADO] No hay destinatarios para la notificación');
@@ -439,12 +466,15 @@ const sendRespuestaEstadoNotification = async ({ recipients, subject, headerTitl
         introText,
         statusLabel,
         statusColor,
-        indicadorCodigo: indicador?.codigo || 'Sin código',
-        indicadorNombre: indicador?.nombre || 'Sin nombre',
-        corteName: corte || 'Sin corte',
+        indicadorCodigo: escapeHtml(indicador?.codigo || 'Sin código'),
+        indicadorNombre: escapeHtml(indicador?.nombre || 'Sin nombre'),
+        corteName: escapeHtml(corte || 'Sin corte'),
         comentario,
         comentarioLabel,
         reportadoPor: respondidoPor,
+        accionLabel: accion ? [accion.codigo, accion.nombre].filter(Boolean).join(' · ') : '',
+        razones,
+        evaluadoPor,
       }),
     });
     console.log(`[PDI-RESPUESTA-ESTADO] ✓ Email enviado a: ${destinatarios.join(', ')} - ${statusLabel}`);

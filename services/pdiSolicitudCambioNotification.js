@@ -10,10 +10,9 @@ const dayjs = require('dayjs');
 
 const getAdministradores = async () => {
   try {
-    const admins = await User.find({
-      roles: 'Administrador',
-      isActive: true
-    }).select('email full_name').lean();
+    // Solo administradores con el perfil PDI, no todos los administradores
+    const { getPdiAdminUsers } = require('./pdiAdminRecipients');
+    const admins = await getPdiAdminUsers();
     
     return admins.map(admin => ({
       email: admin.email,
