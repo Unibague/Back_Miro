@@ -223,6 +223,8 @@ templateController.getPlantillas = async (req, res) => {
   // listado paginado/busqueda no los usa para renderizar filas, asi que se
   // omiten por defecto para no pagar ese costo en cada tecla de busqueda.
   const withValidators = req.query.withValidators === "true";
+  // Nombres de todos los productores y del productor encargado (consolidado Excel)
+  const withProducers = req.query.withProducers === "true";
 
   try {
     const query = search
@@ -281,18 +283,46 @@ templateController.getPlantillas = async (req, res) => {
           // un documento de Mongoose sin convertir no se serializa en el JSON.
           template = template.toObject();
         }
+        let publishedTemplate = null;
         if (periodId) {
-          const publishedTemplate = await PubTemplate.findOne(
+          publishedTemplate = await PubTemplate.findOne(
             buildPublishedTemplateLookup(template._id, periodId)
-          );
+          ).lean();
           template.published = !!publishedTemplate;
         }
         if (withValidators) {
           template.validators = await collectValidatorsForTemplate(template, periodId);
         }
+        if (withProducers) {
+          // La publicación del periodo manda (puede tener productores distintos a la plantilla base)
+          const producers = publishedTemplate?.template?.producers?.length
+            ? publishedTemplate.template.producers
+            : template.producers;
+          const responsibles = publishedTemplate?.responsible_producers?.length
+            ? publishedTemplate.responsible_producers
+            : template.responsible_producers;
+          template.producer_ids = (producers || []).map(String);
+          template.responsible_producer_ids = (responsibles || []).map(String);
+        }
         return template;
       })
     );
+
+    if (withProducers) {
+      const ids = [...new Set(templatesWithValidators.flatMap((t) => [
+        ...(t.producer_ids || []),
+        ...(t.responsible_producer_ids || []),
+      ]))].filter((id) => mongoose.Types.ObjectId.isValid(id));
+      const deps = await Dependency.find({ _id: { $in: ids } }).select('name dep_code').lean();
+      const nameById = new Map(deps.map((d) => [String(d._id), d.name || d.dep_code]));
+      const toNames = (list = []) => list.map((id) => nameById.get(id)).filter(Boolean);
+      templatesWithValidators.forEach((t) => {
+        t.producer_names = toNames(t.producer_ids);
+        t.responsible_producer_names = toNames(t.responsible_producer_ids);
+        delete t.producer_ids;
+        delete t.responsible_producer_ids;
+      });
+    }
 
     res.status(200).json({
       templates: templatesWithValidators,
