@@ -73,7 +73,7 @@ const buildEmailHtmlResponsable = (respuesta, formulario, indicador) => {
               <div style="margin:32px 0;padding:20px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
                 <div style="font-size:11px;color:#166534;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Próximos Pasos</div>
                 <div style="font-size:14px;color:#166534;line-height:1.8;">
-                  Su información está siendo revisada. Los evaluadores correspondientes (responsable del proyecto y líder del macroproyecto) revisarán los datos y se le notificará el resultado. Puede acceder a la plataforma para monitorear el estado.
+                  Su información está siendo revisada. El líder del macroproyecto revisará los datos y se le notificará el resultado. Puede acceder a la plataforma para monitorear el estado.
                 </div>
               </div>
 
@@ -483,12 +483,13 @@ const sendIndicadorUploadNotification = async (respuesta, formulario, indicador)
       console.warn('[PDI-UPLOAD-NOTIFY] No se encontró email del productor');
     }
 
-    // 2. Responsables (líderes) del proyecto: el reporte llega primero a su revisión
-    if (respuesta.estado_aval_proyecto === 'Pendiente') {
+    // 2. Responsables (líderes) del proyecto: solo se les informa; no evalúan.
+    {
       const { notificarPendienteEvaluacion } = require('./pdiFormulario');
       await notificarPendienteEvaluacion(respuesta, 'proyecto', {
+        informativo: true,
         titulo: 'Nueva información reportada',
-        intro: 'El responsable de una acción de su proyecto cargó información de avance. Ingrese a la plataforma para revisarla y aprobarla o devolverla con observaciones.',
+        intro: 'El responsable de una acción de su proyecto cargó información de avance. Este correo es informativo: la evaluación la realiza el líder del macroproyecto.',
       });
     }
 
