@@ -453,7 +453,7 @@ const notificarDevolucion = async (doc, { nivel, por, comentario, razones = [], 
 };
 
 // Avisa a los evaluadores del nivel indicado que tienen un reporte pendiente.
-const notificarPendienteEvaluacion = async (doc, nivel, { titulo, intro } = {}) => {
+const notificarPendienteEvaluacion = async (doc, nivel, { titulo, intro, informativo = false } = {}) => {
     try {
         const recipients = nivel === 'proyecto'
             ? await getResponsablesEmailsForProyectoOfIndicador(doc.indicador_id)
@@ -467,11 +467,11 @@ const notificarPendienteEvaluacion = async (doc, nivel, { titulo, intro } = {}) 
         const { sendRespuestaEstadoNotification } = require('./pdiRespuestaNotification');
         await sendRespuestaEstadoNotification({
             recipients: filtrados,
-            subject: `[REVISIÓN] ${titulo || 'Reporte pendiente de evaluación'}: ${indicador?.codigo || 'PDI'} - ${doc.corte}`,
+            subject: `${informativo ? '' : '[REVISIÓN] '}${titulo || 'Reporte pendiente de evaluación'}: ${indicador?.codigo || 'PDI'} - ${doc.corte}`,
             headerTitle: titulo || 'Reporte pendiente de su evaluación',
             introText: intro || 'Se registró información de avance que requiere su revisión. Ingrese a la plataforma para aprobarla o devolverla con observaciones.',
-            statusLabel: 'PENDIENTE',
-            statusColor: '#f59e0b',
+            statusLabel: informativo ? 'INFORMATIVO' : 'PENDIENTE',
+            statusColor: informativo ? '#2563eb' : '#f59e0b',
             indicador,
             accion,
             corte: doc.corte,
@@ -620,14 +620,6 @@ const isResponderLeaderForIndicador = async (indicadorId, email) => {
     return lideresEmails.includes(responderEmail);
 };
 
-const isResponderProyectoResponsableForIndicador = async (indicadorId, email) => {
-    const responderEmail = normalizeEmail(email);
-    if (!indicadorId || !responderEmail) return false;
-
-    const proyectoEmails = await getResponsablesEmailsForProyectoOfIndicador(indicadorId);
-    return proyectoEmails.includes(responderEmail);
-};
-
 // Calcula el estado del aval del líder de macroproyecto una vez el nivel de
 // proyecto ya quedó Aprobado. No guarda el documento, solo lo deja listo.
 const applyMacroAvalAfterProyectoApproval = async (doc) => {
@@ -666,24 +658,34 @@ const applyMacroAvalAfterProyectoApproval = async (doc) => {
     }
 };
 
-const autoApproveProyectoIfResponderIsResponsable = async (doc) => {
+// El responsable del proyecto ya NO evalúa reportes (solo se le notifica cuando el
+// responsable de una acción carga información): el nivel de proyecto queda aprobado
+// automáticamente y el reporte pasa directo al líder del macroproyecto. Esto también
+// mueve al líder los reportes que habían quedado pendientes del responsable de proyecto.
+const autoApproveNivelProyecto = async (doc) => {
     if (!doc || doc.estado !== 'Enviado') return false;
     if (doc.estado_aval_proyecto !== 'Pendiente' && doc.estado_aval_proyecto != null) return false;
     if (PLANEACION_EVALUATED_STATES.includes(doc.aval_planeacion)) return false;
 
     const responderEmail = normalizeEmail(doc.respondido_por);
     const indicadorId = getRefId(doc.indicador_id);
-    const isResponsable = await isResponderProyectoResponsableForIndicador(indicadorId, responderEmail);
-    if (!isResponsable) return false;
+    const proyectoEmails = await getResponsablesEmailsForProyectoOfIndicador(indicadorId);
 
-    doc.proyecto_email_aval = responderEmail;
+    doc.proyecto_email_aval = proyectoEmails[0] || responderEmail;
     doc.estado_aval_proyecto = 'Aprobado';
     doc.aval_proyecto_por = doc.aval_proyecto_por || doc.respondido_por || responderEmail;
     doc.aval_proyecto_comentario = '';
     doc.aval_proyecto_fecha = doc.aval_proyecto_fecha || new Date();
 
-    await applyMacroAvalAfterProyectoApproval(doc);
+    // Documentos antiguos que ya tenían estado del líder: no se toca ese nivel
+    const pasaAlLider = doc.estado_aval == null;
+    if (pasaAlLider) await applyMacroAvalAfterProyectoApproval(doc);
     await doc.save();
+
+    if (pasaAlLider && doc.estado_aval === 'Pendiente') {
+        // Sin await: no se demora la consulta que disparó la migración
+        notificarPendienteEvaluacion(doc, 'lider');
+    }
 
     await syncPeriodoReporte({
         indicador_id: indicadorId,
@@ -734,7 +736,7 @@ const autoApproveIfResponderIsLeader = async (doc) => {
 const autoApproveLeaderSubmittedResponses = async (docs = []) => {
     const list = Array.isArray(docs) ? docs : [docs].filter(Boolean);
     for (const doc of list) {
-        await autoApproveProyectoIfResponderIsResponsable(doc);
+        await autoApproveNivelProyecto(doc);
         await autoApproveIfResponderIsLeader(doc);
     }
     return docs;
@@ -793,32 +795,17 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     }
 
     if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
-        // Nivel 1: aval del responsable del proyecto (nuevo — antes del líder de macroproyecto)
-        const proyectoEmails = [
-            ...new Set([
-                ...(await getResponsablesEmailsForProyectoOfIndicador(indicador_id)),
-                normalizeEmail(existing?.proyecto_email_aval),
-            ].filter(Boolean)),
-        ];
+        // Nivel 1 (responsable del proyecto): ya no evalúa, solo se le notifica.
+        // Queda aprobado automáticamente y el reporte pasa directo al líder del macroproyecto.
         const responderEmail = normalizeEmail(respondido_por);
-        const proyectoEmail = proyectoEmails[0] || normalizeEmail(existing?.proyecto_email_aval);
-        const respondeElMismoResponsableProyecto = proyectoEmail && proyectoEmails.includes(responderEmail);
-
-        if (!proyectoEmail || respondeElMismoResponsableProyecto) {
-            // Sin responsable de proyecto configurado, o el mismo responsable de proyecto
-            // es quien reporta la acción → aprobación automática de este nivel.
-            avalData.proyecto_email_aval = responderEmail || proyectoEmail || '';
-            avalData.estado_aval_proyecto = 'Aprobado';
-            avalData.aval_proyecto_por = respondido_por;
-            avalData.aval_proyecto_comentario = '';
-            avalData.aval_proyecto_fecha = new Date();
-        } else {
-            avalData.proyecto_email_aval = proyectoEmail;
-            avalData.estado_aval_proyecto = 'Pendiente';
-            avalData.aval_proyecto_por = '';
-            avalData.aval_proyecto_comentario = '';
-            avalData.aval_proyecto_fecha = null;
-        }
+        const proyectoEmails = await getResponsablesEmailsForProyectoOfIndicador(indicador_id);
+        avalData.proyecto_email_aval = proyectoEmails[0] || responderEmail || '';
+        avalData.estado_aval_proyecto = 'Aprobado';
+        avalData.aval_proyecto_por = respondido_por;
+        avalData.aval_proyecto_comentario = '';
+        avalData.aval_proyecto_razones = [];
+        avalData.aval_proyecto_otro_cual = '';
+        avalData.aval_proyecto_fecha = new Date();
 
         // Nivel 2: aval del líder de macroproyecto — solo se calcula si el nivel 1 ya quedó aprobado
         if (avalData.estado_aval_proyecto === 'Aprobado') {
@@ -975,6 +962,7 @@ const avalProyecto = async (respuestaId, { estado_aval_proyecto, aval_por, aval_
     if (!doc) throw new Error('Respuesta no encontrada');
     if (doc.estado !== 'Enviado') throw new Error('Solo se pueden evaluar respuestas enviadas');
     if (doc.estado_aval_proyecto !== 'Pendiente') {
+        // Desde que el responsable del proyecto dejó de evaluar, los reportes no quedan pendientes de este nivel
         throw new Error('Esta respuesta no está pendiente de evaluación del responsable del proyecto. Si la aprobaste por error, usa "Deshacer aprobación".');
     }
     const razonesNormalizadas = estado_aval_proyecto === 'Rechazado'
@@ -1291,17 +1279,9 @@ const revertirAprobacion = async (respuestaId, { nivel, modo, por, motivo }) => 
     const responderEmail = normalizeEmail(doc.respondido_por);
 
     if (nivel === 'proyecto') {
-        if (doc.estado_aval_proyecto !== 'Aprobado') {
-            throw new Error('Este reporte no tiene una aprobación del responsable del proyecto para deshacer.');
-        }
-        const emails = await getResponsablesEmailsForProyectoOfIndicador(indicadorId);
-        if (porEmail && !emails.includes(porEmail) && !(await isAdminEmail(porEmail))) {
-            throw new Error('Solo el responsable del proyecto puede deshacer esta aprobación.');
-        }
-        if (modo === 'reabrir' && (!emails.length || emails.includes(responderEmail))) {
-            throw new Error('Esta aprobación fue automática (quien reportó es el responsable del proyecto). Usa "Devolver para correcciones".');
-        }
-    } else if (nivel === 'lider') {
+        throw new Error('El responsable del proyecto ya no evalúa reportes; la aprobación la realiza el líder del macroproyecto.');
+    }
+    if (nivel === 'lider') {
         if (doc.estado_aval !== 'Aprobado') {
             throw new Error('Este reporte no tiene una aprobación del líder para deshacer.');
         }
