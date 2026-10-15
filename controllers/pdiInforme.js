@@ -9,7 +9,7 @@ const {
     generarInformeProyecto,
     generarInformeMacro,
 } = require('../services/pdiInformeWord');
-const { uploadFile: uploadDriveFile, deleteFile: deleteDriveFile } = require('../services/pdiDriveStorage');
+const { uploadOrReplaceFile } = require('../services/pdiDriveStorage');
 const {
     getHierarchyForIndicador,
     getHierarchyForAccion,
@@ -49,12 +49,17 @@ function adjuntarRespuestasAIndicadores(indicadores, respuestasPorIndicador) {
     }));
 }
 
-async function uploadInformeToDrive(generated, jerarquia, corte) {
-    const uploaded = await uploadDriveFile(
+// Nombre estable en Drive (sin el sufijo aleatorio del archivo local) para que
+// cada nueva generación reemplace el informe anterior en lugar de duplicarlo.
+const getDriveNombreInforme = (filename) => String(filename).replace(/_[a-f0-9]{12}\.docx$/i, '.docx');
+
+async function uploadInformeToDrive(generated, jerarquia, corte, previousFileId = '') {
+    const uploaded = await uploadOrReplaceFile(
         generated.buffer,
-        generated.filename,
+        getDriveNombreInforme(generated.filename),
         generated.mimetype,
-        withCorte(jerarquia, corte)
+        withCorte(jerarquia, corte),
+        { previousFileId }
     );
 
     return {
@@ -130,13 +135,9 @@ ctrl.informeProyecto = async (req, res) => {
             indicadoresPorAccion[key].push(ind);
         }
 
-        if (proyecto.informe_drive_file_id) {
-            await deleteDriveFile(proyecto.informe_drive_file_id).catch(() => {});
-        }
-
         const generated = await generarInformeProyecto({ proyecto: proyecto.toObject(), acciones, indicadoresPorAccion, respuestasPorIndicador, corte });
         const { jerarquia } = await getHierarchyForProyecto(proyecto.toObject());
-        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte, proyecto.informe_drive_file_id);
 
         proyecto.informe_drive_file_id      = payload.drive_file_id;
         proyecto.informe_drive_web_view_link = payload.drive_web_view_link;
@@ -177,13 +178,9 @@ ctrl.informeMacro = async (req, res) => {
 
         const respuestasPorIndicador = await getRespuestasPorIndicador(indicadorIds);
 
-        if (macro.informe_drive_file_id) {
-            await deleteDriveFile(macro.informe_drive_file_id).catch(() => {});
-        }
-
         const generated = await generarInformeMacro({ macro: macro.toObject(), proyectos, accionesPorProyecto, indicadoresPorAccion, respuestasPorIndicador, corte });
         const { jerarquia } = await getHierarchyForMacro(macro.toObject());
-        const payload = await uploadInformeToDrive(generated, jerarquia, corte);
+        const payload = await uploadInformeToDrive(generated, jerarquia, corte, macro.informe_drive_file_id);
 
         macro.informe_drive_file_id      = payload.drive_file_id;
         macro.informe_drive_web_view_link = payload.drive_web_view_link;

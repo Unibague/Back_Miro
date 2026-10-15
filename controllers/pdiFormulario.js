@@ -309,6 +309,24 @@ ctrl.avalPlaneacion = async (req, res) => {
     }
 };
 
+ctrl.revertirAprobacion = async (req, res) => {
+    try {
+        const { nivel, modo, por, motivo } = req.body;
+        const doc = await svc.revertirAprobacion(req.params.respuestaId, { nivel, modo, por, motivo });
+        res.json(doc);
+    } catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+};
+
+ctrl.getRespuestasDevueltas = async (req, res) => {
+    try {
+        res.json(await svc.getRespuestasDevueltas());
+    } catch (e) {
+        res.status(500).json({ error: 'Error interno' });
+    }
+};
+
 ctrl.getResponsableProyectoEmailIndicador = async (req, res) => {
     try {
         const { indicador_id } = req.query;

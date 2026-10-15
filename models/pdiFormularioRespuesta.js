@@ -30,6 +30,16 @@ const documentoEvidenciaSchema = new mongoose.Schema({
     fecha_subida:    { type: Date, default: Date.now },
 }, { _id: true });
 
+const reversionSchema = new mongoose.Schema({
+    nivel:  { type: String, enum: ['proyecto', 'lider', 'planeacion'], required: true },
+    // 'reabrir': vuelve a quedar pendiente de la misma evaluación
+    // 'devolver': regresa al responsable de la acción para correcciones
+    modo:   { type: String, enum: ['reabrir', 'devolver'], required: true },
+    por:    { type: String, default: '' },
+    motivo: { type: String, default: '' },
+    fecha:  { type: Date, default: Date.now },
+}, { _id: false });
+
 const pdiFormularioRespuestaSchema = new mongoose.Schema({
     formulario_id:  { type: mongoose.Schema.Types.ObjectId, ref: 'pdiFormulario', required: true },
     indicador_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'pdiIndicador', default: null },
@@ -74,6 +84,8 @@ const pdiFormularioRespuestaSchema = new mongoose.Schema({
     aval_planeacion_por:         { type: String, default: '' },
     aval_planeacion_comentario:  { type: String, default: '' },
     aval_planeacion_fecha:       { type: Date, default: null },
+    // Trazabilidad de aprobaciones deshechas (un evaluador que se equivocó al aprobar)
+    reversiones: { type: [reversionSchema], default: [] },
 }, {
     versionKey: false,
     timestamps: true,
