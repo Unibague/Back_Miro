@@ -282,7 +282,7 @@ function withCalculatedFields(doc) {
     const base = typeof doc.toObject === 'function' ? doc.toObject() : doc;
     return {
         ...base,
-        ...calcularCamposDinamicos(base.periodos || [], base.tipo_calculo, base.meta_final_2029),
+        ...calcularCamposDinamicos(base.periodos || [], base.tipo_calculo, base.meta_final_2029, base.codigo),
     };
 }
 
@@ -388,8 +388,53 @@ function metaReferenciaAnio(periodosDelAnio, tipo_calculo) {
   - avances_por_anio_vs_meta_final: el mismo avance de cada año, pero referenciado contra la Meta
     final 2029 — para poder mostrar ambas lecturas lado a lado sin ambigüedad.
 */
-function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029) {
+// Indicadores "inversos" de cumplimiento binario: menor es mejor. Si el valor
+// reportado es igual o inferior a la meta se considera cumplido (100%); si la
+// supera, 0%. Sin valores intermedios. Aplica solo a los códigos listados.
+const INDICADORES_CUMPLIMIENTO_INVERSO = new Set(['M1-P3-A1-I1']);
+
+function esCumplimientoInverso(codigo) {
+    return INDICADORES_CUMPLIMIENTO_INVERSO.has(String(codigo ?? '').trim().toUpperCase());
+}
+
+function hayReporte(lista = []) {
+    return lista.some((p) => fueReportado(p) && toNumberValue(p.avance) !== null);
+}
+
+function cumplimientoInverso(valor, meta, conReporte) {
+    if (!conReporte || meta === null || meta === undefined) return 0;
+    return valor <= meta ? 100 : 0;
+}
+
+function calcularCamposDinamicosInverso(periodosOrdenados, tipo_calculo, metaFinal) {
+    const avanceActual = calcularAvanceActual(periodosOrdenados, tipo_calculo);
+    const conReporte = hayReporte(periodosOrdenados);
+
+    const anios = [...new Set(
+        periodosOrdenados
+            .map((p) => String(p.periodo ?? '').slice(0, 4))
+            .filter(Boolean)
+    )].sort();
+
+    const avances_por_anio = {};
+    const avances_por_anio_vs_meta_final = {};
+    for (const anio of anios) {
+        const periodosDelAnio = periodosOrdenados.filter((p) => String(p.periodo ?? '').slice(0, 4) === anio);
+        const avanceAnual = calcularAvanceAnual(periodosOrdenados, tipo_calculo, anio);
+        const conReporteAnio = hayReporte(periodosDelAnio);
+        avances_por_anio[anio] = cumplimientoInverso(avanceAnual, metaReferenciaAnio(periodosDelAnio, tipo_calculo), conReporteAnio);
+        avances_por_anio_vs_meta_final[anio] = cumplimientoInverso(avanceAnual, metaFinal, conReporteAnio);
+    }
+
+    const avance = cumplimientoInverso(avanceActual, metaFinal, conReporte);
+    return { avances_por_anio, avances_por_anio_vs_meta_final, avance, avance_total_real: avance, avance_actual: avance };
+}
+
+function calcularCamposDinamicos(periodos, tipo_calculo, meta_final_2029, codigo) {
     const periodosOrdenados = ordenarPeriodos(periodos);
+    if (esCumplimientoInverso(codigo)) {
+        return calcularCamposDinamicosInverso(periodosOrdenados, tipo_calculo, toNumberValue(meta_final_2029));
+    }
     const metaFinal = toNumberValue(meta_final_2029);
     const avanceActual = calcularAvanceActual(periodosOrdenados, tipo_calculo);
 
@@ -517,7 +562,7 @@ ctrl.create = async (req, res) => {
         const validated = await validateIndicatorPayload(body);
         body.codigo = validated.codigo;
         body.accion_id = validated.accionId;
-        const calculados = calcularCamposDinamicos(body.periodos || [], body.tipo_calculo, body.meta_final_2029);
+        const calculados = calcularCamposDinamicos(body.periodos || [], body.tipo_calculo, body.meta_final_2029, body.codigo);
         const doc = await Indicador.create({ ...body, ...calculados });
         await recalcularAccion(doc.accion_id);
         res.status(201).json(withSemaforo(doc));
@@ -565,7 +610,7 @@ ctrl.update = async (req, res) => {
         body.periodos = periodos;
         const tipo_calculo = body.tipo_calculo ?? existing.tipo_calculo;
         const meta_final = body.meta_final_2029 ?? existing.meta_final_2029;
-        const calculados = calcularCamposDinamicos(periodos, tipo_calculo, meta_final);
+        const calculados = calcularCamposDinamicos(periodos, tipo_calculo, meta_final, body.codigo ?? existing.codigo);
         const doc = await Indicador.findByIdAndUpdate(req.params.id, { ...body, ...calculados }, { new: true, runValidators: true }).populate('accion_id', 'codigo nombre');
         await guardarHistorial(existing.toObject(), doc.toObject(), body.modificado_por ?? '');
         await recalcularAccion(doc.accion_id);
@@ -630,7 +675,7 @@ ctrl.updatePeriodo = async (req, res) => {
         }
 
         doc.markModified('periodos');
-        const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
+        const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029, doc.codigo);
         Object.assign(doc, calculados);
         doc.markModified('avances_por_anio');
         doc.markModified('avances_por_anio_vs_meta_final');
@@ -970,7 +1015,7 @@ ctrl.recalcularTodos = async (req, res) => {
         let count = 0;
         const accionIds = new Set();
         for (const doc of todos) {
-            const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029);
+            const calculados = calcularCamposDinamicos(doc.periodos, doc.tipo_calculo, doc.meta_final_2029, doc.codigo);
             Object.assign(doc, calculados);
             doc.markModified('avances_por_anio');
             doc.markModified('avances_por_anio_vs_meta_final');
