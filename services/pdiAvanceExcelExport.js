@@ -93,6 +93,12 @@ function calcularIndicadorExportPorPeriodo(indicador, periodFilter) {
                 const ultimo = conAvance[conAvance.length - 1];
                 avanceOperacion = round2(toNumberValue(ultimo.avance) ?? 0);
                 metaAnio = round2(toNumberValue(ultimo.meta) ?? 0);
+            } else {
+                // Aún sin avance reportado en el alcance: la meta sigue
+                // existiendo y se muestra la del último periodo que la tenga
+                // definida (el avance queda en 0).
+                const conMeta = periodosFiltrados.filter((p) => toNumberValue(p.meta) !== null);
+                if (conMeta.length) metaAnio = round2(toNumberValue(conMeta[conMeta.length - 1].meta) ?? 0);
             }
         } else if (tipo === 'promedio') {
             avanceOperacion = round2(promedioCampo(periodosFiltrados, 'avance') ?? 0);
@@ -1314,12 +1320,18 @@ function marcarUltimoPeriodoConAvancePorPeriodo(periodos = [], periodFilter) {
     const periodosFiltrados = (periodos || []).filter(periodFilter);
     const ordenados = ordenarPeriodos(periodosFiltrados);
     let ultimoPeriodoKey = null;
+    let ultimoConMetaKey = null;
     ordenados.forEach((p) => {
         if (fueReportado(p) && toNumberValue(p.avance) !== null) ultimoPeriodoKey = p.periodo;
+        if (toNumberValue(p.meta) !== null) ultimoConMetaKey = p.periodo;
     });
+    // Periodo cuya meta usa el tipo Último valor reportado: el del último
+    // avance reportado o, si aún no hay ninguno, el último con meta definida.
+    const periodoMetaKey = ultimoPeriodoKey ?? ultimoConMetaKey;
     return periodosFiltrados.map((p) => ({
         ...p,
         _es_ultimo_con_avance: ultimoPeriodoKey !== null && p.periodo === ultimoPeriodoKey,
+        _es_periodo_meta: periodoMetaKey !== null && p.periodo === periodoMetaKey,
     }));
 }
 
@@ -1514,9 +1526,10 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
         { header: 'Estado del reporte', key: 'estado', width: 18 },
         { header: 'Reportado por', key: 'reportado_por', width: 28 },
         { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+        { header: '¿Periodo usado para la meta?', key: 'periodo_meta', width: 24 },
     ];
     styleHeaderRow(wsPeriodos.getRow(1));
-    wsPeriodos.autoFilter = { from: 'A1', to: 'H1' };
+    wsPeriodos.autoFilter = { from: 'A1', to: 'I1' };
 
     for (const ind of indicadoresPeriodo) {
         for (const p of ind.periodos_marcados) {
@@ -1529,6 +1542,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
                 estado: p.estado_reporte || '',
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
+                periodo_meta: Boolean(p._es_periodo_meta),
             });
             if (esValorPorcentual(p.meta)) rowPeriodos.getCell('meta').numFmt = '0.00"%"';
             if (esValorPorcentual(p.avance)) rowPeriodos.getCell('avance').numFmt = '0.00"%"';
@@ -1541,6 +1555,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
         meta: `'Periodos${sufijo}'!$C$2:$C$${lastPeriodosRow}`,
         avance: `'Periodos${sufijo}'!$D$2:$D$${lastPeriodosRow}`,
         ultimo: `'Periodos${sufijo}'!$E$2:$E$${lastPeriodosRow}`,
+        periodoMeta: `'Periodos${sufijo}'!$I$2:$I$${lastPeriodosRow}`,
     };
 
     // ── Hoja "Indicadores {periodo}" ─────────────────────────────────────────
@@ -1576,7 +1591,7 @@ function buildPeriodSheetSet(workbook, { macros, proyectos, acciones, indicadore
             tipo === 'acumulado'
                 ? `SUMIF(${P.codigo},$A${r},${P.meta})`
                 : tipo === 'ultimo_valor'
-                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.periodoMeta},TRUE)`
                 : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.meta}),2),0)`;
         wsInd.getCell(`F${r}`).value = { formula: fFormula, result: ind.meta_anio };
 
@@ -1962,9 +1977,10 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         { header: 'Estado del reporte', key: 'estado', width: 18 },
         { header: 'Reportado por', key: 'reportado_por', width: 28 },
         { header: 'Fecha de envío', key: 'fecha_envio', width: 18 },
+        { header: '¿Periodo usado para la meta?', key: 'periodo_meta', width: 24 },
     ];
     styleHeaderRow(wsPeriodos.getRow(1));
-    wsPeriodos.autoFilter = { from: 'A1', to: 'H1' };
+    wsPeriodos.autoFilter = { from: 'A1', to: 'I1' };
 
     for (const ind of indicadoresAnio) {
         for (const p of ind.periodos_marcados) {
@@ -1977,6 +1993,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
                 estado: p.estado_reporte || '',
                 reportado_por: p.reportado_por || '',
                 fecha_envio: p.fecha_envio || null,
+                periodo_meta: Boolean(p._es_periodo_meta),
             });
             if (esValorPorcentual(p.meta)) rowPeriodos.getCell('meta').numFmt = '0.00"%"';
             if (esValorPorcentual(p.avance)) rowPeriodos.getCell('avance').numFmt = '0.00"%"';
@@ -1989,6 +2006,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
         meta: `Periodos!$C$2:$C$${lastPeriodosRow}`,
         avance: `Periodos!$D$2:$D$${lastPeriodosRow}`,
         ultimo: `Periodos!$E$2:$E$${lastPeriodosRow}`,
+        periodoMeta: `Periodos!$I$2:$I$${lastPeriodosRow}`,
     };
 
     // ── Hoja "Indicadores" (solo con meta en ${anioStr}) ──────────────────────
@@ -2025,7 +2043,7 @@ async function buildAvanceWorkbookAnio({ macros, proyectos, acciones, indicadore
             tipo === 'acumulado'
                 ? `SUMIF(${P.codigo},$A${r},${P.meta})`
                 : tipo === 'ultimo_valor'
-                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.ultimo},TRUE)`
+                ? `SUMIFS(${P.meta},${P.codigo},$A${r},${P.periodoMeta},TRUE)`
                 : `IFERROR(ROUND(AVERAGEIF(${P.codigo},$A${r},${P.meta}),2),0)`;
         wsInd.getCell(`F${r}`).value = { formula: fFormula, result: ind.meta_anio };
 
