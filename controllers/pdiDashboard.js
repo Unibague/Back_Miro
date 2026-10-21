@@ -200,13 +200,26 @@ ctrl.resumen = async (req, res) => {
         // de arriba no se pueden usar directo porque sus campos no quedan
         // como propiedades propias al hacer spread ({ ...doc }), así que se
         // convierten aquí con toObject() antes de pasarlos.
-        const { avanceGlobal: avanceAnioActual } = calcularAvanceVigencia({
+        const {
+            avanceGlobal: avanceAnioActual,
+            macros: macrosVigencia,
+            proyectos: proyectosVigencia,
+        } = calcularAvanceVigencia({
             macros: macros.map((m) => m.toObject()),
             proyectos: proyectos.map((p) => p.toObject()),
             acciones: acciones.map((a) => a.toObject()),
             indicadores: indicadores.map((i) => i.toObject()),
             anio: anioActual,
         });
+        // Avance del año por Macroproyecto y por Proyecto, salido del MISMO
+        // cálculo ponderado, para que las tarjetas del tablero y la página de
+        // detalle del macro coincidan con la memoria técnica de la vigencia.
+        const avanceAnioPorMacro = Object.fromEntries(
+            macrosVigencia.map((m) => [String(m._id), m.avance_descarga ?? 0])
+        );
+        const avanceAnioPorProyecto = Object.fromEntries(
+            proyectosVigencia.map((p) => [String(p._id), Math.round((p.avance_descarga ?? 0) * 100) / 100])
+        );
         const estructuraAnioActual = calcularEstructuraAnio(anioActual, { proyectos, acciones, indicadores });
 
         // Presupuesto — suma desde macroproyectos (cada uno agrega sus proyectos)
@@ -237,6 +250,8 @@ ctrl.resumen = async (req, res) => {
             anio_actual: anioActual,
             avance_anio_actual: avanceAnioActual,
             semaforo_anio_actual: getSemaforo(avanceAnioActual),
+            avance_anio_por_macro: avanceAnioPorMacro,
+            avance_anio_por_proyecto: avanceAnioPorProyecto,
             estructura_anio_actual: estructuraAnioActual,
             avances_por_nivel: {
                 macroproyectos: promedioAvance(macros),
