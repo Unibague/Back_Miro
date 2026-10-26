@@ -4,6 +4,7 @@ const HistoricoDocentes = require("../models/historicoDocentes");
 const mongoose = require("mongoose");
 const Dependency = require("../models/dependencies");
 const Dimension = require("../models/dimensions");
+const User = require("../models/users");
 const UserService = require("../services/users");
 const { addStudentProgramColumn } = require("../services/studentsDirectory");
 const { buildResumenArchivo } = require("../services/historicoResumen");
@@ -54,6 +55,50 @@ const getUploadPermissions = async (user, email, dimensionId) => {
     (await isAyudasEducativasDimension(dimensionId)) && (await isAyudasEducativasMember(user, email));
   return { plantillas: ayudas, informes: false, snies: false };
 };
+
+// Correos (normalizados) de todos los miembros de AYUDAS EDUCATIVAS, con el
+// mismo criterio de pertenencia que isAyudasEducativasMember.
+const getAyudasEducativasEmails = async () => {
+  const [users, dependency] = await Promise.all([
+    User.find({
+      $or: [
+        { dep_code: AYUDAS_EDUCATIVAS_DEP_CODE },
+        { additional_dependencies: AYUDAS_EDUCATIVAS_DEP_CODE },
+      ],
+    }).select("email").lean(),
+    Dependency.findOne({ dep_code: AYUDAS_EDUCATIVAS_DEP_CODE }).select("members responsible").lean(),
+  ]);
+  return new Set(
+    [
+      ...users.map((u) => u.email),
+      ...(dependency?.members || []),
+      dependency?.responsible,
+    ].filter(Boolean).map(normalizeName)
+  );
+};
+
+// Renombrar/eliminar: el Administrador puede con cualquier archivo; los
+// miembros de AYUDAS EDUCATIVAS (con permiso de carga en ese ámbito) pueden
+// con cualquier archivo que haya cargado alguien de AYUDAS EDUCATIVAS.
+// Devuelve una función registro -> boolean para evaluar varios archivos a la vez.
+const buildFileManager = async (email, dimensionId) => {
+  let user;
+  try {
+    user = await UserService.findUserByEmail(email, null);
+  } catch {
+    return () => false;
+  }
+  if (isAdminUser(user)) return () => true;
+  const permissions = await getUploadPermissions(user, email, dimensionId);
+  if (!Object.values(permissions).some(Boolean)) return () => false;
+  const ayudasEmails = await getAyudasEducativasEmails();
+  return (registro) =>
+    !!permissions[registro.category || "snies"] &&
+    ayudasEmails.has(normalizeName(registro.uploaded_by?.email));
+};
+
+const canManageFile = async (registro, email) =>
+  (await buildFileManager(email, registro.dimension))(registro);
 
 const INVALID_WORKSHEET_CHARS = /[\\/*?:\[\]]/g;
 
@@ -253,8 +298,11 @@ controller.listFiles = async (req, res) => {
       .select('_id file_name uploaded_by updatedAt createdAt category file_type sheets anexos dimension cloned_from')
       .sort({ createdAt: -1 });
 
+    const canManage = await buildFileManager(email, dimensionId);
+
     return res.status(200).json({
       files: files.map(f => ({
+        can_manage: canManage(f),
         _id: f._id,
         file_name: f.file_name,
         uploaded_by: f.uploaded_by,
@@ -356,8 +404,11 @@ controller.deleteFile = async (req, res) => {
   if (!email) return res.status(400).json({ message: "El email es requerido." });
 
   try {
-    const registro = await HistoricoDocentes.findById(id);
+    const registro = await HistoricoDocentes.findById(id).select("uploaded_by category dimension");
     if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
+    if (!(await canManageFile(registro, email))) {
+      return res.status(403).json({ message: "No tienes permiso para eliminar este archivo." });
+    }
 
     await HistoricoDocentes.findByIdAndDelete(id);
     return res.status(200).json({ message: "Archivo eliminado correctamente." });
@@ -855,18 +906,20 @@ controller.renameAnexo = async (req, res) => {
 // PATCH /historico-docentes/:id/rename
 controller.renameFile = async (req, res) => {
   const { id } = req.params;
-  const { file_name } = req.body;
+  const { file_name, email } = req.body;
 
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
   if (!file_name?.trim()) return res.status(400).json({ message: "El nombre es requerido." });
 
   try {
-    const registro = await HistoricoDocentes.findByIdAndUpdate(
-      id,
-      { file_name: file_name.trim() },
-      { new: true }
-    );
+    const registro = await HistoricoDocentes.findById(id).select("uploaded_by category dimension");
     if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
-    return res.status(200).json({ message: "Nombre actualizado.", file_name: registro.file_name });
+    if (!(await canManageFile(registro, email))) {
+      return res.status(403).json({ message: "No tienes permiso para editar este archivo." });
+    }
+
+    await HistoricoDocentes.findByIdAndUpdate(id, { file_name: file_name.trim() });
+    return res.status(200).json({ message: "Nombre actualizado.", file_name: file_name.trim() });
   } catch (error) {
     return res.status(500).json({ message: "Error al renombrar.", error: error.message });
   }
