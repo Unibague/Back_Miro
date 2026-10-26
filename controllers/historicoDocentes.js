@@ -1,6 +1,9 @@
 const fs = require("fs");
 const ExcelJS = require("exceljs");
 const HistoricoDocentes = require("../models/historicoDocentes");
+const mongoose = require("mongoose");
+const Dependency = require("../models/dependencies");
+const Dimension = require("../models/dimensions");
 const UserService = require("../services/users");
 const { addStudentProgramColumn } = require("../services/studentsDirectory");
 const { buildResumenArchivo } = require("../services/historicoResumen");
@@ -13,6 +16,44 @@ const controller = {};
 const VALID_CATEGORIES = ['snies', 'plantillas', 'informes'];
 const EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const PDF_CONTENT_TYPE = "application/pdf";
+
+// Los miembros de AYUDAS EDUCATIVAS (sin importar si su rol es Responsable o
+// Productor) pueden cargar Plantillas en Consulta de Información, solo dentro
+// del ámbito "Recursos Físicos y Tecnológicos". El resto de cargas (Informes,
+// SNIES, otros ámbitos) siguen siendo exclusivas del Administrador.
+const AYUDAS_EDUCATIVAS_DEP_CODE = "040";
+const AYUDAS_EDUCATIVAS_DIMENSION_NAME = "recursos fisicos y tecnologicos";
+
+const normalizeName = (name) =>
+  String(name || "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ");
+
+const isAyudasEducativasDimension = async (dimensionId) => {
+  if (!dimensionId || !mongoose.isValidObjectId(dimensionId)) return false;
+  const dimension = await Dimension.findById(dimensionId).select("name").lean();
+  return normalizeName(dimension?.name) === AYUDAS_EDUCATIVAS_DIMENSION_NAME;
+};
+
+const isAdminUser = (user) =>
+  user?.activeRole === "Administrador" || (user?.roles || []).includes("Administrador");
+
+// La pertenencia puede estar en user.dep_code, user.additional_dependencies o
+// dependencies.members/responsible (mismo criterio que publishedTemplates).
+const isAyudasEducativasMember = async (user, email) => {
+  const declaredCodes = [user?.dep_code, ...(user?.additional_dependencies || [])].filter(Boolean);
+  if (declaredCodes.includes(AYUDAS_EDUCATIVAS_DEP_CODE)) return true;
+  const dep = await Dependency.exists({
+    dep_code: AYUDAS_EDUCATIVAS_DEP_CODE,
+    $or: [{ members: email }, { responsible: email }],
+  });
+  return !!dep;
+};
+
+const getUploadPermissions = async (user, email, dimensionId) => {
+  if (isAdminUser(user)) return { plantillas: true, informes: true, snies: true };
+  const ayudas =
+    (await isAyudasEducativasDimension(dimensionId)) && (await isAyudasEducativasMember(user, email));
+  return { plantillas: ayudas, informes: false, snies: false };
+};
 
 const INVALID_WORKSHEET_CHARS = /[\\/*?:\[\]]/g;
 
@@ -238,6 +279,20 @@ controller.listFiles = async (req, res) => {
   }
 };
 
+// GET /historico-docentes/upload-permissions?email=&dimensionId=
+// Indica en qué categorías puede cargar archivos el usuario dentro del ámbito.
+controller.uploadPermissions = async (req, res) => {
+  const { email, dimensionId } = req.query;
+  if (!email) return res.status(400).json({ message: "El email es requerido." });
+
+  try {
+    const user = await UserService.findUserByEmail(email, null);
+    return res.status(200).json(await getUploadPermissions(user, email, dimensionId));
+  } catch (error) {
+    return res.status(200).json({ plantillas: false, informes: false, snies: false });
+  }
+};
+
 // POST /historico-docentes/:id/clone-to-dimension
 // Copia un archivo existente (ej. el Histórico Docentes SNIES) dentro de un
 // ámbito, con la categoría indicada (por defecto "plantillas"). Si ya se
@@ -324,7 +379,14 @@ controller.upload = async (req, res) => {
   try {
     user = await UserService.findUserByEmail(email, null);
   } catch (error) {
+    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     return res.status(404).json({ message: "Usuario no encontrado." });
+  }
+
+  const permissions = await getUploadPermissions(user, email, req.body.dimensionId);
+  if (!permissions[category]) {
+    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    return res.status(403).json({ message: "No tienes permiso para cargar archivos en esta categoría." });
   }
 
   const fileName = req.file.originalname;
