@@ -1114,7 +1114,9 @@ const realIndex = index;
 
 // Validación de tipo eliminada: solo se valida obligatorio/opcional y lista de valores permitidos
 
-const constraintErrors = validateFieldValue(column, value);
+// Los campos con lista (validador u opciones) guardan el texto de la opción
+// (ej: "1 - Nacional"), así que se validan contra la lista y no por tipo/formato.
+const constraintErrors = columnToValidate ? [] : validateFieldValue(column, value);
 if (constraintErrors.length > 0) {
   result.status = false;
   constraintErrors.forEach((message) => result.errors.push({
