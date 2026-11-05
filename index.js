@@ -121,6 +121,7 @@ apiRouter.use("/pdi/informes",         require('./routes/pdiInforme'));
 apiRouter.use("/pdi/presupuesto",      require('./routes/pdiPresupuesto'));
 apiRouter.use("/qr",                   require('./routes/qrTokens'));
 apiRouter.use("/ayudas",               require('./routes/ayudas'));
+apiRouter.use("/organigrama",          require('./routes/organigrama'));
 
 // Ruta directa para jerarquía aoi
 const dependencyController = require('./controllers/dependencies');
