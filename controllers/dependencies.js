@@ -174,18 +174,39 @@ dependencyController.syncDependenciesInternal = async ({ origen = 'dependencias'
     users.sort((a, b) => a.priority - b.priority);
     
     const topLeader = users[0];
+    // El líder por cargo también queda de primero en "Líderes" (visualizers),
+    // que es lo que muestra y guarda la pantalla de edición de la dependencia.
     leaderUpdates.push({
       updateOne: {
         filter: { dep_code },
-        update: { $set: { responsible: topLeader.email } },
+        update: [{
+          $set: {
+            responsible: topLeader.email,
+            visualizers: {
+              $concatArrays: [
+                [topLeader.email],
+                { $filter: { input: { $ifNull: ['$visualizers', []] }, cond: { $ne: ['$$this', topLeader.email] } } },
+              ],
+            },
+          },
+        }],
       },
     });
   }
 
   if (leaderUpdates.length > 0) {
     const leaderResult = await Dependency.bulkWrite(leaderUpdates);
-    assignedCount = leaderResult.modifiedCount || leaderResult.matchedCount || 0;
+    assignedCount = leaderResult.matchedCount || 0;
   }
+
+  // Dependencias sin un cargo de liderazgo en el sistema externo: conservan
+  // como responsable al primer líder configurado a mano (visualizers), en vez
+  // de quedar "No definido" hasta que alguien entre a guardarlas.
+  const fallbackResult = await Dependency.updateMany(
+    { responsible: null, 'visualizers.0': { $exists: true } },
+    [{ $set: { responsible: { $arrayElemAt: ['$visualizers', 0] } } }]
+  );
+  assignedCount += fallbackResult.modifiedCount || 0;
   
   console.log(`✅ ${assignedCount} responsables asignados automáticamente`);
   
