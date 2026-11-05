@@ -21,6 +21,7 @@ router.get("/", controller.getDependency)
 
 // IMPORTANTE: updateAll debe ir ANTES de /:id para evitar conflictos
 router.post("/updateAll", controller.loadDependencies)
+router.get("/sync-logs", controller.getSyncLogs)
 
 // Rutas de escritura (solo para administradores)
 router.put("/setResponsible", requireAdmin, controller.setResponsible)

@@ -1,5 +1,6 @@
 const axios = require("axios");
 const Dependency = require("../models/dependencies");
+const DependencySyncLog = require("../models/dependencySyncLogs");
 const dependencyService = require('../services/dependencyData'); // Import the correct service
 const User = require("../models/users");
 const UserService = require("../services/users");
@@ -77,7 +78,7 @@ dependencyController.getTemplates = async (req, res) => {
 
 
 // Función interna para sincronizar dependencias (sin req/res)
-dependencyController.syncDependenciesInternal = async () => {
+dependencyController.syncDependenciesInternal = async ({ origen = 'dependencias', ejecutado_por = '' } = {}) => {
   console.log('Iniciando sincronización de dependencias...');
   
   // 1. Obtener dependencias de Atlante
@@ -99,7 +100,7 @@ dependencyController.syncDependenciesInternal = async () => {
     };
   }).filter((dependency) => dependency.dep_code && dependency.name);
   
-  const dependencySync = await Dependency.upsertDependencies(dependencies);
+  const dependencySync = await Dependency.upsertDependencies(dependencies, { origen, ejecutado_por });
   console.log(`✅ ${dependencySync.syncedCount} dependencias sincronizadas; ${dependencySync.deactivatedCount} desactivadas (no se eliminan, se conservan para históricos)`);
   
   // 2. Obtener usuarios de Atlante para asignar responsables
@@ -192,20 +193,39 @@ dependencyController.syncDependenciesInternal = async () => {
     status: 'success',
     count: dependencySync.syncedCount,
     deactivatedCount: dependencySync.deactivatedCount,
-    leadersAssigned: assignedCount
+    leadersAssigned: assignedCount,
+    resumen: dependencySync.resumen,
+    cambios: dependencySync.cambios,
+    logId: dependencySync.logId,
   };
 };
 
 // Endpoint para sincronizar dependencias
+// Historial de sincronizaciones (más recientes primero)
+dependencyController.getSyncLogs = async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const logs = await DependencySyncLog.find().sort({ fecha: -1 }).limit(limit).lean();
+    res.status(200).json(logs);
+  } catch (error) {
+    console.error("Error obteniendo historial de sincronizaciones:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 dependencyController.loadDependencies = async (req, res) => {
   try {
-    const result = await dependencyController.syncDependenciesInternal();
+    const ejecutado_por = req.body?.adminEmail || req.headers['user-email'] || '';
+    const result = await dependencyController.syncDependenciesInternal({ origen: 'dependencias', ejecutado_por });
     return res.status(200).json({ 
       status: result.status,
       message: 'Dependencies loaded/updated successfully',
       count: result.count,
-      deletedCount: result.deletedCount,
-      leadersAssigned: result.leadersAssigned
+      deactivatedCount: result.deactivatedCount,
+      leadersAssigned: result.leadersAssigned,
+      resumen: result.resumen,
+      cambios: result.cambios,
+      logId: result.logId,
     });
   } catch (error) {
     console.error('❌ Error sincronizando dependencias:', error.message);
@@ -363,6 +383,9 @@ dependencyController.getDependencies = async (req, res) => {
           ],
         }
       : {};
+    // estado=activas | inactivas (sin el parámetro se devuelven todas)
+    if (req.query.estado === "activas") query.active = { $ne: false };
+    if (req.query.estado === "inactivas") query.active = false;
     const dependencies = await Dependency.find(query).skip(skip).limit(limit);
     const total = await Dependency.countDocuments(query);
 
@@ -845,14 +868,14 @@ dependencyController.deleteDependency = async (req, res) => {
       return res.status(404).json({ error: "Dependency not found" });
     }
 
-    // Verificar si tiene hijos
-    const hasChildren = await Dependency.findOne({ dep_father: dependency.dep_code });
-    if (hasChildren) {
-      return res.status(400).json({ error: "Cannot delete dependency with children" });
+    // Las dependencias nunca se eliminan de la base de datos (los históricos
+    // las siguen referenciando): solo se marcan como inactivas.
+    if (dependency.active !== false) {
+      dependency.active = false;
+      dependency.inactive_since = new Date();
+      await dependency.save();
     }
-
-    await Dependency.findByIdAndDelete(id);
-    res.status(200).json({ message: "Dependency deleted successfully" });
+    res.status(200).json({ message: "Dependencia marcada como inactiva", dependency });
   } catch (error) {
     console.error("Error deleting dependency:", error);
     res.status(500).json({ error: error.message });

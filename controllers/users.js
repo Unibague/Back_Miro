@@ -102,6 +102,7 @@ const viewPermissionOptions = [
     { key: "configuration", label: "Configuración general", path: "/configuracion", module: "Configuración", group: "Administración", roles: ["Administrador"] },
     { key: "profiles", label: "Gestionar perfiles", path: "/configuracion/perfiles", module: "Configuración", group: "Administración", roles: ["Administrador"] },
     { key: "homeSettings", label: "Ajustes Pagina Inicial", path: "/admin/homeSettings", module: "Configuración", group: "Administración", roles: ["Administrador"] },
+    { key: "organigrama", label: "Organigrama", path: "/configuracion/organigrama", module: "Configuración", group: "Administración", roles: ["Administrador"] },
 
     { key: "dependency", label: "Ver Mi Dependencia", path: "/dependency", module: "Administración", group: "Administración", roles: ["Responsable"] },
     { key: "dependencyAdmin", label: "Ver Mi Dependencia (Administrador)", path: "/dependency", module: "Administración", group: "Administración", roles: ["Administrador"] },
@@ -131,7 +132,7 @@ userController.loadUsers = async (req, res) => {
     
     try {
         // Sincronizar dependencias primero (sin req/res)
-        await dependencyController.syncDependenciesInternal();
+        await dependencyController.syncDependenciesInternal({ origen: 'usuarios', ejecutado_por: req.user?.email || '' });
 
         const response = await axios.get(USERS_ENDPOINT);
 
