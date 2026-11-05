@@ -1678,6 +1678,10 @@ publTempController.loadProducerData = async (req, res) => {
       });
     }
 
+    if (isDependencyFinalSubmitted(pubTem, targetDepCode)) {
+      return res.status(403).json({ status: 'Tu dependencia ya realizó el envío final de esta plantilla y no admite más cambios' });
+    }
+
     // Determinar si el usuario es "encargado" (responsible_producer) — aplica tanto si carga datos propios como ajenos
     const rawResponsible = pubTem.responsible_producers?.length > 0
       ? pubTem.responsible_producers
@@ -2511,6 +2515,10 @@ publTempController.submitEmptyData = async (req, res) => {
       return res.status(403).json({ status: 'Esta plantilla ya fue enviada al SNIES y no admite mas cambios' });
     }
 
+    if (isDependencyFinalSubmitted(pubTem, user.dep_code)) {
+      return res.status(403).json({ status: 'Tu dependencia ya realizó el envío final de esta plantilla y no admite más cambios' });
+    }
+
     // Cualquier dependencia productora puede reportar en cero (sin envío a SNIES)
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
@@ -2604,6 +2612,10 @@ publTempController.confirmExistingData = async (req, res) => {
       return res.status(403).json({
         status: 'No tienes una dependencia productora asignada a esta plantilla',
       });
+    }
+
+    if (isDependencyFinalSubmitted(pubTem, assignedDependency.dep_code)) {
+      return res.status(403).json({ status: 'Tu dependencia ya realizó el envío final de esta plantilla y no admite más cambios' });
     }
 
     const hasExistingInformation = (pubTem.loaded_data || []).some(hasLoadedDataValues);
@@ -2735,6 +2747,10 @@ publTempController.confirmDraftData = async (req, res) => {
     }
 
     const draft = draftEntries[draftIndex];
+
+    if (isDependencyFinalSubmitted(pubTem, draft.dependency)) {
+      return res.status(403).json({ status: 'Tu dependencia ya realizó el envío final de esta plantilla y no admite más cambios' });
+    }
 
     if (!hasLoadedDataValues(draft)) {
       return res.status(422).json({
@@ -2872,6 +2888,7 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
       // para no acumular duplicados en qr_draft_data.
       pullOps.loaded_data = { dependency: deletedData.dependency };
       pullOps.qr_draft_data = { dependency: deletedData.dependency };
+      pullOps.dependency_final_submissions = { dependency: deletedData.dependency };
     }
     if (confirmationIndex > -1) {
       pullOps.data_confirmations = {
@@ -2906,6 +2923,13 @@ publTempController.deleteLoadedDataDependency = async (req, res) => {
     if (deletedData) {
       const draftEntry = typeof deletedData.toObject === 'function' ? deletedData.toObject() : deletedData;
       await PublishedTemplate.updateOne({ _id: pubTem._id }, { $push: { qr_draft_data: draftEntry } });
+    }
+
+    // Envío por dependencia: si la dependencia ya había enviado, Consulta de
+    // Información se actualiza sin su información.
+    if (deletedData && isDependencyFinalSubmitted(pubTem, deletedData.dependency)) {
+      const updatedPubTem = await PublishedTemplate.findById(pubTem._id);
+      saveToConsultaInformacion(updatedPubTem, getSubmittedLoadedData(updatedPubTem), user, email);
     }
 
     // Audit log
@@ -3250,7 +3274,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
     );
 
     // Obtener IDs de dependencias del usuario para calcular isEncargado
-    const userDeps = await Dependency.find({ dep_code: { $in: dependenciesToQuery } }).select('_id').lean();
+    const userDeps = await Dependency.find({ dep_code: { $in: dependenciesToQuery } }).select('_id dep_code').lean();
     const userDepIds = userDeps.map(d => d._id.toString());
 
     // Los validadores (con sus posibles cientos de valores) solo se necesitan
@@ -3276,6 +3300,7 @@ publTempController.getUploadedTemplatesByProducer = async (req, res) => {
           : template.template?.qr_authorized_producers;
         const qrAuthorizedIds = (rawQrAuthorized || []).map(id => id.toString());
         template.canGenerateQr = template.isEncargado || (qrAuthorizedIds.length > 0 && userDepIds.some(id => qrAuthorizedIds.includes(id)));
+        Object.assign(template, getDependencyReviewFlags(template, userDeps));
         return template;
       })
     );
@@ -3462,7 +3487,14 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
         // Incluir tambien los borradores QR sin confirmar (por dependencias que aun
         // no tienen envio confirmado) para que la descarga "con info de otros
         // productores" no omita datos que si se cuentan en "Informacion Cargada".
-        return { ...template, loaded_data: getLoadedDataIncludingQrDrafts(template), validators, isEncargado, canGenerateQr };
+        return {
+          ...template,
+          loaded_data: getLoadedDataIncludingQrDrafts(template),
+          validators,
+          isEncargado,
+          canGenerateQr,
+          ...getDependencyReviewFlags(template, dependencies),
+        };
       })
     );
 
@@ -3880,6 +3912,7 @@ publTempController.deleteAllLoadedData = async (req, res) => {
         $set: {
           loaded_data: [],
           data_confirmations: [],
+          dependency_final_submissions: [],
           final_submitted: false,
           final_submitted_by: null,
           final_submitted_date: null,
@@ -4126,6 +4159,300 @@ const buildDocenteProgramMap = async (identifications) => {
   return infoByIdentification;
 };
 
+// Guarda en Consulta de Información > Plantillas la información de
+// `loadedEntries` (entradas de loaded_data) de la plantilla publicada.
+// Si no hay entradas, desactiva la copia que exista para esa plantilla.
+// La cédula/documento SÍ se incluye como columna (en Consulta de
+// Información solo se muestra al rol Administrador, ver isAdmin en
+// controllers/historicoDocentes.js) y se etiqueta con TODOS los ámbitos
+// de la plantilla, para que aparezca en la carpeta de cada uno. Un
+// reenvío final (misma plantilla publicada) reemplaza la copia anterior
+// en vez de acumular una nueva.
+// "TIPO_DOCUMENTO"/"ID_TIPO_DOCUMENTO" (CC, CE, TI...) NO es la cédula en
+// sí — sin este chequeo, isIdentificationFieldName lo confundía con el
+// campo de identificación (ambos contienen "DOCUMENTO"), y el cruce con
+// SIGA terminaba buscando "CC"/"CE" como si fuera un número de documento.
+const saveToConsultaInformacion = async (pubTem, loadedEntries, user, email) => {
+  const isDocumentTypeFieldName = (fieldName = '') => {
+    const normalized = normalizeFieldName(fieldName);
+    return normalized.includes('TIPO') && (normalized.includes('DOC') || normalized.includes('IDENTIFICACION'));
+  };
+
+  const isIdentificationFieldName = (fieldName = '') => {
+    if (isDocumentTypeFieldName(fieldName)) return false;
+    const normalized = normalizeFieldName(fieldName);
+    return (
+      normalized.includes('CEDULA') ||
+      normalized.includes('DOCUMENTO') ||
+      normalized.includes('IDENTIFICACION') ||
+      /^(NUM|NUMERO|NRO|NO|N)_?DOC$/.test(normalized)
+    );
+  };
+
+  const saveToHistorico = async () => {
+    try {
+      const sheetMap = new Map();
+      (loadedEntries || []).forEach((loadedEntry) => {
+        // Cédulas de este productor por hoja, en el mismo orden en que se
+        // van concatenando las filas de esa hoja más abajo — permiten
+        // calcular PROGRAMA (además de quedar como columna propia, ver
+        // abajo) sin desalinear filas si algún productor no la incluyó.
+        const identificationValsBySheet = new Map();
+
+        (loadedEntry.filled_data || []).forEach((fieldData) => {
+          const fieldName = fieldData.field_name;
+          if (!fieldName) return;
+          const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
+
+          if (!sheetMap.has(sheetName)) {
+            sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
+          }
+          const info = sheetMap.get(sheetName);
+          if (!info.colMap[fieldName]) {
+            info.colMap[fieldName] = true;
+            info.headers.push(fieldName);
+            info.valueArrays[fieldName] = [];
+          }
+          const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
+          info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
+
+          if (isIdentificationFieldName(fieldName) && !identificationValsBySheet.has(sheetName)) {
+            identificationValsBySheet.set(sheetName, vals.map((v) => String(v ?? "").trim()));
+          }
+        });
+
+        identificationValsBySheet.forEach((vals, sheetName) => {
+          sheetMap.get(sheetName).idsByEntry.push(vals);
+        });
+      });
+
+      // Calcular PROGRAMA (SIGA/Iceberg) por cédula para las hojas que
+      // traían un campo de identificación (ej. DOCENTE_IES, DOCENTE_CONTRATO).
+      // Se aísla en su propio try/catch: si SIGA no responde o falla el
+      // cruce, el archivo se debe seguir guardando en Consulta de
+      // Información igual (solo sin la columna), en vez de perderse todo.
+      const allIdentifications = [];
+      sheetMap.forEach((info) => {
+        info.idsByEntry.forEach((vals) => allIdentifications.push(...vals));
+      });
+      console.log(`[HistoricoDocentes] PROGRAMA: ${allIdentifications.length} cédula(s) recolectada(s) en total.`);
+      let docenteInfoByIdentification = new Map();
+      if (allIdentifications.length > 0) {
+        try {
+          docenteInfoByIdentification = await buildDocenteProgramMap(allIdentifications);
+          console.log(`[HistoricoDocentes] PROGRAMA: SIGA resolvió programa para ${docenteInfoByIdentification.size} de ${allIdentifications.length} cédula(s).`);
+        } catch (programError) {
+          console.error("[HistoricoDocentes] Error calculando PROGRAMA (SIGA/Iceberg), se guarda sin esa columna:", programError.message);
+        }
+      }
+
+      const sheets = [];
+      for (const [name, info] of sheetMap.entries()) {
+        if (info.headers.length === 0) continue;
+        const maxRows = Math.max(...info.headers.map((h) => info.valueArrays[h]?.length || 0));
+        if (maxRows === 0) continue;
+
+        const headers = [...info.headers];
+        // Solo se agrega la columna si las cédulas recolectadas cuadran
+        // exactamente con el total de filas de la hoja (evita desalinear
+        // columnas cuando algún productor no incluyó identificación).
+        const flatIds = info.idsByEntry.flat();
+        if (flatIds.length !== maxRows) {
+          console.log(`[HistoricoDocentes] PROGRAMA: hoja "${name}" NO recibe la columna — ${flatIds.length} cédula(s) recolectada(s) vs ${maxRows} fila(s) (deben coincidir).`);
+        }
+        const programaColumn = flatIds.length === maxRows
+          ? flatIds.map((id) => {
+              const normalized = normalizeDocenteId(id);
+              return normalized ? (docenteInfoByIdentification.get(normalized)?.programa || "") : "";
+            })
+          : null;
+        const escalafonColumn = flatIds.length === maxRows
+          ? flatIds.map((id) => {
+              const normalized = normalizeDocenteId(id);
+              return normalized ? (docenteInfoByIdentification.get(normalized)?.escalafon || "") : "";
+            })
+          : null;
+        if (programaColumn) headers.push("PROGRAMA");
+        if (escalafonColumn) headers.push("ESCALAFON");
+
+        const rows = [];
+        for (let i = 0; i < maxRows; i++) {
+          const row = info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? ""));
+          if (programaColumn) row.push(programaColumn[i] || "");
+          if (escalafonColumn) row.push(escalafonColumn[i] || "");
+          rows.push(row);
+        }
+        sheets.push({ name, headers, rows });
+      }
+
+      if (sheets.length === 0) return;
+
+      // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
+      // vez aquí y guardado como columna fija PROGRAMA_ESTUDIANTE.
+      const sheetsToSave = await addStudentProgramColumn(sheets);
+
+      const fileName = `${pubTem.name || "plantilla"}.xlsx`;
+      const periodId = pubTem.period?._id || pubTem.period;
+      const uploadedBy = { full_name: user.full_name || user.name || email, email };
+
+      // Ámbitos de la plantilla: puede venir como ObjectId crudo o ya
+      // poblado ({_id, name, ...}) según cómo haya quedado el snapshot.
+      const dimensionIds = (pubTem.template?.dimensions || [])
+        .map((d) => (d && typeof d === 'object' ? d._id : d))
+        .filter(Boolean)
+        .map((id) => String(id));
+      const targets = dimensionIds.length > 0 ? dimensionIds : [null];
+
+      await Promise.all(targets.map((dimensionId) =>
+        HistoricoDocentes.findOneAndUpdate(
+          { source_published_template: pubTem._id, dimension: dimensionId },
+          {
+            $set: {
+              file_name: fileName,
+              uploaded_by: uploadedBy,
+              file_type: "excel",
+              sheets: sheetsToSave,
+              // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
+              resumen: buildResumenArchivo(fileName, sheetsToSave),
+              category: "plantillas",
+              period: periodId,
+              dimension: dimensionId,
+              source_published_template: pubTem._id,
+              active: true,
+            },
+          },
+          { upsert: true, new: true }
+        )
+      ));
+    } catch (err) {
+      console.error("[HistoricoDocentes] Error guardando en consulta de información:", err.message);
+    }
+  };
+
+  if (!loadedEntries || loadedEntries.length === 0) {
+    try {
+      await HistoricoDocentes.updateMany(
+        { source_published_template: pubTem._id },
+        { $set: { active: false } }
+      );
+    } catch (err) {
+      console.error("[HistoricoDocentes] Error desactivando copia en consulta de información:", err.message);
+    }
+    return;
+  }
+  await saveToHistorico();
+};
+
+// ── Envío final por dependencia ───────────────────────────────────────────
+// Si la plantilla NO tiene productor encargado pero sí dependencias
+// autorizadas para generar QR, cada una de esas dependencias es la encargada
+// de revisar la información de su dependencia y hacer su propio envío final.
+// En Consulta de Información queda el consolidado de las que ya enviaron.
+const getQrAuthorizedIds = (pubTem) => {
+  const raw = pubTem.qr_authorized_producers?.length > 0
+    ? pubTem.qr_authorized_producers
+    : pubTem.template?.qr_authorized_producers;
+  return (raw || []).map((id) => String(id?._id || id));
+};
+
+const isPerDependencySubmitMode = (pubTem) => {
+  const rawResponsible = pubTem.responsible_producers?.length > 0
+    ? pubTem.responsible_producers
+    : pubTem.template?.responsible_producers;
+  return (rawResponsible || []).length === 0 && getQrAuthorizedIds(pubTem).length > 0;
+};
+
+const isDependencyFinalSubmitted = (pubTem, depCode) => (
+  isPerDependencySubmitMode(pubTem) &&
+  (pubTem.dependency_final_submissions || []).some((s) => s.dependency === depCode)
+);
+
+const getSubmittedLoadedData = (pubTem) => {
+  const submittedDeps = new Set((pubTem.dependency_final_submissions || []).map((s) => s.dependency));
+  return (pubTem.loaded_data || []).filter((entry) => submittedDeps.has(entry.dependency));
+};
+
+// La plantilla queda "enviada" del todo cuando TODAS las dependencias
+// autorizadas ya hicieron su envío.
+const refreshPerDependencyFinalState = async (pubTem, user) => {
+  const authorizedDeps = await Dependency.find({ _id: { $in: getQrAuthorizedIds(pubTem) } }).select('dep_code');
+  const submittedDeps = new Set((pubTem.dependency_final_submissions || []).map((s) => s.dependency));
+  const allSubmitted = authorizedDeps.length > 0 && authorizedDeps.every((dep) => submittedDeps.has(dep.dep_code));
+  pubTem.final_submitted = allSubmitted;
+  pubTem.final_submitted_by = allSubmitted ? user : null;
+  pubTem.final_submitted_date = allSubmitted ? datetime_now() : null;
+};
+
+// Indicadores para el front: si el usuario revisa/envía por su dependencia y
+// si esa dependencia ya hizo su envío final.
+const getDependencyReviewFlags = (pubTem, userDependencies) => {
+  if (!isPerDependencySubmitMode(pubTem)) {
+    return { isDependencyReviewer: false, dependencySubmitted: false, dependencySubmittedDate: null };
+  }
+  const reviewerDepCodes = getUserReviewerDepCodes(pubTem, userDependencies);
+  const submission = (pubTem.dependency_final_submissions || [])
+    .find((s) => reviewerDepCodes.includes(s.dependency));
+  return {
+    isDependencyReviewer: reviewerDepCodes.length > 0,
+    dependencySubmitted: Boolean(submission),
+    dependencySubmittedDate: submission?.submitted_date || null,
+  };
+};
+
+// Dependencias del usuario (dep_code) autorizadas para generar QR en la plantilla
+const getUserReviewerDepCodes = (pubTem, userDependencies) => {
+  const qrAuthorizedIds = getQrAuthorizedIds(pubTem);
+  return userDependencies
+    .filter((dep) => qrAuthorizedIds.includes(dep._id.toString()))
+    .map((dep) => dep.dep_code);
+};
+
+const confirmDependencyFinalSubmit = async (req, res, pubTem, user, email, userDependencies) => {
+  const reviewerDepCodes = getUserReviewerDepCodes(pubTem, userDependencies);
+  if (reviewerDepCodes.length === 0) {
+    return res.status(403).json({ status: 'Solo las dependencias autorizadas para generar QR pueden realizar el envío final de su información' });
+  }
+
+  // Confirmar borradores pendientes de SU dependencia: qr_draft_data → loaded_data
+  const draftEntries = Array.isArray(pubTem.qr_draft_data) ? pubTem.qr_draft_data : [];
+  const loadedDeps = new Set((pubTem.loaded_data || []).map((d) => d.dependency));
+  const draftsToCommit = draftEntries.filter((d) => reviewerDepCodes.includes(d.dependency) && !loadedDeps.has(d.dependency));
+  if (draftsToCommit.length > 0) {
+    pubTem.loaded_data.push(...draftsToCommit);
+    pubTem.qr_draft_data = draftEntries.filter((d) => !draftsToCommit.includes(d));
+    pubTem.markModified('loaded_data');
+    pubTem.markModified('qr_draft_data');
+  }
+
+  const depsWithData = reviewerDepCodes.filter((depCode) =>
+    (pubTem.loaded_data || []).some((d) => d.dependency === depCode)
+  );
+  if (depsWithData.length === 0) {
+    return res.status(400).json({ status: 'Tu dependencia no tiene datos cargados para enviar' });
+  }
+
+  const now = datetime_now();
+  const submissions = (pubTem.dependency_final_submissions || []).filter((s) => !depsWithData.includes(s.dependency));
+  depsWithData.forEach((depCode) => {
+    submissions.push({ dependency: depCode, submitted_by: user, submitted_date: now });
+  });
+  pubTem.dependency_final_submissions = submissions;
+  await refreshPerDependencyFinalState(pubTem, user);
+  await pubTem.save();
+
+  // Consulta de Información recibe el consolidado de las dependencias que ya enviaron (fire-and-forget).
+  saveToConsultaInformacion(pubTem, getSubmittedLoadedData(pubTem), user, email);
+
+  await auditLogger.logCreate(req, user, 'finalSubmitToSnies', {
+    publishedTemplateId: pubTem._id,
+    templateName: pubTem.name,
+    dependency: depsWithData.join(', '),
+    mode: 'per_dependency',
+  });
+
+  return res.status(200).json({ status: 'Envío final de tu dependencia realizado exitosamente' });
+};
+
 // Envío final al SNIES — solo el productor responsable puede ejecutarlo
 publTempController.confirmFinalSubmit = async (req, res) => {
   const { pubTem_id, email } = req.body;
@@ -4147,6 +4474,10 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
     const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
     const userDependencyIds = userDependencies.map(dep => dep._id.toString());
+
+    if (isPerDependencySubmitMode(pubTem)) {
+      return confirmDependencyFinalSubmit(req, res, pubTem, user, email, userDependencies);
+    }
 
     // Verificar que sea productor asignado
     const canSubmit = pubTem.template?.producers.some(p => userDependencyIds.includes(p._id.toString()));
@@ -4191,172 +4522,7 @@ publTempController.confirmFinalSubmit = async (req, res) => {
     await pubTem.save();
 
     // Guardar automáticamente en Consulta de Información > Plantillas (fire-and-forget).
-    // La cédula/documento SÍ se incluye como columna (en Consulta de
-    // Información solo se muestra al rol Administrador, ver isAdmin en
-    // controllers/historicoDocentes.js) y se etiqueta con TODOS los ámbitos
-    // de la plantilla, para que aparezca en la carpeta de cada uno. Un
-    // reenvío final (misma plantilla publicada) reemplaza la copia anterior
-    // en vez de acumular una nueva.
-    // "TIPO_DOCUMENTO"/"ID_TIPO_DOCUMENTO" (CC, CE, TI...) NO es la cédula en
-    // sí — sin este chequeo, isIdentificationFieldName lo confundía con el
-    // campo de identificación (ambos contienen "DOCUMENTO"), y el cruce con
-    // SIGA terminaba buscando "CC"/"CE" como si fuera un número de documento.
-    const isDocumentTypeFieldName = (fieldName = '') => {
-      const normalized = normalizeFieldName(fieldName);
-      return normalized.includes('TIPO') && (normalized.includes('DOC') || normalized.includes('IDENTIFICACION'));
-    };
-
-    const isIdentificationFieldName = (fieldName = '') => {
-      if (isDocumentTypeFieldName(fieldName)) return false;
-      const normalized = normalizeFieldName(fieldName);
-      return (
-        normalized.includes('CEDULA') ||
-        normalized.includes('DOCUMENTO') ||
-        normalized.includes('IDENTIFICACION') ||
-        /^(NUM|NUMERO|NRO|NO|N)_?DOC$/.test(normalized)
-      );
-    };
-
-    const saveToHistorico = async () => {
-      try {
-        const sheetMap = new Map();
-        (pubTem.loaded_data || []).forEach((loadedEntry) => {
-          // Cédulas de este productor por hoja, en el mismo orden en que se
-          // van concatenando las filas de esa hoja más abajo — permiten
-          // calcular PROGRAMA (además de quedar como columna propia, ver
-          // abajo) sin desalinear filas si algún productor no la incluyó.
-          const identificationValsBySheet = new Map();
-
-          (loadedEntry.filled_data || []).forEach((fieldData) => {
-            const fieldName = fieldData.field_name;
-            if (!fieldName) return;
-            const sheetName = fieldData.sheet_name || fieldData.sheet || fieldData.sheetName || "__default__";
-
-            if (!sheetMap.has(sheetName)) {
-              sheetMap.set(sheetName, { headers: [], colMap: {}, valueArrays: {}, idsByEntry: [] });
-            }
-            const info = sheetMap.get(sheetName);
-            if (!info.colMap[fieldName]) {
-              info.colMap[fieldName] = true;
-              info.headers.push(fieldName);
-              info.valueArrays[fieldName] = [];
-            }
-            const vals = Array.isArray(fieldData.values) ? fieldData.values : [];
-            info.valueArrays[fieldName].push(...vals.map((v) => String(v ?? "")));
-
-            if (isIdentificationFieldName(fieldName) && !identificationValsBySheet.has(sheetName)) {
-              identificationValsBySheet.set(sheetName, vals.map((v) => String(v ?? "").trim()));
-            }
-          });
-
-          identificationValsBySheet.forEach((vals, sheetName) => {
-            sheetMap.get(sheetName).idsByEntry.push(vals);
-          });
-        });
-
-        // Calcular PROGRAMA (SIGA/Iceberg) por cédula para las hojas que
-        // traían un campo de identificación (ej. DOCENTE_IES, DOCENTE_CONTRATO).
-        // Se aísla en su propio try/catch: si SIGA no responde o falla el
-        // cruce, el archivo se debe seguir guardando en Consulta de
-        // Información igual (solo sin la columna), en vez de perderse todo.
-        const allIdentifications = [];
-        sheetMap.forEach((info) => {
-          info.idsByEntry.forEach((vals) => allIdentifications.push(...vals));
-        });
-        console.log(`[HistoricoDocentes] PROGRAMA: ${allIdentifications.length} cédula(s) recolectada(s) en total.`);
-        let docenteInfoByIdentification = new Map();
-        if (allIdentifications.length > 0) {
-          try {
-            docenteInfoByIdentification = await buildDocenteProgramMap(allIdentifications);
-            console.log(`[HistoricoDocentes] PROGRAMA: SIGA resolvió programa para ${docenteInfoByIdentification.size} de ${allIdentifications.length} cédula(s).`);
-          } catch (programError) {
-            console.error("[HistoricoDocentes] Error calculando PROGRAMA (SIGA/Iceberg), se guarda sin esa columna:", programError.message);
-          }
-        }
-
-        const sheets = [];
-        for (const [name, info] of sheetMap.entries()) {
-          if (info.headers.length === 0) continue;
-          const maxRows = Math.max(...info.headers.map((h) => info.valueArrays[h]?.length || 0));
-          if (maxRows === 0) continue;
-
-          const headers = [...info.headers];
-          // Solo se agrega la columna si las cédulas recolectadas cuadran
-          // exactamente con el total de filas de la hoja (evita desalinear
-          // columnas cuando algún productor no incluyó identificación).
-          const flatIds = info.idsByEntry.flat();
-          if (flatIds.length !== maxRows) {
-            console.log(`[HistoricoDocentes] PROGRAMA: hoja "${name}" NO recibe la columna — ${flatIds.length} cédula(s) recolectada(s) vs ${maxRows} fila(s) (deben coincidir).`);
-          }
-          const programaColumn = flatIds.length === maxRows
-            ? flatIds.map((id) => {
-                const normalized = normalizeDocenteId(id);
-                return normalized ? (docenteInfoByIdentification.get(normalized)?.programa || "") : "";
-              })
-            : null;
-          const escalafonColumn = flatIds.length === maxRows
-            ? flatIds.map((id) => {
-                const normalized = normalizeDocenteId(id);
-                return normalized ? (docenteInfoByIdentification.get(normalized)?.escalafon || "") : "";
-              })
-            : null;
-          if (programaColumn) headers.push("PROGRAMA");
-          if (escalafonColumn) headers.push("ESCALAFON");
-
-          const rows = [];
-          for (let i = 0; i < maxRows; i++) {
-            const row = info.headers.map((h) => String(info.valueArrays[h]?.[i] ?? ""));
-            if (programaColumn) row.push(programaColumn[i] || "");
-            if (escalafonColumn) row.push(escalafonColumn[i] || "");
-            rows.push(row);
-          }
-          sheets.push({ name, headers, rows });
-        }
-
-        if (sheets.length === 0) return;
-
-        // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
-        // vez aquí y guardado como columna fija PROGRAMA_ESTUDIANTE.
-        const sheetsToSave = await addStudentProgramColumn(sheets);
-
-        const fileName = `${pubTem.name || "plantilla"}.xlsx`;
-        const periodId = pubTem.period?._id || pubTem.period;
-        const uploadedBy = { full_name: user.full_name || user.name || email, email };
-
-        // Ámbitos de la plantilla: puede venir como ObjectId crudo o ya
-        // poblado ({_id, name, ...}) según cómo haya quedado el snapshot.
-        const dimensionIds = (pubTem.template?.dimensions || [])
-          .map((d) => (d && typeof d === 'object' ? d._id : d))
-          .filter(Boolean)
-          .map((id) => String(id));
-        const targets = dimensionIds.length > 0 ? dimensionIds : [null];
-
-        await Promise.all(targets.map((dimensionId) =>
-          HistoricoDocentes.findOneAndUpdate(
-            { source_published_template: pubTem._id, dimension: dimensionId },
-            {
-              $set: {
-                file_name: fileName,
-                uploaded_by: uploadedBy,
-                file_type: "excel",
-                sheets: sheetsToSave,
-                // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
-                resumen: buildResumenArchivo(fileName, sheetsToSave),
-                category: "plantillas",
-                period: periodId,
-                dimension: dimensionId,
-                source_published_template: pubTem._id,
-                active: true,
-              },
-            },
-            { upsert: true, new: true }
-          )
-        ));
-      } catch (err) {
-        console.error("[HistoricoDocentes] Error guardando en consulta de información:", err.message);
-      }
-    };
-    saveToHistorico();
+    saveToConsultaInformacion(pubTem, pubTem.loaded_data, user, email);
 
     await auditLogger.logCreate(req, user, 'finalSubmitToSnies', {
       publishedTemplateId: pubTem_id,
@@ -4395,11 +4561,46 @@ publTempController.undoFinalSubmit = async (req, res) => {
       return res.status(404).json({ status: 'Published template not found' });
     }
 
+    const isAdmin = user.activeRole === 'Administrador' || (user.roles || []).includes('Administrador');
+
+    // Envío por dependencia: cada dependencia autorizada deshace solo el suyo;
+    // un Administrador sin dependencia autorizada deshace todos.
+    if (isPerDependencySubmitMode(pubTem)) {
+      const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);
+      const userDependencies = await Dependency.find({ dep_code: { $in: allUserDependencies } });
+      const reviewerDepCodes = getUserReviewerDepCodes(pubTem, userDependencies);
+      if (reviewerDepCodes.length === 0 && !isAdmin) {
+        return res.status(403).json({ status: 'Solo las dependencias autorizadas para generar QR pueden deshacer su envío final' });
+      }
+
+      const currentSubmissions = pubTem.dependency_final_submissions || [];
+      const remaining = reviewerDepCodes.length > 0
+        ? currentSubmissions.filter((s) => !reviewerDepCodes.includes(s.dependency))
+        : [];
+      if (remaining.length === currentSubmissions.length) {
+        return res.status(400).json({ status: 'Tu dependencia no ha realizado el envío final de esta plantilla.' });
+      }
+
+      pubTem.dependency_final_submissions = remaining;
+      await refreshPerDependencyFinalState(pubTem, user);
+      await pubTem.save();
+
+      saveToConsultaInformacion(pubTem, getSubmittedLoadedData(pubTem), user, email);
+
+      await auditLogger.logUpdate(req, user, 'finalSubmitToSnies', {
+        publishedTemplateId: pubTem_id,
+        templateName: pubTem.name,
+        dependency: reviewerDepCodes.join(', ') || user.dep_code,
+        action: 'undo',
+        mode: 'per_dependency',
+      });
+
+      return res.status(200).json({ status: 'Envío final deshecho correctamente. La información cargada se mantuvo intacta.' });
+    }
+
     if (!pubTem.final_submitted) {
       return res.status(400).json({ status: 'Esta plantilla no ha sido enviada a SNIES.' });
     }
-
-    const isAdmin = user.activeRole === 'Administrador' || (user.roles || []).includes('Administrador');
 
     if (!isAdmin) {
       const allUserDependencies = [user.dep_code, ...(user.additional_dependencies || [])].filter(Boolean);

@@ -273,6 +273,10 @@ qrController.getFormData = async (req, res) => {
     const deadline = new Date(pubTem.deadline);
     deadline.setHours(23, 59, 59, 999);
     if (deadline < now) return res.status(403).json({ error: 'El plazo de esta plantilla ya cerró' });
+    // Envío por dependencia: la dependencia que generó el QR ya hizo su envío final
+    if ((pubTem.dependency_final_submissions || []).some(s => s.dependency === qrToken.dependency)) {
+      return res.status(403).json({ error: 'La dependencia ya realizó el envío final de esta plantilla; este formulario no recibe más respuestas' });
+    }
 
     const dep = await Dependency.findOne({ dep_code: qrToken.dependency });
     const depId = dep?._id?.toString();
@@ -359,6 +363,10 @@ qrController.submitFormData = async (req, res) => {
     const deadline = new Date(pubTem.deadline);
     deadline.setHours(23, 59, 59, 999);
     if (deadline < now) return res.status(403).json({ error: 'El plazo de esta plantilla ya cerró' });
+    // Envío por dependencia: la dependencia que generó el QR ya hizo su envío final
+    if ((pubTem.dependency_final_submissions || []).some(s => s.dependency === qrToken.dependency)) {
+      return res.status(403).json({ error: 'La dependencia ya realizó el envío final de esta plantilla; este formulario no recibe más respuestas' });
+    }
 
     const dep = await Dependency.findOne({ dep_code: qrToken.dependency });
     const depId = dep?._id?.toString();

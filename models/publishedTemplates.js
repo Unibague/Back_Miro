@@ -159,6 +159,18 @@ const publishedTemplateSchema = new Schema({
     type: Date,
     required: false
   },
+  // Plantillas SIN productor encargado y con dependencias autorizadas para
+  // generar QR: cada dependencia autorizada revisa y hace su propio envío
+  // final. Aquí queda registrado cuáles ya lo hicieron.
+  dependency_final_submissions: {
+    type: [{
+      _id: false,
+      dependency: { type: String, required: true },
+      submitted_by: { type: {}, required: false },
+      submitted_date: { type: Date, required: false }
+    }],
+    default: []
+  },
 }, {
   versionKey: false,
   timestamps: true
