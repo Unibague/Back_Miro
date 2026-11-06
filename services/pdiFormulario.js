@@ -781,8 +781,6 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
     const existing = await Respuesta.findOne({ formulario_id, indicador_id: indicador_id || null, corte });
 
     const becomingEnviado = estado === 'Enviado';
-    const wasAlreadySent  = existing?.estado === 'Enviado';
-    const wasRejected = existing?.estado_aval === 'Rechazado' || existing?.estado_aval_proyecto === 'Rechazado';
     let avalData = {};
 
     if (becomingEnviado && existing) {
@@ -794,7 +792,9 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
         }
     }
 
-    if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
+    // Todo envío (también el reenvío de un reporte ya enviado, aprobado o validado que el
+    // responsable editó) reinicia el flujo de aval: líder del macroproyecto → Planeación.
+    if (becomingEnviado) {
         // Nivel 1 (responsable del proyecto): ya no evalúa, solo se le notifica.
         // Queda aprobado automáticamente y el reporte pasa directo al líder del macroproyecto.
         const responderEmail = normalizeEmail(respondido_por);
@@ -856,7 +856,7 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
         existing.respondido_por = respondido_por;
         if (estado) {
             existing.estado = estado;
-            if (estado === 'Enviado' && (!existing.fecha_envio || wasRejected)) {
+            if (becomingEnviado) {
                 existing.fecha_envio = new Date();
             }
         }
@@ -874,11 +874,11 @@ const upsertRespuesta = async ({ formulario_id, indicador_id, respondido_por, co
 
         let docSubido = null;
         try {
-            if (becomingEnviado && (!wasAlreadySent || wasRejected)) {
+            if (becomingEnviado) {
                 docSubido = await uploadDocumentoARespuesta(existing);
             }
             const hydrated = await ensureWordDocumentIfSent(existing);
-            return { doc: hydrated, justSent: existing.estado === 'Enviado' && (!wasAlreadySent || wasRejected) };
+            return { doc: hydrated, justSent: existing.estado === 'Enviado' && becomingEnviado };
         } catch (driveErr) {
             // Revertir: el envío falló, dejar todo como estaba
             await rollbackDocumentosSubidos(existing._id, docSubido);
