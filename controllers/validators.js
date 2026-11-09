@@ -14,6 +14,7 @@ const {
 } = require('../helpers/dropdownOptions');
 const { getEffectiveRequired } = require('../helpers/requiredFields');
 const { validateFieldValue } = require('../helpers/fieldConstraints');
+const { applyTemplateValidationPolicy, isNoApplyValue } = require('../helpers/templateValidationPolicy');
 
 const validatorController = {}
 
@@ -887,8 +888,10 @@ validatorController.duplicateValidator = async (req, res) => {
 };
 
 validatorController.validateColumn = async (column, periodId = null) => {
+  column = applyTemplateValidationPolicy(column);
   let { values } = column;
   let { name, datatype, validate_with, required, multiple } = column;
+  validate_with = validateWithToText(validate_with);
   required = getEffectiveRequired(column);
   let result = { status: true, column: name, errors: [] };
 
@@ -1112,11 +1115,10 @@ const realIndex = index;
     return;
   }
 
-// Validación de tipo eliminada: solo se valida obligatorio/opcional y lista de valores permitidos
-
 // Los campos con lista (validador u opciones) guardan el texto de la opción
-// (ej: "1 - Nacional"), así que se validan contra la lista y no por tipo/formato.
-const constraintErrors = columnToValidate ? [] : validateFieldValue(column, value);
+// (ej: "1 - Nacional"). Se validan contra la lista y las reglas de negocio,
+// sin aplicar a la etiqueta las restricciones de longitud del código.
+const constraintErrors = validateFieldValue(column, value, { hasDropdown: Boolean(columnToValidate) });
 if (constraintErrors.length > 0) {
   result.status = false;
   constraintErrors.forEach((message) => result.errors.push({
@@ -1127,137 +1129,24 @@ if (constraintErrors.length > 0) {
   return;
 }
 
-if (columnToValidate && validValuesSet) {
-  // Si el campo no es obligatorio y está vacío, saltar validación de validate_with también
-  if (!required && isBlankValue(value)) {
-    return; // Saltar validación de validate_with para campos no obligatorios vacíos
-  }
-  
-  if (multiple && Array.isArray(value)) {
-    value.forEach(val => {
-      let normalizedVal = val;
-
-      // Detectar si los valores del validador son números
-      const firstValidValue = Array.from(validValuesSet)[0];
-      const validatorHasNumbers = typeof firstValidValue === 'number';
-      
-      // PRIMERO: Si es un array, extraer el primer valor
-      let valueToNormalize = val;
-      if (Array.isArray(val) && val.length > 0) {
-        valueToNormalize = val[0];
-      }
-      
-      if (validatorHasNumbers) {
-        const num = Number(valueToNormalize);
-        if (!Number.isNaN(num)) {
-          normalizedVal = num;
-        } else {
-          const numericPrefix = String(valueToNormalize || '').trim().match(/^-?\d+(?=\s*(?:[-).:]|\s))/);
-          normalizedVal = numericPrefix ? Number(numericPrefix[0]) : valueToNormalize;
-        }
-      } else {
-        normalizedVal = normalizeComparableText(valueToNormalize);
-      }
-
-      // Acepta: texto limpio, "N. Texto" (prefijo numérico) o solo "N" (índice 1-basado)
-      let isValidValue = validatorHasNumbers
-        ? validValuesSet.has(normalizedVal)
-        : acceptedStringValuesSet?.has(normalizedVal);
-
-      if (!isValidValue && !validatorHasNumbers) {
-        const stripped = normalizeComparableText(String(valueToNormalize).replace(/^\s*\d+[).:\-\s]+\s*/, '').trim());
-        if (stripped && stripped !== normalizedVal) isValidValue = !!acceptedStringValuesSet?.has(stripped);
-        if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
-          const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
-          isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
-        }
-        // Extrae código del valor completo (ej: "CC Cédula de ciudadanía" → "CC")
-        if (!isValidValue) {
-          const codePrefix = /^([A-Z0-9]{1,6})[\s\-]/.exec(normalizeComparableText(String(valueToNormalize)));
-          if (codePrefix) isValidValue = !!acceptedStringValuesSet?.has(codePrefix[1]);
-        }
-        // También verifica si el valor completo está en validValuesSet normalizado
-        if (!isValidValue) {
-          isValidValue = Array.from(validValuesSet).some(v =>
-            normalizeComparableText(String(v)) === normalizedVal
-          );
-        }
-      }
-
-      if (!isValidValue) {
-        result.status = false;
-        result.errors.push({
-          register: realIndex + 1,
-          message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
-          value: val === null || val === undefined || val === '' ? "Sin valor" : (typeof val === 'object' ? JSON.stringify(val) : String(val))
-        });
-      }
-    });
-  } else {
-    // Solo validar validate_with si el campo es obligatorio O si tiene valor
-    if (required || !isBlankValue(value)) {
-      let normalizedVal = value;
-
-      // Detectar si los valores del validador son números
-      const firstValidValue = Array.from(validValuesSet)[0];
-      const validatorHasNumbers = typeof firstValidValue === 'number';
-      
-      // PRIMERO: Si es un array, extraer el primer valor
-      let valueToNormalize = value;
-      if (Array.isArray(value) && value.length > 0) {
-        valueToNormalize = value[0];
-        console.log('DEBUG - Array detectado, extrayendo primer valor:', valueToNormalize);
-      }
-      
-      if (validatorHasNumbers) {
-        const num = Number(valueToNormalize);
-        if (!Number.isNaN(num)) {
-          normalizedVal = num;
-        } else {
-          const numericPrefix = String(valueToNormalize || '').trim().match(/^-?\d+(?=\s*(?:[-).:]|\s))/);
-          normalizedVal = numericPrefix ? Number(numericPrefix[0]) : valueToNormalize;
-        }
-      } else {
-        normalizedVal = normalizeComparableText(valueToNormalize);
-      }
-
-      console.log('DEBUG - Valor original:', value, 'Valor normalizado:', normalizedVal, 'Tipo validador:', validatorHasNumbers ? 'números' : 'strings');
-
-      // Acepta: texto limpio, "N. Texto" (prefijo numérico) o solo "N" (índice 1-basado)
-      let isValidValue = validatorHasNumbers
-        ? validValuesSet.has(normalizedVal)
-        : acceptedStringValuesSet?.has(normalizedVal);
-
-      if (!isValidValue && !validatorHasNumbers) {
-        const stripped = normalizeComparableText(String(valueToNormalize).replace(/^\s*\d+[).:\-\s]+\s*/, '').trim());
-        if (stripped && stripped !== normalizedVal) isValidValue = !!acceptedStringValuesSet?.has(stripped);
-        if (!isValidValue && /^\s*\d+\s*$/.test(String(valueToNormalize))) {
-          const idx = parseInt(String(valueToNormalize).trim(), 10) - 1;
-          isValidValue = idx >= 0 && idx < (columnToValidate?.values?.length ?? 0);
-        }
-        // Extrae código del valor completo (ej: "CC Cédula de ciudadanía" → "CC")
-        if (!isValidValue) {
-          const codePrefix = /^([A-Z0-9]{1,6})[\s\-]/.exec(normalizeComparableText(String(valueToNormalize)));
-          if (codePrefix) isValidValue = !!acceptedStringValuesSet?.has(codePrefix[1]);
-        }
-        // También verifica si el valor completo está en validValuesSet normalizado
-        if (!isValidValue) {
-          isValidValue = Array.from(validValuesSet).some(v =>
-            normalizeComparableText(String(v)) === normalizedVal
-          );
-        }
-      }
-
-      if (!isValidValue) {
-        result.status = false;
-        result.errors.push({
-          register: realIndex + 1,
-          message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
-          value: value === null || value === undefined || value === '' ? "Sin valor" : (typeof value === 'object' ? JSON.stringify(value) : String(value))
-        });
-      }
+if (columnToValidate && validValuesSet && !isNoApplyValue(column, value)) {
+  const candidates = multiple && Array.isArray(value) ? value : [value];
+  candidates.forEach(candidate => {
+    const text = String(candidate ?? '').trim();
+    // Solo códigos y etiquetas registrados. Un número de fila o una etiqueta
+    // inventada que empieza por un código válido no es una opción del catálogo.
+    const isValid = acceptedStringValuesSet?.has(normalizeComparableText(text))
+      || validValuesSet.has(candidate)
+      || (/^-?\d+(?:\.\d+)?$/.test(text) && validValuesSet.has(Number(text)));
+    if (!isValid) {
+      result.status = false;
+      result.errors.push({
+        register: realIndex + 1,
+        message: `Valor de la columna ${name}, fila ${realIndex + 1} no fue encontrado en la validación: ${validate_with}`,
+        value: text || 'Sin valor',
+      });
     }
-  }
+  });
 }
 
 });

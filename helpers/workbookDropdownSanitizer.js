@@ -1,5 +1,6 @@
 const fs = require("fs");
 const ExcelJS = require("exceljs");
+const { applyTemplateValidationPolicy } = require('./templateValidationPolicy');
 const {
   collapseRepeatedCompositeOption,
   normalizeOptionKey,
@@ -103,11 +104,12 @@ const normalizeDropdownOptionArray = (value) => {
 
 const sanitizeFieldDropdownOptions = (field) => {
   if (!field || typeof field !== "object") return field;
+  field = applyTemplateValidationPolicy(field);
 
   return {
     ...field,
     // Normalizar multiple: si no tiene validate_with válido, debe ser false
-    multiple: field.multiple === true ? true : false,
+    multiple: field.multiple === true,
     dropdown_options: normalizeDropdownOptionArray(field.dropdown_options),
     excel_validation_options: normalizeDropdownOptionArray(field.excel_validation_options),
     validator_options: normalizeDropdownOptionArray(field.validator_options),

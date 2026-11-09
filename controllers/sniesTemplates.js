@@ -1326,7 +1326,7 @@ const applyHeaderContentRulesFromComments = (workbook, commentsPlan, endRow = 10
           cell.numFmt = '@';
         } else if (constraints.content_type === 'alphabetic') {
           formula = `OR(${address}="",AND(SUMPRODUCT(--ISNUMBER(SEARCH({0,1,2,3,4,5,6,7,8,9},${address})))=0${lengthPart}))`;
-          error = `Ingrese únicamente letras${constraints.max_length ? ` (máximo ${constraints.max_length})` : ''}.`;
+          error = `Ingrese letras, espacios o signos de puntuación, sin números${constraints.max_length ? ` (máximo ${constraints.max_length})` : ''}.`;
         }
 
         cell.dataValidation = {

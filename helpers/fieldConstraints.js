@@ -1,3 +1,5 @@
+const { applyTemplateValidationPolicy, isNoApplyField, isInternationalEntityField, isCountryCodeField, isCooperationFlag } = require('./templateValidationPolicy');
+
 const normalizeText = (value) => String(value ?? '')
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
@@ -53,33 +55,47 @@ const isStrictDate = (value) => {
   let year;
   let month;
   let day;
-  let match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  let match = text.match(/^(\d{2})\/(\d{2})\/(\d{4}|\d{2})$/);
   if (match) {
     day = Number(match[1]); month = Number(match[2]); year = Number(match[3]);
+    if (match[3].length === 2) year += 2000;
   } else {
-    match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
+    match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/);
     if (!match) return false;
     year = Number(match[1]); month = Number(match[2]); day = Number(match[3]);
   }
   const parsed = new Date(Date.UTC(year, month - 1, day));
-  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day
+    && (!text.includes('T') || !Number.isNaN(Date.parse(text)));
 };
 
-const validateFieldValue = (field = {}, value) => {
+const validateFieldValue = (field = {}, value, { hasDropdown = false } = {}) => {
   if (value === null || value === undefined || String(value).trim() === '') return [];
-  const constraints = getFieldConstraints(field);
+  field = applyTemplateValidationPolicy(field);
   const text = String(value).trim();
+  if (isNoApplyField(field) && text === '0') return [];
+  if (isCooperationFlag(field)) return /^[SN]$/.test(text) ? [] : ['solo admite S (Sí) o N (No)'];
+  if (isCountryCodeField(field) && !/^\d+$/.test(text)
+    && !(hasDropdown && /^\d+\s+-\s+\S/.test(text))) return ['debe contener únicamente dígitos'];
+  // Las etiquetas de listas no están sujetas al largo o tipo del código SNIES.
+  // Las reglas de negocio anteriores también se verifican si existe una lista.
+  if (hasDropdown && field.datatype !== 'Fecha'
+    && !(isInternationalEntityField(field) && text.toUpperCase() === 'N/A')) return [];
+  if (field.datatype === 'Fecha') return isStrictDate(value) ? [] : ['debe ser una fecha válida en formato DD/MM/AAAA o DD/MM/AA'];
+  const constraints = getFieldConstraints(field);
   const errors = [];
 
   if (constraints.max_length && text.length > constraints.max_length) {
     errors.push(`supera el máximo de ${constraints.max_length} caracteres`);
   }
-  if (constraints.content_type === 'alphabetic' && !/^[\p{L}\s'-]+$/u.test(text)) {
-    errors.push('debe contener únicamente letras');
+  // Los textos admiten puntuación y símbolos, incluidas tildes descompuestas.
+  // "Alfabético" conserva la restricción de no incluir números.
+  if (constraints.content_type === 'alphabetic' && !/^[\p{L}\p{M}\p{P}\p{S}\s]+$/u.test(text)) {
+    errors.push('debe contener letras, espacios o signos de puntuación, sin números');
   } else if (constraints.content_type === 'numeric' && !/^\d+$/.test(text)) {
     errors.push('debe contener únicamente dígitos');
-  } else if (constraints.content_type === 'alphanumeric' && !/^[\p{L}\p{N}\s]+$/u.test(text)) {
-    errors.push('debe contener únicamente letras y números');
+  } else if (constraints.content_type === 'alphanumeric' && !/^[\p{L}\p{M}\p{N}\p{P}\p{S}\s]+$/u.test(text)) {
+    errors.push('debe contener letras, números, espacios o signos de puntuación');
   }
 
   const datatype = String(field.datatype || '');
@@ -105,7 +121,7 @@ const validateFieldValue = (field = {}, value) => {
       const toTimestamp = (dateValue) => {
         if (dateValue instanceof Date) return dateValue.getTime();
         const parts = String(dateValue).split('/');
-        if (parts.length === 3) return Date.UTC(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
+        if (parts.length === 3) return Date.UTC(Number(parts[2]) + (parts[2].length === 2 ? 2000 : 0), Number(parts[1]) - 1, Number(parts[0]));
         return new Date(dateValue).getTime();
       };
       if (toTimestamp(dates[0]) > toTimestamp(dates[1])) errors.push('debe tener la fecha inicial antes de la fecha final');
@@ -117,8 +133,11 @@ const validateFieldValue = (field = {}, value) => {
   return [...new Set(errors)];
 };
 
-const normalizeKey = (value) => normalizeText(value).toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-const getCode = (value) => String(value ?? '').trim().split(/\s+-\s+|\s+/)[0].replace(/\D/g, '');
+const normalizeKey = (value) => normalizeText(value).toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+const isColombiaCode = (value) => {
+  const match = String(value ?? '').trim().match(/^(\d+)(?:\s*[-.:)]\s+.*)?$/);
+  return Boolean(match && Number(match[1]) === 170);
+};
 
 const validateDatasetRules = ({ templateName = '', fields = [], rows = [], sheetName } = {}) => {
   const results = [];
@@ -165,9 +184,11 @@ const validateDatasetRules = ({ templateName = '', fields = [], rows = [], sheet
 
   const fieldByKey = new Map(fields.map((field) => [normalizeKey(field.name), field]));
   const countryField = fieldByKey.get('ID_PAIS_EXTRANJERO');
-  if (countryField && normalizeKey(templateName).includes('MOVILIDAD')) {
+  // El significado de ID_PAIS_EXTRANJERO no depende del nombre comercial de
+  // la plantilla ni de si la hoja se llama MOV_ESTUD_HACIA_COLOMBIA.
+  if (countryField) {
     rows.forEach((row, index) => {
-      if (getCode(row?.[countryField.name]) === '170') {
+      if (isColombiaCode(row?.[countryField.name])) {
         addError(countryField.name, index + 1, row[countryField.name], `El país 170 (Colombia) no es válido para movilidad internacional (fila ${index + 1})`);
       }
     });

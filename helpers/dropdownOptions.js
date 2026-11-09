@@ -184,7 +184,7 @@ const getOptionAliases = (option) => {
     }
   }
 
-  return uniqueOptionTexts(aliases);
+  return uniqueOptionTexts(aliases, { preserveLeadingCodes: true });
 };
 
 const buildAcceptedDropdownOptionSet = (options = []) => {
