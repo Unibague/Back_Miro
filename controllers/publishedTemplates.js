@@ -1808,7 +1808,7 @@ publTempController.loadProducerData = async (req, res) => {
     const normalizeProducerValue = (rawValue, field) => {
       let val = rawValue;
 
-      if (typeof val === 'object' && val !== null) {
+      if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
         val = convertHyperlinkToText(val);
       }
 
@@ -2234,7 +2234,7 @@ const result = pubTem.template.fields.map((field) => {
     let val = row[field.name];
     
     // FIX: Manejar objetos de Excel (hipervínculos, etc.)
-    if (typeof val === 'object' && val !== null) {
+    if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
       val = convertHyperlinkToText(val);
     }
     

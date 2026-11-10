@@ -57,6 +57,14 @@ test('valida porcentajes por fila y movilidad internacional', () => {
   assert.ok(messages.some((message) => message.includes('país 170')));
 });
 
+test('los enteros respetan sus límites numéricos en el servidor', () => {
+  const field = { name: 'CANTIDAD', datatype: 'Entero', min_value: 2, max_value: 5 };
+  assert.deepEqual(validateFieldValue(field, 3), []);
+  assert.ok(validateFieldValue(field, 1).some(message => message.includes('mayor o igual a 2')));
+  assert.ok(validateFieldValue(field, 6).some(message => message.includes('menor o igual a 5')));
+  assert.ok(validateFieldValue(field, '2.5').some(message => message.includes('entero')));
+});
+
 test('un documento no puede aparecer con dos tipos distintos', () => {
   const errors = validateDatasetRules({
     fields: [{ name: 'NUM_DOCUMENTO' }, { name: 'ID_TIPO_DOCUMENTO' }],

@@ -168,9 +168,10 @@ const getOptionAliases = (option) => {
   const aliases = [text];
 
   // Match "CODE - description" (separator: dash, colon, equals, etc.)
-  const leadingCode = text.match(/^\s*([A-Za-z0-9]+)\s*(?:[-:=)]|\.)\s+.+$/);
+  const leadingCode = text.match(/^\s*([A-Za-z0-9]+)\s*(?:[-:=)]|\.)\s+(.+)$/);
   if (leadingCode?.[1]) {
     aliases.push(leadingCode[1]);
+    aliases.push(`${leadingCode[1]} ${leadingCode[2]}`);
   } else {
     // Match "CODE description" (space-only, short code ≤6 chars + longer description)
     const spaceCode = text.match(/^\s*([A-Za-z0-9]{1,6})\s+\S.+$/);

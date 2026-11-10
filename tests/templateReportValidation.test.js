@@ -37,6 +37,23 @@ test('DESCRIPCION_ACTIVIDAD acepta letras y números aun con metadatos alfabéti
   assert.equal(result.status, true);
 });
 
+test('CODIGO_CONVENIO admite códigos alfanuméricos conservando ceros, longitud y obligatoriedad', async () => {
+  const field = { name: 'CODIGO_CONVENIO', datatype: 'Texto Largo', content_type: 'alphabetic', comment: 'Obligatario si la movilidad se realiza en virtud de algún convenio, alfabético (30). Código o número del convenio' };
+  assert.equal((await validate(field, ['032-2023', 'CV-001/2026', '0032', 'Convenio 12', 'ABC'])).status, true);
+  const invalid = await validate(field, ['x'.repeat(31), '']);
+  assert.deepEqual(Array.from(invalid.errors, error => error.register), [1, 2]);
+  assert.match(invalid.errors[0].message, /30 caracteres/);
+  assert.equal((await validate({ ...field, required_override: true }, [''])).status, true);
+  const sanitized = await sanitizeTemplateDropdownPayload({ fields: [field], workbook_sheets: [{ name: 'Movilidad', fields: [field] }] });
+  for (const normalized of [sanitized.fields[0], sanitized.workbook_sheets[0].fields[0]]) {
+    assert.equal(normalized.content_type, 'alphanumeric');
+    assert.equal(normalized.max_length, 30);
+    assert.match(normalized.comment, /alfanumérico \(30\)/);
+    assert.match(normalized.comment, /si la movilidad/);
+  }
+  assert.equal((await validate({ name: 'OTRO_NOMBRE', content_type: 'alphabetic' }, ['Entidad 2026'])).status, false);
+});
+
 test('todos los textos alfabéticos admiten los nombres y la puntuación de la captura', async () => {
   const names = [
     'INTERASEO S.A.S. E.S.P.',
@@ -89,6 +106,15 @@ test('las listas validan códigos y etiquetas sin aplicar la longitud del códig
   }
 });
 
+test('ID_FUENTE_NACIONAL admite la etiqueta completa del informe con o sin guion', async () => {
+  for (const dropdown_options of [['1 - Recursos IES', '2 - Recursos públicos'], ['1 Recursos IES', '2 Recursos públicos']]) {
+    const result = await validate({ name: 'ID_FUENTE_NACIONAL', comment: 'Obligatorio, numérico (2).', dropdown_options },
+      ['1 Recursos IES', '1 - Recursos IES', '1', '2 Recursos públicos', '1 Recursos inventados', '3 Recursos IES']);
+    assert.deepEqual(Array.from(result.errors, error => error.register), [5, 6]);
+    assert.ok(result.errors.every(error => !/caracteres|dígitos/.test(error.message)));
+  }
+});
+
 test('también se respetan las listas de validadores conectados por período', async () => {
   let requestedPeriod;
   controller.findValidatorByName = async (name, period) => {
@@ -135,6 +161,19 @@ test('país de institución asociada no permite letras, incluso con una lista ma
 test('cooperación solo acepta S/N, sin descripciones ni índices de opciones', async () => {
   const result = await validate({ name: 'OTRAS_ACTIVIDADES_COOPERACIÓN' }, ['S', 'N', 'Sí', 'No', 'Descripción', 1, 'S - Sí']);
   assert.deepEqual(Array.from(result.errors, e => e.register), [3, 4, 5, 6, 7]);
+});
+
+test('cualquier pregunta S/N exige S o N aunque conserve listas y tipos antiguos', async () => {
+  const field = { name: 'ACTIVIDADES_FORMACION', datatype: 'Texto Largo', required: true,
+    comment: 'Obligatorio, alfabético (1). El convenio dentro de sus principales actividades incluye actividades de formación (S/N)?',
+    multiple: true, dropdown_options: ['f'], excel_validation_options: ['X'], validator_options: ['Sí'] };
+  const result = await validate(field, ['S', 'N', 'f', 'Sí', 'No', 'SN', 1, '', 's']);
+  assert.deepEqual(Array.from(result.errors, e => e.register), [3, 4, 5, 6, 7, 8, 9]);
+  const sanitized = await sanitizeTemplateDropdownPayload({ fields: [field], workbook_sheets: [{ name: 'Convenios', fields: [field] }] });
+  for (const normalized of [sanitized.fields[0], sanitized.workbook_sheets[0].fields[0]]) {
+    assert.deepEqual(normalized.dropdown_options, ['S', 'N']);
+    assert.equal(normalized.multiple, false);
+  }
 });
 
 test('movilidad saliente rechaza Colombia en cualquier hoja del reporte', () => {
