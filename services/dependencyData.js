@@ -11,7 +11,7 @@ const getDependencyReports= async (depCode, periodId) => {
     if (!depCode || !periodId) {
       throw new Error("Dependency code and period ID are required.");
     }
-    const dependency = await Dependency.findOne({ dep_code: depCode }, "name dep_code");
+    const dependency = await Dependency.findOne({ dep_code: depCode }, "name dep_code active inactive_since");
     if (!dependency) throw new Error("Dependency not found");
 
     const periodObjectId = mongoose.Types.ObjectId.isValid(periodId)
@@ -47,7 +47,7 @@ const getDependencyTemplates = async (depCode, periodId) => {
     if (!depCode || !periodId) {
       throw new Error("Dependency code and period ID are required.");
     }
-    const dependency = await Dependency.findOne({ dep_code: depCode }, "name dep_code");
+    const dependency = await Dependency.findOne({ dep_code: depCode }, "name dep_code active inactive_since");
     if (!dependency) throw new Error("Dependency not found");
 
 
@@ -70,8 +70,10 @@ const getDependencyTemplates = async (depCode, periodId) => {
    return { 
       dependencyId: dependency._id, 
       dependencyCode: depCode, 
-      dependencyName: dependency.name, 
-      templates: processedTemplates 
+      dependencyName: dependency.name,
+      dependencyActive: dependency.active !== false,
+      dependencyInactiveSince: dependency.inactive_since || null,
+      templates: processedTemplates
     };
   } catch (err) {
     throw new Error("Error fetching templates: " + err.message);

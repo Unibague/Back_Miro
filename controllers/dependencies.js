@@ -372,7 +372,7 @@ dependencyController.getAllDependencies = async (req, res) => {
     }
 
     await UserService.findUserByEmail(email);
-    const dependencies = await Dependency.find({}, "dep_code name responsible dep_father members visualizers");
+    const dependencies = await Dependency.find({}, "dep_code name responsible dep_father members visualizers active inactive_since");
 
     res.status(200).json(dependencies);
   } catch (error) {

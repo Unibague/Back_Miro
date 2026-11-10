@@ -650,6 +650,14 @@ templateController.duplicatePlantilla = async (req, res) => {
 
     await duplicated.save();
 
+    // La copia queda en las mismas categorías que la original (SNIES / CNA y
+    // la del selector, p. ej. "Gestión interna").
+    try {
+      await syncTemplateCategories(duplicated, plainSource.category || undefined);
+    } catch (categoryError) {
+      console.warn('Category sync on duplication failed (non-critical):', categoryError.message);
+    }
+
     try {
       await AuditLogger.logCreate(req, user, 'template', {
         templateId: duplicated._id.toString(),
@@ -687,6 +695,13 @@ templateController.duplicatePlantilla = async (req, res) => {
 templateController.updatePlantilla = async (req, res) => {
   const { id } = req.params;
   const updatedFields = await sanitizeTemplateDropdownPayload(req.body);
+
+  // Categoría elegida en el selector del formulario (distinta de SNIES / CNA).
+  // undefined = el cliente no la envió y no se toca.
+  const selectedCategoryId = Object.prototype.hasOwnProperty.call(req.body, 'category')
+    ? (req.body.category || null)
+    : undefined;
+  if (selectedCategoryId !== undefined) updatedFields.category = selectedCategoryId;
 
   // Normalizar fields para asegurar que múltiple sea false por defecto
   if (Array.isArray(updatedFields.fields)) {
@@ -788,7 +803,7 @@ templateController.updatePlantilla = async (req, res) => {
         }
       }
       try {
-        await syncTemplateCategories(updatedTemplate);
+        await syncTemplateCategories(updatedTemplate, selectedCategoryId);
       } catch (categoryError) {
         console.warn('Category sync failed (non-critical):', categoryError.message);
       }
@@ -842,9 +857,9 @@ templateController.updatePlantilla = async (req, res) => {
       }
     }
 
-    // Ubicar la plantilla en la categoría de los switches SNIES / CNA / Otra
+    // Ubicar la plantilla en la categoría de los switches SNIES / CNA y del selector
     try {
-      await syncTemplateCategories(updatedTemplate);
+      await syncTemplateCategories(updatedTemplate, selectedCategoryId);
     } catch (categoryError) {
       console.warn('Category sync failed (non-critical):', categoryError.message);
     }
