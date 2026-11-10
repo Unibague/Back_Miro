@@ -1,4 +1,4 @@
-const { applyTemplateValidationPolicy, isNoApplyField, isInternationalEntityField, isCountryCodeField, isCooperationFlag } = require('./templateValidationPolicy');
+const { applyTemplateValidationPolicy, isNoApplyField, isInternationalEntityField, isCountryCodeField, isYesNoField } = require('./templateValidationPolicy');
 
 const normalizeText = (value) => String(value ?? '')
   .normalize('NFD')
@@ -74,7 +74,7 @@ const validateFieldValue = (field = {}, value, { hasDropdown = false } = {}) => 
   field = applyTemplateValidationPolicy(field);
   const text = String(value).trim();
   if (isNoApplyField(field) && text === '0') return [];
-  if (isCooperationFlag(field)) return /^[SN]$/.test(text) ? [] : ['solo admite S (Sí) o N (No)'];
+  if (isYesNoField(field)) return /^[SN]$/.test(text) ? [] : ['solo admite S (Sí) o N (No)'];
   if (isCountryCodeField(field) && !/^\d+$/.test(text)
     && !(hasDropdown && /^\d+\s+-\s+\S/.test(text))) return ['debe contener únicamente dígitos'];
   // Las etiquetas de listas no están sujetas al largo o tipo del código SNIES.
@@ -100,7 +100,7 @@ const validateFieldValue = (field = {}, value, { hasDropdown = false } = {}) => 
 
   const datatype = String(field.datatype || '');
   if (datatype === 'Entero' && !/^-?\d+$/.test(text)) errors.push('debe ser un número entero');
-  if (datatype === 'Decimal' || datatype === 'Porcentaje') {
+  if (datatype === 'Entero' || datatype === 'Decimal' || datatype === 'Porcentaje') {
     const number = typeof value === 'number' ? value : Number(text.replace(',', '.'));
     if (!Number.isFinite(number)) errors.push('debe ser un número válido');
     else {
