@@ -76,7 +76,10 @@ const updateUserDependencies = async (req, res) => {
 };
 
 // Función para obtener todas las dependencias del usuario
-const getUserAllDependencies = async (user) => {
+// includeMemberships: agrega también las dependencias donde el usuario es
+// miembro (switch "Acceso" de Gestionar Dependencia), que cuentan como
+// asignación efectiva igual que la principal y las adicionales.
+const getUserAllDependencies = async (user, { includeMemberships = false } = {}) => {
     const dependencies = [];
     
     // Dependencia principal
@@ -100,6 +103,20 @@ const getUserAllDependencies = async (user) => {
                 name: dep.name,
                 dep_code: dep.dep_code,
                 type: 'adicional'
+            });
+        });
+    }
+
+    if (includeMemberships) {
+        const seen = new Set(dependencies.map(dep => dep.dep_code));
+        const memberDeps = await Dependency.find({ members: user.email }, 'name dep_code');
+        memberDeps.forEach(dep => {
+            if (seen.has(dep.dep_code)) return;
+            seen.add(dep.dep_code);
+            dependencies.push({
+                name: dep.name,
+                dep_code: dep.dep_code,
+                type: 'miembro'
             });
         });
     }
@@ -243,7 +260,7 @@ const getUserDependencies = async (req, res) => {
             return res.status(404).json({ message: 'Usuario no encontrado' });
         }
         
-        const allDependencies = await getUserAllDependencies(user);
+        const allDependencies = await getUserAllDependencies(user, { includeMemberships: true });
         
         res.json({ 
             user: {
