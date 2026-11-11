@@ -53,6 +53,54 @@ const {
   buildMovilidadSalienteFuncionariosAnalytics,
   isMovilidadSalienteFuncionariosFile,
 } = require('../services/consultaInformacionAnalytics');
+const { isChunked, hydrateSheets, sheetRowCount } = require('../services/historicoStorage');
+
+// Archivos de Consulta de Información que alguna analítica del Tablero lee
+// fila por fila (matriculados no: usa el "resumen" fijo).
+const ANALYTICS_FILE_CHECKS = [
+  isActividadBienestarFile,
+  isRepresentacionEstudiantilFile,
+  isPublicacionesAutoresFile,
+  isDocentesHistoricoSniesFile,
+  isRutasAprendizajeFile,
+  isPracticasAcademicasFile,
+  isEstrategiasCurricularesFile,
+  isCapacitacionFuncionariosFile,
+  isConveniosCooperacionFile,
+  isEstimulosFuncionariosFile,
+  isOtrasEstrategiasFile,
+  isPazYRegionFile,
+  isGruposInvestigacionFile,
+  isLineasInvestigacionFile,
+  isRedesInvestigacionFile,
+  isSemillerosParticipantesFile,
+  isTrabajoGradoFile,
+  isMovilidadEntranteEstudiantesFile,
+  isMovilidadEntranteFuncionariosFile,
+  isMovilidadSalienteEstudiantesFile,
+  isMovilidadSalienteFuncionariosFile,
+];
+
+// Los archivos guardados por bloques llegan sin filas en "sheets". Solo se
+// cargan completos los que una analítica va a usar: el más reciente de cada
+// tipo por ámbito (mismo criterio que el recorrido del Tablero).
+const hydrateDocumentsForAnalytics = async (documents) => {
+  const claimed = new Set();
+  const hydrated = [];
+  for (const document of documents) {
+    const dimensionId = document.dimension ? String(document.dimension) : '';
+    let needed = false;
+    ANALYTICS_FILE_CHECKS.forEach((check, index) => {
+      const key = dimensionId + '|' + index;
+      if (dimensionId && !claimed.has(key) && check(document.file_name)) {
+        claimed.add(key);
+        needed = true;
+      }
+    });
+    hydrated.push(needed && isChunked(document) ? await hydrateSheets(document) : document);
+  }
+  return hydrated;
+};
 
 const dimensionController = {};
 
@@ -610,9 +658,10 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
       Validator.find().select('name columns').lean(),
       Dependency.find().select('dep_code name').lean(),
       HistoricoDocentes.find(historicQuery)
-        .select('_id file_name dimension period sheets resumen createdAt')
+        .select('_id file_name dimension period sheets resumen createdAt storage rows_source')
         .sort({ createdAt: -1 })
-        .lean(),
+        .lean()
+        .then(hydrateDocumentsForAnalytics),
     ]);
     var dimensions = results[0];
     // Población estudiantil oficial (Admisiones y Registro) del periodo
@@ -659,7 +708,7 @@ dimensionController.getTableroStats = async function getTableroStats(req, res) {
 
       var rowsInDocument = (document.sheets || []).reduce(function (sum, sheet) {
         if (normKey(sheet.name) === 'LISTAS') return sum;
-        return sum + (Array.isArray(sheet.rows) ? sheet.rows.length : 0);
+        return sum + sheetRowCount(sheet);
       }, 0);
       historicoRegistrosByDimension.set(
         dimensionId,

@@ -5,6 +5,10 @@ const sheetDataSchema = new mongoose.Schema(
     name: { type: String },
     headers: [{ type: String }],
     rows: { type: mongoose.Schema.Types.Mixed, default: [] },
+    // Solo en archivos con storage "chunked": las filas están en
+    // historico_row_chunks y aquí queda el conteo y los años disponibles.
+    totalRows: { type: Number },
+    availableYears: { type: [String], default: undefined },
   },
   { _id: false }
 );
@@ -29,6 +33,23 @@ const historicoDocentesSchema = new mongoose.Schema(
     file_type: { type: String, enum: ['excel', 'pdf'], default: 'excel' },
     excel_data: { type: Buffer, default: null },
     pdf_data: { type: Buffer, default: null },
+    // Archivos subidos desde la carga por bloques: el original va a GridFS
+    // (bucket historico_files) y las filas a historico_row_chunks, sin el
+    // límite de 16 MB por documento. Los registros anteriores siguen con
+    // excel_data/pdf_data y las filas dentro de "sheets" (storage "inline").
+    storage: { type: String, enum: ['inline', 'chunked'], default: 'inline' },
+    file_id: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // Dueño de los bloques de filas cuando este registro es una copia
+    // (clonado a otro ámbito). null = los bloques son de este mismo registro.
+    rows_source: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // Estado del procesamiento en segundo plano de la carga.
+    status: { type: String, enum: ['procesando', 'listo', 'error'], default: 'listo' },
+    progress: {
+      rows: { type: Number, default: 0 },
+      step: { type: String, default: null },
+      heartbeat: { type: Date, default: null },
+    },
+    error_message: { type: String, default: null },
     sheets: [sheetDataSchema],
     anexos: { type: [anexoSchema], default: [] },
     category: { type: String, enum: ['snies', 'plantillas', 'informes'], default: 'snies' },

@@ -6,8 +6,24 @@ const Dependency = require("../models/dependencies");
 const Dimension = require("../models/dimensions");
 const User = require("../models/users");
 const UserService = require("../services/users");
-const { addStudentProgramColumn } = require("../services/studentsDirectory");
 const { buildResumenArchivo } = require("../services/historicoResumen");
+const {
+  isChunked,
+  rowsKey,
+  sheetRowCount,
+  saveFileToGridFS,
+  getGridFSFileInfo,
+  openGridFSStream,
+  readGridFSBuffer,
+  parseExcelToChunks,
+  parseCsvToChunks,
+  forEachSheetRow,
+  readRowsRange,
+  scanRows,
+  buildResumenFromChunks,
+  addStudentProgramColumnToChunks,
+  deleteStoredData,
+} = require("../services/historicoStorage");
 const {
   downloadDriveFileBuffer,
 } = require("../config/googleDrive");
@@ -17,6 +33,17 @@ const controller = {};
 const VALID_CATEGORIES = ['snies', 'plantillas', 'informes'];
 const EXCEL_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const PDF_CONTENT_TYPE = "application/pdf";
+const CSV_CONTENT_TYPE = "text/csv; charset=utf-8";
+
+// Procesamiento en segundo plano de las cargas: el registro queda en
+// "procesando" con un latido periódico. Si el latido se detiene (el proceso
+// se reinició a mitad de la carga) se reporta como error.
+const HEARTBEAT_MS = 30 * 1000;
+const PROGRESS_UPDATE_MS = 5 * 1000;
+const STALE_PROCESSING_MS = 5 * 60 * 1000;
+// Por encima de este tamaño el Excel original se entrega tal cual, sin
+// resaltar el encabezado (hacerlo exige cargar el libro completo en memoria).
+const DOWNLOAD_STYLE_MAX_BYTES = 20 * 1024 * 1024;
 
 // Los miembros de AYUDAS EDUCATIVAS (sin importar si su rol es Responsable o
 // Productor) pueden cargar Plantillas en Consulta de Información, solo dentro
@@ -189,83 +216,34 @@ const setAttachmentHeaders = (res, fileName, contentType) => {
   res.setHeader("Content-Type", contentType);
 };
 
-const parseSheetsFromBuffer = async (buffer) => {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer);
+const removeTempFile = (filePath) => {
+  if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+};
 
-  const sheets = [];
+const effectiveStatus = (registro) => {
+  if (registro.status !== "procesando") return registro.status || "listo";
+  const heartbeat = registro.progress?.heartbeat || registro.updatedAt;
+  const stale = heartbeat && Date.now() - new Date(heartbeat).getTime() > STALE_PROCESSING_MS;
+  return stale ? "error" : "procesando";
+};
 
-  workbook.worksheets.forEach((worksheet) => {
-    const headers = [];
-    const rows = [];
+const effectiveErrorMessage = (registro) => {
+  if (effectiveStatus(registro) !== "error") return null;
+  return registro.error_message || "El procesamiento del archivo se interrumpió. Vuelve a cargarlo.";
+};
 
-    let headerRowIndex = 1;
-
-    let maxCells = 0;
-    for (let r = 1; r <= Math.min(10, worksheet.rowCount); r++) {
-      const row = worksheet.getRow(r);
-      let cellCount = 0;
-      row.eachCell({ includeEmpty: false }, () => cellCount++);
-      if (cellCount > maxCells) {
-        maxCells = cellCount;
-        headerRowIndex = r;
-      }
-    }
-
-    const headerRow = worksheet.getRow(headerRowIndex);
-    headerRow.eachCell({ includeEmpty: true }, (cell, colIndex) => {
-      const val = getCellText(cell.value);
-      headers[colIndex - 1] = val || `Columna ${colIndex}`;
-    });
-
-    while (headers.length > 0 && !headers[headers.length - 1]) {
-      headers.pop();
-    }
-
-    for (let r = headerRowIndex + 1; r <= worksheet.rowCount; r++) {
-      const row = worksheet.getRow(r);
-      const rowData = [];
-      let hasData = false;
-
-      for (let c = 1; c <= headers.length; c++) {
-        const cell = row.getCell(c);
-        const val = getCellText(cell.value);
-        rowData.push(val);
-        if (val) hasData = true;
-      }
-
-      if (hasData) {
-        rows.push(rowData);
-      }
-    }
-
-    sheets.push({ name: worksheet.name, headers, rows });
+const pipeGridFS = (res, fileId) =>
+  new Promise((resolve) => {
+    openGridFSStream(fileId)
+      .on("error", (error) => {
+        console.error("Error leyendo archivo de GridFS:", error.message);
+        if (!res.headersSent) res.status(404).json({ message: "Archivo no encontrado." });
+        else res.destroy();
+        resolve();
+      })
+      .on("end", resolve)
+      .pipe(res);
   });
-
-  return sheets;
-};
-
-const getCellText = (value) => {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value instanceof Date) {
-    const dd = String(value.getUTCDate()).padStart(2, "0");
-    const mm = String(value.getUTCMonth() + 1).padStart(2, "0");
-    const yyyy = value.getUTCFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  }
-  if (Array.isArray(value)) return value.map(getCellText).join(", ");
-  if (typeof value === "object") {
-    if (Array.isArray(value.richText))
-      return value.richText.map((i) => getCellText(i?.text)).join("").trim();
-    if (value.text !== undefined) return getCellText(value.text);
-    if (value.result !== undefined) return getCellText(value.result);
-    if (value.value !== undefined) return getCellText(value.value);
-    return "";
-  }
-  return "";
-};
 
 // GET /historico-docentes/list?category=&email=&periodId=&dimensionId=
 controller.listFiles = async (req, res) => {
@@ -274,12 +252,18 @@ controller.listFiles = async (req, res) => {
   if (!email) return res.status(400).json({ message: "El email es requerido." });
 
   try {
+    // También se listan las cargas en proceso o fallidas, para que el usuario
+    // vea su estado (y pueda eliminar las fallidas).
     const query = {
-      active: true,
-      $or: [
-        { category },
-        ...(category === 'snies' ? [{ category: { $exists: false } }] : [])
-      ]
+      $and: [
+        { $or: [{ active: true }, { status: { $in: ['procesando', 'error'] } }] },
+        {
+          $or: [
+            { category },
+            ...(category === 'snies' ? [{ category: { $exists: false } }] : [])
+          ]
+        },
+      ],
     };
 
     // Filtrar por período solo para plantillas e informes
@@ -295,7 +279,7 @@ controller.listFiles = async (req, res) => {
     }
 
     const files = await HistoricoDocentes.find(query)
-      .select('_id file_name uploaded_by updatedAt createdAt category file_type sheets anexos dimension cloned_from')
+      .select('_id file_name uploaded_by updatedAt createdAt category file_type sheets anexos dimension cloned_from status progress error_message')
       .sort({ createdAt: -1 });
 
     const canManage = await buildFileManager(email, dimensionId);
@@ -312,12 +296,15 @@ controller.listFiles = async (req, res) => {
         file_type: f.file_type || 'excel',
         dimension: f.dimension || null,
         cloned_from: f.cloned_from || null,
+        status: effectiveStatus(f),
+        progress: { rows: f.progress?.rows || 0, step: f.progress?.step || null },
+        error_message: effectiveErrorMessage(f),
         anexosCount: (f.anexos || []).length,
         anexosNames: (f.anexos || []).map(a => a.file_name),
         sheetsInfo: (f.sheets || []).map((s, i) => ({
           index: i,
           name: s.name,
-          totalRows: s.rows.length,
+          totalRows: sheetRowCount(s),
         })),
       }))
     });
@@ -356,6 +343,12 @@ controller.cloneToDimension = async (req, res) => {
   try {
     const source = await HistoricoDocentes.findById(id);
     if (!source) return res.status(404).json({ message: "Archivo de origen no encontrado." });
+    if (effectiveStatus(source) !== "listo") {
+      return res.status(409).json({ message: "El archivo de origen todavía no está listo." });
+    }
+    // Un archivo guardado por bloques no se copia: la copia reutiliza los
+    // bloques y el archivo GridFS del original.
+    const chunked = isChunked(source);
 
     let user = null;
     if (email) {
@@ -371,8 +364,12 @@ controller.cloneToDimension = async (req, res) => {
           file_type: source.file_type,
           excel_data: source.excel_data,
           pdf_data: source.pdf_data,
+          storage: source.storage || 'inline',
+          file_id: source.file_id || null,
+          rows_source: chunked ? rowsKey(source) : null,
+          status: 'listo',
           sheets: source.sheets,
-          resumen: source.resumen || buildResumenArchivo(source.file_name, source.sheets),
+          resumen: source.resumen || (chunked ? null : buildResumenArchivo(source.file_name, source.sheets)),
           category,
           // El listado de un ámbito filtra por período seleccionado (igual
           // que las demás plantillas): sin esto, la copia quedaba con
@@ -404,13 +401,14 @@ controller.deleteFile = async (req, res) => {
   if (!email) return res.status(400).json({ message: "El email es requerido." });
 
   try {
-    const registro = await HistoricoDocentes.findById(id).select("uploaded_by category dimension");
+    const registro = await HistoricoDocentes.findById(id).select("uploaded_by category dimension storage file_id rows_source");
     if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
     if (!(await canManageFile(registro, email))) {
       return res.status(403).json({ message: "No tienes permiso para eliminar este archivo." });
     }
 
     await HistoricoDocentes.findByIdAndDelete(id);
+    await deleteStoredData(registro);
     return res.status(200).json({ message: "Archivo eliminado correctamente." });
   } catch (error) {
     console.error("Error eliminando archivo:", error);
@@ -418,97 +416,194 @@ controller.deleteFile = async (req, res) => {
   }
 };
 
+// Guarda el archivo en GridFS, lo lee por streaming y deja sus filas por
+// bloques. Corre después de responder la carga; el resultado queda en el
+// campo "status" del registro (ver uploadStatus).
+const processUpload = async (registro, filePath, { isPdf, isCsv }) => {
+  const id = registro._id;
+  const setFields = (fields) =>
+    HistoricoDocentes.updateOne({ _id: id }, { $set: { ...fields, "progress.heartbeat": new Date() } });
+  const heartbeat = setInterval(() => { setFields({}).catch(() => {}); }, HEARTBEAT_MS);
+
+  let lastProgressAt = 0;
+  const onProgress = async (rows) => {
+    if (Date.now() - lastProgressAt < PROGRESS_UPDATE_MS) return;
+    lastProgressAt = Date.now();
+    await setFields({ "progress.rows": rows });
+  };
+
+  let fileId = null;
+  try {
+    const contentType = isPdf ? PDF_CONTENT_TYPE : isCsv ? CSV_CONTENT_TYPE : EXCEL_CONTENT_TYPE;
+    fileId = await saveFileToGridFS(filePath, registro.file_name, contentType);
+    await setFields({ file_id: fileId, "progress.step": isPdf ? "finalizando" : "leyendo" });
+
+    let sheets = [];
+    let resumen = null;
+    if (!isPdf) {
+      const csvSheetName = registro.file_name.replace(/\.csv$/i, "").slice(0, 31) || "Hoja 1";
+      sheets = isCsv
+        ? await parseCsvToChunks(filePath, id, csvSheetName, onProgress)
+        : await parseExcelToChunks(filePath, id, onProgress);
+      if (sheets.length < 1) {
+        const error = new Error("El archivo no contiene hojas válidas.");
+        error.userMessage = error.message;
+        throw error;
+      }
+      const totalRows = sheets.reduce((sum, sheet) => sum + sheet.totalRows, 0);
+      await setFields({ "progress.rows": totalRows, "progress.step": "calculando" });
+
+      const stored = { _id: id, storage: "chunked", file_name: registro.file_name };
+      // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
+      // vez al subir y guardado como columna fija PROGRAMA_ESTUDIANTE.
+      sheets = await addStudentProgramColumnToChunks(stored, sheets);
+      // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
+      resumen = await buildResumenFromChunks(stored, sheets);
+    }
+
+    // Solo para SNIES se reemplaza el archivo anterior (una vez que el nuevo
+    // quedó guardado completo).
+    if (registro.category === "snies") {
+      const previous = await HistoricoDocentes.find({
+        _id: { $ne: id },
+        $or: [{ category: "snies" }, { category: { $exists: false } }],
+      }).select("_id storage file_id rows_source").lean();
+      for (const old of previous) {
+        await HistoricoDocentes.deleteOne({ _id: old._id });
+        await deleteStoredData(old);
+      }
+    }
+
+    await setFields({
+      sheets,
+      resumen,
+      status: "listo",
+      active: true,
+      error_message: null,
+      "progress.step": null,
+    });
+  } catch (error) {
+    console.error("Error al procesar archivo cargado:", error);
+    await setFields({
+      status: "error",
+      active: false,
+      file_id: null,
+      error_message: error.userMessage || `Error al procesar el archivo: ${error.message}`,
+      "progress.step": null,
+    }).catch(() => {});
+    await deleteStoredData({ _id: id, storage: "chunked", file_id: fileId })
+      .catch((cleanupError) => console.error("No se pudieron limpiar los datos de la carga fallida:", cleanupError.message));
+  } finally {
+    clearInterval(heartbeat);
+    removeTempFile(filePath);
+  }
+};
+
 // POST /historico-docentes/upload
+// Recibe el archivo y responde 202 de inmediato; el procesamiento sigue en
+// segundo plano y se consulta con GET /historico-docentes/:id/status.
 controller.upload = async (req, res) => {
   const { email, category = 'snies' } = req.body;
+  const tempPath = req.file?.path;
 
-  if (!email) return res.status(400).json({ message: "El email es requerido." });
-  if (!VALID_CATEGORIES.includes(category)) return res.status(400).json({ message: "Categoría no válida." });
+  if (!email) {
+    removeTempFile(tempPath);
+    return res.status(400).json({ message: "El email es requerido." });
+  }
+  if (!VALID_CATEGORIES.includes(category)) {
+    removeTempFile(tempPath);
+    return res.status(400).json({ message: "Categoría no válida." });
+  }
   if (!req.file) return res.status(400).json({ message: "El archivo es requerido." });
 
   let user;
   try {
     user = await UserService.findUserByEmail(email, null);
   } catch (error) {
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    removeTempFile(tempPath);
     return res.status(404).json({ message: "Usuario no encontrado." });
   }
 
   const permissions = await getUploadPermissions(user, email, req.body.dimensionId);
   if (!permissions[category]) {
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    removeTempFile(tempPath);
     return res.status(403).json({ message: "No tienes permiso para cargar archivos en esta categoría." });
   }
 
   const fileName = req.file.originalname;
   const ext = fileName.toLowerCase();
   const isPdf = ext.endsWith(".pdf");
+  const isCsv = ext.endsWith(".csv");
   const isExcel = ext.endsWith(".xlsx") || ext.endsWith(".xlsm");
 
   // PDF solo permitido en informes
   if (isPdf && category !== 'informes') {
-    fs.unlinkSync(req.file.path);
+    removeTempFile(tempPath);
     return res.status(400).json({ message: "Los archivos PDF solo se pueden cargar en la categoría Informes." });
   }
-  if (!isPdf && !isExcel) {
-    fs.unlinkSync(req.file.path);
-    return res.status(400).json({ message: "Solo se aceptan archivos .xlsx, .xlsm o .pdf." });
+  if (!isPdf && !isExcel && !isCsv) {
+    removeTempFile(tempPath);
+    return res.status(400).json({ message: "Solo se aceptan archivos .xlsx, .xlsm, .csv o .pdf." });
   }
 
   try {
-    const buffer = fs.readFileSync(req.file.path);
-
-    let sheets = [];
-    if (isExcel) {
-      sheets = await parseSheetsFromBuffer(buffer);
-      if (sheets.length < 1) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: "El archivo no contiene hojas válidas." });
-      }
-      // Programa de cada estudiante (ej. Trabajo de Grado) calculado UNA sola
-      // vez al subir y guardado como columna fija PROGRAMA_ESTUDIANTE.
-      sheets = await addStudentProgramColumn(sheets);
-    }
-
-    // Solo para SNIES se reemplaza el archivo anterior
-    if (category === 'snies') {
-      await HistoricoDocentes.deleteMany({ $or: [{ category: 'snies' }, { category: { $exists: false } }] });
-    }
-
-    const registro = new HistoricoDocentes({
+    const registro = await HistoricoDocentes.create({
       file_name: fileName,
       uploaded_by: { full_name: user.full_name || user.name, email: user.email },
       file_type: isPdf ? 'pdf' : 'excel',
-      excel_data: isExcel ? buffer : null,
-      pdf_data: isPdf ? buffer : null,
-      sheets,
-      // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
-      resumen: isExcel ? buildResumenArchivo(fileName, sheets) : null,
+      storage: 'chunked',
+      status: 'procesando',
+      progress: { rows: 0, step: 'guardando', heartbeat: new Date() },
+      sheets: [],
       category,
       period: (category !== 'snies' && req.body.periodId) ? req.body.periodId : null,
       dimension: (category !== 'snies' && req.body.dimensionId) ? req.body.dimensionId : null,
-      active: true,
+      // Queda inactivo (invisible para el Tablero y las consultas) hasta que
+      // termine de procesarse.
+      active: false,
     });
 
-    await registro.save();
-    fs.unlinkSync(req.file.path);
+    processUpload(registro, tempPath, { isPdf, isCsv });
 
-    return res.status(201).json({
-      message: "Archivo cargado correctamente.",
+    return res.status(202).json({
+      message: "Archivo recibido. Se está procesando.",
       registro: {
         _id: registro._id,
         file_name: registro.file_name,
         uploaded_by: registro.uploaded_by,
         file_type: registro.file_type,
         category: registro.category,
-        sheetsInfo: registro.sheets.map((s) => ({ name: s.name, headers: s.headers, totalRows: s.rows.length })),
+        status: registro.status,
         createdAt: registro.createdAt,
       },
     });
   } catch (error) {
     console.error("Error al cargar archivo:", error);
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    removeTempFile(tempPath);
     return res.status(500).json({ message: "Error al procesar el archivo.", error: error.message });
+  }
+};
+
+// GET /historico-docentes/:id/status — estado del procesamiento de una carga
+controller.uploadStatus = async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) return res.status(400).json({ message: "Id no válido." });
+
+  try {
+    const registro = await HistoricoDocentes.findById(id)
+      .select("file_name status progress error_message updatedAt")
+      .lean();
+    if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
+
+    return res.status(200).json({
+      _id: registro._id,
+      file_name: registro.file_name,
+      status: effectiveStatus(registro),
+      progress: { rows: registro.progress?.rows || 0, step: registro.progress?.step || null },
+      error_message: effectiveErrorMessage(registro),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Error al consultar el estado del archivo.", error: error.message });
   }
 };
 
@@ -516,11 +611,12 @@ controller.upload = async (req, res) => {
 controller.viewPdf = async (req, res) => {
   const { id } = req.params;
   try {
-    const registro = await HistoricoDocentes.findById(id).select('file_name file_type pdf_data');
-    if (!registro || registro.file_type !== 'pdf' || !registro.pdf_data)
+    const registro = await HistoricoDocentes.findById(id).select('file_name file_type pdf_data file_id');
+    if (!registro || registro.file_type !== 'pdf' || (!registro.pdf_data && !registro.file_id))
       return res.status(404).json({ message: "PDF no encontrado." });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${registro.file_name}"`);
+    if (registro.file_id) return pipeGridFS(res, registro.file_id);
     return res.send(registro.pdf_data);
   } catch (error) {
     return res.status(500).json({ message: "Error al obtener el PDF.", error: error.message });
@@ -674,10 +770,13 @@ const isRequesterAdmin = async (email) => {
 };
 
 // Quita las columnas de documento/cedula de un header+rows (una sola hoja).
-const stripDocumentColumn = (headers, rows) => {
-  const dropIndexes = headers
+const documentColumnIndexes = (headers) =>
+  headers
     .map((h, index) => (isDocumentHeader(h) ? index : -1))
     .filter((index) => index >= 0);
+
+const stripDocumentColumn = (headers, rows) => {
+  const dropIndexes = documentColumnIndexes(headers);
   if (dropIndexes.length === 0) return { headers, rows };
 
   const keep = (arr) => arr.filter((_, index) => !dropIndexes.includes(index));
@@ -720,9 +819,19 @@ controller.getData = async (req, res) => {
       return res.status(200).json({ data: null, message: "No hay archivo cargado aún." });
     }
 
+    const status = effectiveStatus(registro);
+    if (status !== "listo") {
+      return res.status(200).json({
+        data: null,
+        status,
+        message: status === "procesando" ? "El archivo todavía se está procesando." : effectiveErrorMessage(registro),
+      });
+    }
+
     const pageNum = parseInt(page, 10) || 1;
     const limitNum = parseInt(limit, 10) || 100;
     const sheetIndex = sheet !== undefined ? parseInt(sheet, 10) : 0;
+    const chunked = isChunked(registro);
 
     const sheetData = registro.sheets[sheetIndex];
     if (!sheetData) return res.status(404).json({ message: "Hoja no encontrada." });
@@ -733,39 +842,47 @@ controller.getData = async (req, res) => {
 
     let availableYears = [];
     if (yearColIndex >= 0) {
-      const yearSet = new Set();
-      sheetData.rows.forEach((row) => {
-        const val = (row[yearColIndex] || "").toString().trim();
-        if (val) yearSet.add(val);
-      });
-      availableYears = Array.from(yearSet).sort();
-    }
-
-    let filteredRows = sheetData.rows;
-    if (year && yearColIndex >= 0) {
-      filteredRows = filteredRows.filter(
-        (row) => (row[yearColIndex] || "").toString().trim() === year
-      );
-    } else if ((yearFrom || yearTo) && yearColIndex >= 0) {
-      filteredRows = filteredRows.filter((row) => {
-        const val = (row[yearColIndex] || "").toString().trim();
-        if (yearFrom && val < yearFrom) return false;
-        if (yearTo && val > yearTo) return false;
-        return true;
-      });
-    }
-    if (req.query.search) {
-      const searchTerm = req.query.search.toString().trim().toLowerCase();
-      if (searchTerm) {
-        filteredRows = filteredRows.filter((row) =>
-          row.some((cell) => (cell || "").toString().toLowerCase().includes(searchTerm))
-        );
+      if (chunked) {
+        availableYears = sheetData.availableYears || [];
+      } else {
+        const yearSet = new Set();
+        sheetData.rows.forEach((row) => {
+          const val = (row[yearColIndex] || "").toString().trim();
+          if (val) yearSet.add(val);
+        });
+        availableYears = Array.from(yearSet).sort();
       }
     }
 
-    const totalRows = filteredRows.length;
+    const yearFilterActive = yearColIndex >= 0 && Boolean(year || yearFrom || yearTo);
+    const matchesYear = (row) => {
+      const val = (row[yearColIndex] || "").toString().trim();
+      if (year) return val === year;
+      if (yearFrom && val < yearFrom) return false;
+      if (yearTo && val > yearTo) return false;
+      return true;
+    };
+    const searchTerm = (req.query.search || "").toString().trim().toLowerCase();
+    const matchesSearch = (row) =>
+      !searchTerm || row.some((cell) => (cell || "").toString().toLowerCase().includes(searchTerm));
+    const matchesRow = (row) => (!yearFilterActive || matchesYear(row)) && matchesSearch(row);
+
     const start = (pageNum - 1) * limitNum;
-    const paginatedRows = filteredRows.slice(start, start + limitNum);
+    let totalRows;
+    let paginatedRows;
+    if (!chunked) {
+      const filteredRows = sheetData.rows.filter(matchesRow);
+      totalRows = filteredRows.length;
+      paginatedRows = filteredRows.slice(start, start + limitNum);
+    } else if (!yearFilterActive && !searchTerm) {
+      totalRows = sheetRowCount(sheetData);
+      paginatedRows = await readRowsRange(registro, sheetIndex, start, limitNum);
+    } else {
+      // Con filtro por año solo se recorren los bloques que tienen ese año.
+      const yearRange = { ...(yearFrom ? { $gte: yearFrom } : {}), ...(yearTo ? { $lte: yearTo } : {}) };
+      const chunkFilter = !yearFilterActive ? null : year ? { years: year } : { years: { $elemMatch: yearRange } };
+      ({ total: totalRows, rows: paginatedRows } = await scanRows(registro, sheetIndex, chunkFilter, matchesRow, start, limitNum));
+    }
 
     // La cedula (numero de documento) solo debe salir del servidor para el
     // rol Administrador — para cualquier otro rol se quita aqui antes de
@@ -787,7 +904,7 @@ controller.getData = async (req, res) => {
       sheetsInfo: registro.sheets.map((s, i) => ({
         index: i,
         name: s.name,
-        totalRows: s.rows.length,
+        totalRows: sheetRowCount(s),
         headers: isAdmin ? s.headers : stripDocumentColumn(s.headers, []).headers,
       })),
       availableYears,
@@ -805,6 +922,81 @@ controller.getData = async (req, res) => {
     console.error("Error al obtener datos:", error);
     return res.status(500).json({ message: "Error al obtener los datos.", error: error.message });
   }
+};
+
+// Descarga de un archivo guardado por bloques. El Administrador recibe el
+// original desde GridFS; el resto (o si no hay original) recibe un Excel
+// reconstruido desde los bloques por streaming, sin las columnas de documento.
+const downloadChunkedFile = async (res, registro, isAdmin) => {
+  const fileName = registro.file_name || "archivo.xlsx";
+  const isCsvOriginal = /\.csv$/i.test(fileName);
+
+  if (isAdmin && registro.file_id) {
+    const info = await getGridFSFileInfo(registro.file_id);
+    if (info) {
+      if (!isCsvOriginal && info.length <= DOWNLOAD_STYLE_MAX_BYTES) {
+        let buffer = await readGridFSBuffer(registro.file_id);
+        try {
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.load(buffer);
+          applyHeaderRowStyle(workbook);
+          buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+        } catch (styleError) {
+          console.warn("No se pudo resaltar el encabezado del Excel a descargar:", styleError?.message || styleError);
+        }
+        setAttachmentHeaders(res, fileName, EXCEL_CONTENT_TYPE);
+        return res.send(buffer);
+      }
+      setAttachmentHeaders(res, fileName, isCsvOriginal ? CSV_CONTENT_TYPE : EXCEL_CONTENT_TYPE);
+      res.setHeader("Content-Length", info.length);
+      return pipeGridFS(res, registro.file_id);
+    }
+  }
+
+  // Registros antiguos migrados cuyo original quedó en Drive.
+  if (isAdmin && !registro.file_id && registro.drive_file_id) {
+    try {
+      let buffer = await downloadDriveFileBuffer(registro.drive_file_id);
+      try {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
+        applyHeaderRowStyle(workbook);
+        buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+      } catch (styleError) {
+        console.warn("No se pudo resaltar el encabezado del Excel a descargar:", styleError?.message || styleError);
+      }
+      setAttachmentHeaders(res, fileName, EXCEL_CONTENT_TYPE);
+      return res.send(buffer);
+    } catch (driveError) {
+      console.warn("No se pudo descargar desde Drive, se reconstruye desde los bloques:", driveError?.message || driveError);
+    }
+  }
+
+  setAttachmentHeaders(res, fileName.replace(/\.(csv|xlsm)$/i, ".xlsx"), EXCEL_CONTENT_TYPE);
+  const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res, useStyles: true, useSharedStrings: false });
+  const usedNames = new Set();
+  const sheets = registro.sheets || [];
+  for (let index = 0; index < sheets.length; index++) {
+    const headers = sheets[index].headers || [];
+    const dropIndexes = isAdmin ? [] : documentColumnIndexes(headers);
+    const keep = (values) => (dropIndexes.length ? values.filter((_, i) => !dropIndexes.includes(i)) : values);
+
+    const worksheet = workbook.addWorksheet(sanitizeWorksheetName(sheets[index].name, index, usedNames));
+    if (headers.length > 0) {
+      const headerRow = worksheet.addRow(keep(headers));
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: HEADER_FONT_COLOR } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: HEADER_FILL_COLOR } };
+      });
+      headerRow.commit();
+    }
+    await forEachSheetRow(registro, index, (row) => {
+      const values = Array.isArray(row) ? row : [];
+      worksheet.addRow(keep(headers.length > 0 ? headers.map((_, i) => values[i] ?? "") : values)).commit();
+    });
+    worksheet.commit();
+  }
+  await workbook.commit();
 };
 
 // GET /historico-docentes/download
@@ -833,6 +1025,10 @@ controller.downloadFile = async (req, res) => {
     }
 
     if (registro.file_type === "pdf") {
+      if (registro.file_id) {
+        setAttachmentHeaders(res, registro.file_name || "archivo.pdf", PDF_CONTENT_TYPE);
+        return await pipeGridFS(res, registro.file_id);
+      }
       if (!registro.pdf_data) {
         return res.status(404).json({ message: "No hay PDF disponible para descargar." });
       }
@@ -844,6 +1040,8 @@ controller.downloadFile = async (req, res) => {
     // solo se entrega al Administrador. Para cualquier otro rol se reconstruye
     // desde "sheets" sin las columnas de documento, igual que en getData.
     const isAdmin = await isRequesterAdmin(email);
+    if (isChunked(registro)) return await downloadChunkedFile(res, registro, isAdmin);
+
     let buffer = null;
     if (isAdmin && registro.drive_file_id) {
       try {
@@ -879,6 +1077,8 @@ controller.downloadFile = async (req, res) => {
     return res.send(buffer);
   } catch (error) {
     console.error("Error al descargar archivo:", error);
+    // Si la descarga por streaming ya había empezado, solo se corta la conexión.
+    if (res.headersSent) return res.destroy();
     return res.status(500).json({ message: "Error al descargar el archivo.", error: error.message });
   }
 };
