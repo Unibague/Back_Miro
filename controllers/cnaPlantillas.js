@@ -7,6 +7,7 @@ const SniesTemplate = require("../models/sniesTemplates");
 const PublishedTemplate = require("../models/publishedTemplates");
 const Program = require("../models/programs");
 const HistoricoDocentes = require("../models/historicoDocentes");
+const { forEachSheetRow } = require("../services/historicoStorage");
 const Period = require("../models/periods");
 const { getPoblacionEstudiantil } = require("../services/poblacionEstudiantil");
 const Dependency = require("../models/dependencies");
@@ -259,7 +260,7 @@ const indicesHistorico = (headers, campos) => {
 // Devuelve { byPeriod, nombres, archivos } a partir de los archivos de histórico docentes
 const collectDocentesFromHistorico = async () => {
   const archivos = await HistoricoDocentes.find({ active: { $ne: false }, file_type: "excel" })
-    .select("file_name sheets createdAt")
+    .select("file_name sheets createdAt storage rows_source")
     .sort({ createdAt: 1 }) // los más recientes sobrescriben a los anteriores
     .lean();
 
@@ -267,21 +268,23 @@ const collectDocentesFromHistorico = async () => {
   const nombres = new Map();
   const usados = [];
 
-  archivos.forEach((archivo) => {
+  for (const archivo of archivos) {
     let usado = false;
-    (archivo.sheets || []).forEach((sheet) => {
-      const headers = sheet.headers || [];
+    const sheets = archivo.sheets || [];
+    for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
+      const headers = sheets[sheetIndex].headers || [];
       const tipo = headers.some((h) => norm(h) === "tipo contrato")
         ? "contrato"
         : headers.some((h) => norm(h) === "max nivel formacion")
           ? "estudio"
           : null;
-      if (!tipo) return;
+      if (!tipo) continue;
       const idx = indicesHistorico(headers, HISTORICO_CAMPOS[tipo]);
-      if (idx.year < 0 || idx.semester < 0 || idx.documento < 0) return;
+      if (idx.year < 0 || idx.semester < 0 || idx.documento < 0) continue;
       usado = true;
 
-      (sheet.rows || []).forEach((row) => {
+      // Fila por fila: los archivos guardados por bloques no se cargan completos.
+      await forEachSheetRow(archivo, sheetIndex, (row) => {
         const get = (campo) => (idx[campo] >= 0 && Array.isArray(row) ? row[idx[campo]] : row?.[headers[idx[campo]]]);
         const documento = String(get("documento") ?? "").trim();
         const year = toInt(get("year"));
@@ -303,9 +306,9 @@ const collectDocentesFromHistorico = async () => {
         const nombre = String(get("nombre") ?? "").trim();
         if (nombre && norm(nombre) !== "no identificado") nombres.set(documento, nombre);
       });
-    });
+    }
     if (usado) usados.push(archivo.file_name);
-  });
+  }
 
   return { byPeriod, nombres, archivos: usados };
 };

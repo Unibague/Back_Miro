@@ -7,6 +7,7 @@ const Student = require('../models/students');
 // solo lee esa columna y no vuelve a consultar a nadie en cada carga.
 
 const PROGRAMA_ESTUDIANTE_HEADER = 'PROGRAMA_ESTUDIANTE';
+const STUDENT_ID_BATCH = 20000;
 
 const normalizeId = (value) => String(value ?? '').trim().replace(/\.0+$/, '').replace(/[^\dA-Za-z]/g, '');
 const normalizeHeader = (value) => String(value ?? '')
@@ -41,8 +42,21 @@ const getStudentProgramsByIds = async (identifications) => {
   const programs = new Map();
   if (ids.length === 0) return programs;
 
+  // Por lotes: un archivo grande puede traer cientos de miles de documentos
+  // y un solo $in con todos ellos sería una consulta enorme.
+  const findStudentsDb = async () => {
+    const found = [];
+    for (let i = 0; i < ids.length; i += STUDENT_ID_BATCH) {
+      found.push(...await Student.find(
+        { identification: { $in: ids.slice(i, i + STUDENT_ID_BATCH) } },
+        'identification program'
+      ).lean());
+    }
+    return found;
+  };
+
   const [studentsDb, studentsApi] = await Promise.all([
-    Student.find({ identification: { $in: ids } }, 'identification program').lean(),
+    findStudentsDb(),
     fetchApiStudents(),
   ]);
 
@@ -96,4 +110,11 @@ const addStudentProgramColumn = async (sheets = []) => {
   }
 };
 
-module.exports = { addStudentProgramColumn, getStudentProgramsByIds };
+module.exports = {
+  addStudentProgramColumn,
+  getStudentProgramsByIds,
+  isStudentIdHeader,
+  normalizeId,
+  normalizeHeader,
+  PROGRAMA_ESTUDIANTE_HEADER,
+};

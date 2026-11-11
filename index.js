@@ -164,6 +164,9 @@ async function start() {
   server.timeout = 240000;
   server.keepAliveTimeout = 240000;
   server.headersTimeout = 245000;
+  // Tiempo máximo para recibir una petición completa: las cargas de archivos
+  // grandes de Consulta de Información pueden tardar más de los 5 min por defecto.
+  server.requestTimeout = 2 * 60 * 60 * 1000;
 }
 
 start();

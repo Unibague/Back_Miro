@@ -12,6 +12,7 @@
   "author": "Brayan & Steven",
   "license": "ISC",
   "dependencies": {
+    "@fast-csv/parse": "^4.3.6",
     "@googleapis/drive": "^8.13.0",
     "axios": "^1.6.8",
     "back_miro": "file:",

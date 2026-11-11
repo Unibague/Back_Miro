@@ -1,12 +1,14 @@
 const router = require("express").Router();
 const upload = require("../config/fileReceive");
+const historicoUpload = require("../config/historicoUpload");
 const controller = require("../controllers/historicoDocentes");
 
 router.get("/list", controller.listFiles);
 router.get("/data", controller.getData);
 router.get("/download", controller.downloadFile);
 router.get("/upload-permissions", controller.uploadPermissions);
-router.post("/upload", upload.single("excel_file"), controller.upload);
+router.post("/upload", historicoUpload.singleFile("excel_file"), controller.upload);
+router.get("/:id/status", controller.uploadStatus);
 router.patch("/:id/rename", controller.renameFile);
 router.post("/:id/clone-to-dimension", controller.cloneToDimension);
 router.delete("/:id", controller.deleteFile);
