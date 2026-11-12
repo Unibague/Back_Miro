@@ -171,6 +171,18 @@ const publishedTemplateSchema = new Schema({
     }],
     default: []
   },
+  // Plantillas SNIES cuya información se cargó desde Consulta de Información
+  // (services/consultaSnies.js): ese archivo quedó como el envío final.
+  loaded_from_consulta: {
+    type: {},
+    required: false
+  },
+  // Respaldo de loaded_data / borradores / envío final que había antes de
+  // reemplazarlos con el archivo cargado en Consulta de Información.
+  consulta_replaced_data: {
+    type: {},
+    required: false
+  },
 }, {
   versionKey: false,
   timestamps: true

@@ -7,6 +7,7 @@ router.get("/list", controller.listFiles);
 router.get("/data", controller.getData);
 router.get("/download", controller.downloadFile);
 router.get("/upload-permissions", controller.uploadPermissions);
+router.post("/snies-match", controller.sniesMatch);
 router.post("/upload", historicoUpload.singleFile("excel_file"), controller.upload);
 router.get("/:id/status", controller.uploadStatus);
 router.patch("/:id/rename", controller.renameFile);

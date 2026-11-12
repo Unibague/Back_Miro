@@ -65,6 +65,7 @@ const viewPermissionOptions = [
     { key: "sniesProductor", label: "SNIES (productor encargado)", path: "/snies/templates", module: "Gestión de reportes", group: "SNIES", roles: ["Productor"] },
     { key: "cna", label: "CNA", path: "/cna/templates", module: "Gestión de reportes", group: "CNA", roles: ["Administrador"] },
     { key: "cnaProductor", label: "CNA (productor encargado)", path: "/cna/templates", module: "Gestión de reportes", group: "CNA", roles: ["Productor"] },
+    { key: "kpi", label: "KPI", path: "/kpi", module: "Gestión de reportes", group: "KPI", roles: ["Administrador"] },
 
     { key: "supportTemplates", label: "Cruce de apoyos SIGA/Iceberg", path: "/apoyos-plantillas", module: "Cruce de apoyos SIGA/Iceberg", group: "Cruce de apoyos", roles: ["Administrador"] },
 

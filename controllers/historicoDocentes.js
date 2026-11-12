@@ -7,6 +7,9 @@ const Dimension = require("../models/dimensions");
 const User = require("../models/users");
 const UserService = require("../services/users");
 const { buildResumenArchivo } = require("../services/historicoResumen");
+const { findSniesMatch, applyToSnies } = require("../services/consultaSnies");
+const PublishedTemplate = require("../models/publishedTemplates");
+const Period = require("../models/periods");
 const {
   isChunked,
   rowsKey,
@@ -416,10 +419,40 @@ controller.deleteFile = async (req, res) => {
   }
 };
 
+// Lleva el archivo ya procesado a su plantilla SNIES publicada y lo deja como
+// la copia de esa plantilla en el ámbito (reemplaza la que dejó un envío final
+// anterior, igual que hace saveToConsultaInformacion).
+const syncWithSnies = async (registro, sheets, pubTemId, user) => {
+  try {
+    const stored = { _id: registro._id, storage: "chunked", file_name: registro.file_name, sheets };
+    const result = await applyToSnies(stored, pubTemId, user);
+
+    const previous = await HistoricoDocentes.find({
+      _id: { $ne: registro._id },
+      source_published_template: pubTemId,
+      dimension: registro.dimension || null,
+    }).select("_id storage file_id rows_source").lean();
+    for (const old of previous) {
+      await HistoricoDocentes.deleteOne({ _id: old._id });
+      await deleteStoredData(old);
+    }
+
+    return {
+      source_published_template: pubTemId,
+      snies_sync: { published_template: pubTemId, name: result.name, status: "ok", filas: result.filas, dependencias: result.dependencias, date: new Date() },
+    };
+  } catch (error) {
+    console.error("[HistoricoDocentes] Error cargando la plantilla en SNIES:", error);
+    return {
+      snies_sync: { published_template: pubTemId, status: "error", message: error.message, date: new Date() },
+    };
+  }
+};
+
 // Guarda el archivo en GridFS, lo lee por streaming y deja sus filas por
 // bloques. Corre después de responder la carga; el resultado queda en el
 // campo "status" del registro (ver uploadStatus).
-const processUpload = async (registro, filePath, { isPdf, isCsv }) => {
+const processUpload = async (registro, filePath, { isPdf, isCsv, sniesPubTemId = null, user = null }) => {
   const id = registro._id;
   const setFields = (fields) =>
     HistoricoDocentes.updateOne({ _id: id }, { $set: { ...fields, "progress.heartbeat": new Date() } });
@@ -474,7 +507,16 @@ const processUpload = async (registro, filePath, { isPdf, isCsv }) => {
       }
     }
 
+    // Plantilla SNIES: la información del archivo queda como envío final en
+    // SNIES. Si falla, el archivo igual queda cargado en Consulta.
+    let sniesFields = {};
+    if (sniesPubTemId && !isPdf) {
+      await setFields({ "progress.step": "snies" });
+      sniesFields = await syncWithSnies(registro, sheets, sniesPubTemId, user);
+    }
+
     await setFields({
+      ...sniesFields,
       sheets,
       resumen,
       status: "listo",
@@ -546,6 +588,35 @@ controller.upload = async (req, res) => {
     return res.status(400).json({ message: "Solo se aceptan archivos .xlsx, .xlsm, .csv o .pdf." });
   }
 
+  // Plantilla SNIES (detectada con /snies-match): solo el Administrador puede
+  // dejarla como envío final.
+  const sniesPubTemId = req.body.sniesPubTemId || null;
+  let periodId = req.body.periodId || null;
+  if (sniesPubTemId) {
+    if (!permissions.snies || category !== "plantillas" || isPdf || !mongoose.isValidObjectId(sniesPubTemId)) {
+      removeTempFile(tempPath);
+      return res.status(403).json({ message: "No tienes permiso para cargar esta plantilla en SNIES." });
+    }
+    // El archivo queda en el período de su plantilla SNIES
+    const sniesTemplate = await PublishedTemplate.findById(sniesPubTemId).select("period").lean();
+    if (sniesTemplate?.period) periodId = String(sniesTemplate.period);
+  }
+
+  // Plantillas e Informes siempre quedan en un período (igual que en SNIES).
+  // Si no llegó el del selector, se usa el período activo más reciente, que
+  // es el mismo que el selector escoge por defecto.
+  if (category !== "snies") {
+    if (periodId && !mongoose.isValidObjectId(periodId)) periodId = null;
+    if (!periodId) {
+      const active = await Period.findOne({ is_active: true }).sort({ end_date: -1 }).select("_id").lean();
+      periodId = active?._id ? String(active._id) : null;
+    }
+    if (!periodId) {
+      removeTempFile(tempPath);
+      return res.status(400).json({ message: "Selecciona un período antes de cargar el archivo." });
+    }
+  }
+
   try {
     const registro = await HistoricoDocentes.create({
       file_name: fileName,
@@ -556,14 +627,14 @@ controller.upload = async (req, res) => {
       progress: { rows: 0, step: 'guardando', heartbeat: new Date() },
       sheets: [],
       category,
-      period: (category !== 'snies' && req.body.periodId) ? req.body.periodId : null,
+      period: (category !== 'snies' && periodId) ? periodId : null,
       dimension: (category !== 'snies' && req.body.dimensionId) ? req.body.dimensionId : null,
       // Queda inactivo (invisible para el Tablero y las consultas) hasta que
       // termine de procesarse.
       active: false,
     });
 
-    processUpload(registro, tempPath, { isPdf, isCsv });
+    processUpload(registro, tempPath, { isPdf, isCsv, sniesPubTemId, user });
 
     return res.status(202).json({
       message: "Archivo recibido. Se está procesando.",
@@ -584,6 +655,34 @@ controller.upload = async (req, res) => {
   }
 };
 
+// POST /historico-docentes/snies-match
+// Indica si el archivo que se va a cargar en Plantillas corresponde a una
+// plantilla SNIES publicada del período. El frontend envía el nombre del
+// archivo y las primeras filas de cada hoja (candidatas a encabezado).
+controller.sniesMatch = async (req, res) => {
+  const { email, periodId, fileName, sheets } = req.body || {};
+  try {
+    const user = await UserService.findUserByEmail(email, null);
+    const permissions = await getUploadPermissions(user, email, req.body?.dimensionId);
+    if (!permissions.snies || (periodId && !mongoose.isValidObjectId(periodId))) {
+      return res.status(200).json({ match: null });
+    }
+
+    const uploadedSheets = (Array.isArray(sheets) ? sheets : []).slice(0, 50).map((sheet) => ({
+      name: String(sheet?.name || ""),
+      headerOptions: (Array.isArray(sheet?.rows) ? sheet.rows : [])
+        .slice(0, 10)
+        .map((row) => (Array.isArray(row) ? row.slice(0, 500).map((cell) => String(cell ?? "")) : [])),
+    }));
+
+    const match = await findSniesMatch({ periodId: periodId || null, fileName, sheets: uploadedSheets });
+    return res.status(200).json({ match });
+  } catch (error) {
+    console.error("Error detectando plantilla SNIES:", error);
+    return res.status(500).json({ message: "No se pudo verificar si la plantilla es de SNIES.", error: error.message });
+  }
+};
+
 // GET /historico-docentes/:id/status — estado del procesamiento de una carga
 controller.uploadStatus = async (req, res) => {
   const { id } = req.params;
@@ -591,7 +690,7 @@ controller.uploadStatus = async (req, res) => {
 
   try {
     const registro = await HistoricoDocentes.findById(id)
-      .select("file_name status progress error_message updatedAt")
+      .select("file_name status progress error_message snies_sync updatedAt")
       .lean();
     if (!registro) return res.status(404).json({ message: "Archivo no encontrado." });
 
@@ -601,6 +700,7 @@ controller.uploadStatus = async (req, res) => {
       status: effectiveStatus(registro),
       progress: { rows: registro.progress?.rows || 0, step: registro.progress?.step || null },
       error_message: effectiveErrorMessage(registro),
+      snies_sync: registro.snies_sync || null,
     });
   } catch (error) {
     return res.status(500).json({ message: "Error al consultar el estado del archivo.", error: error.message });
