@@ -74,6 +74,10 @@ const historicoDocentesSchema = new mongoose.Schema(
     // matriculados), para que el Tablero las lea tal cual sin recontar. Ver
     // services/historicoResumen.js. null = aún no calculado.
     resumen: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Plantillas cargadas que corresponden a una plantilla SNIES: resultado de
+    // llevar su información a SNIES como envío final (services/consultaSnies.js).
+    // { published_template, name, status: 'ok' | 'error', message, filas, date }
+    snies_sync: { type: mongoose.Schema.Types.Mixed, default: null },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

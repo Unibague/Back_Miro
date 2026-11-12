@@ -10,6 +10,7 @@
 const fs = require("fs");
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
+const PizZip = require("pizzip");
 const { parse: parseCsv } = require("@fast-csv/parse");
 const HistoricoRowChunk = require("../models/historicoRowChunks");
 const { findMatriculadosSheet, createMatriculadosAccumulator, isMatriculadosFile } = require("./historicoResumen");
@@ -200,9 +201,59 @@ const toRowData = (values, headers) => {
   return hasData ? rowData : null;
 };
 
+// El lector por streaming de ExcelJS necesita que xl/workbook.xml (y las
+// cadenas compartidas y estilos) vengan en el zip ANTES de las hojas. Los
+// Excel que genera Miró al descargar (y otras herramientas) los dejan al
+// final y la lectura falla con "Cannot read properties of undefined
+// (reading 'sheets')". Aquí se reescribe el zip en el orden esperado.
+const ZIP_FIRST_ENTRIES = [
+  "[Content_Types].xml",
+  "_rels/.rels",
+  "xl/workbook.xml",
+  "xl/_rels/workbook.xml.rels",
+  "xl/sharedStrings.xml",
+  "xl/styles.xml",
+];
+
+const reorderXlsxZip = (filePath) => {
+  const source = new PizZip(fs.readFileSync(filePath));
+  const target = new PizZip();
+  const names = Object.keys(source.files).filter((name) => !source.files[name].dir);
+  const ordered = [
+    ...ZIP_FIRST_ENTRIES.filter((name) => names.includes(name)),
+    ...names.filter((name) => !ZIP_FIRST_ENTRIES.includes(name)),
+  ];
+  ordered.forEach((name) => target.file(name, source.files[name].asUint8Array(), { binary: true }));
+  const orderedPath = `${filePath}.ordenado.xlsx`;
+  fs.writeFileSync(orderedPath, target.generate({ type: "nodebuffer", compression: "DEFLATE" }));
+  return orderedPath;
+};
+
 // Recorre un .xlsx/.xlsm por streaming y guarda sus filas por bloques.
 // Devuelve los metadatos de cada hoja ({ name, headers, rows: [], totalRows, availableYears }).
+// Si el zip no viene en el orden que necesita el streaming, se reordena y se
+// vuelve a leer (descartando lo que alcanzó a guardarse).
 const parseExcelToChunks = async (filePath, archivoId, onProgress) => {
+  try {
+    return await parseExcelStream(filePath, archivoId, onProgress);
+  } catch (error) {
+    let orderedPath = null;
+    try {
+      orderedPath = reorderXlsxZip(filePath);
+    } catch (_) {
+      throw error;
+    }
+    console.warn("[historicoStorage] El Excel no se pudo leer en su orden original, se reintenta reordenado:", error.message);
+    try {
+      await HistoricoRowChunk.deleteMany({ archivo: toObjectId(archivoId) });
+      return await parseExcelStream(orderedPath, archivoId, onProgress);
+    } finally {
+      fs.unlink(orderedPath, () => {});
+    }
+  }
+};
+
+const parseExcelStream = async (filePath, archivoId, onProgress) => {
   const reader = new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
     sharedStrings: "cache",
     // Con estilos se reconocen las celdas de fecha (como en la carga anterior).

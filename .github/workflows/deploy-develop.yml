@@ -26,16 +26,30 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # El espejo de Azure de los runners a veces no resuelve ("Temporary failure
+      # resolving 'azure.archive.ubuntu.com'"): se usa el espejo principal de Ubuntu.
+      - name: Use main Ubuntu mirror
+        run: |
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] && sudo sed -i \
+              -e 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu/|g' \
+              -e 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' "$f"
+          done
+
       - name: Install VPN and SSH tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            openconnect \
-            vpnc-scripts \
-            sshpass \
-            iputils-ping \
-            netcat-openbsd \
-            traceroute
+          for i in 1 2 3; do
+            sudo apt-get update && sudo apt-get install -y \
+              openconnect \
+              vpnc-scripts \
+              sshpass \
+              iputils-ping \
+              netcat-openbsd \
+              traceroute && break
+            echo "Intento $i fallido, reintentando en 20s..."
+            sleep 20
+          done
+          command -v openconnect && command -v sshpass
 
       - name: Fix vpnc-script path
         run: |

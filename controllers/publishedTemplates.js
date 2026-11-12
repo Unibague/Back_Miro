@@ -20,6 +20,7 @@ const { collapseRepeatedCompositeOption } = require('../helpers/dropdownOptions'
 const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
 const { validateDatasetRules } = require('../helpers/fieldConstraints');
 const HistoricoDocentes = require('../models/historicoDocentes');
+const { deleteStoredData } = require('../services/historicoStorage');
 const simpleCache = require('../helpers/simpleCache');
 
 const axios = require('axios');
@@ -1275,7 +1276,7 @@ publTempController.getPublishedTemplatesDimension = async (req, res) => {
           .collation({ locale: 'es', strength: 1 })
           .skip(skip)
           .limit(limit)
-          .select('name final_submitted fecha_final fecha_final_productores fecha_final_responsables responsible_producers deadline updatedAt template.name template.producers template.responsible_producers loaded_data.dependency')
+          .select('name final_submitted fecha_final fecha_final_productores fecha_final_responsables responsible_producers deadline updatedAt template.name template.is_snies template.producers template.responsible_producers loaded_data.dependency')
           .populate('period', 'name producer_end_date')
           .lean(),
         PublishedTemplate.countDocuments(query),
@@ -4303,6 +4304,18 @@ const saveToConsultaInformacion = async (pubTem, loadedEntries, user, email) => 
         .map((id) => String(id));
       const targets = dimensionIds.length > 0 ? dimensionIds : [null];
 
+      // La copia pudo haberse cargado a mano en Consulta (archivo por bloques,
+      // ver services/consultaSnies.js): sus bloques se borran para que se lean
+      // las filas nuevas que se guardan aquí.
+      const chunkedCopies = await HistoricoDocentes.find({
+        source_published_template: pubTem._id,
+        dimension: { $in: targets },
+        storage: 'chunked',
+      }).select('_id storage file_id rows_source').lean();
+      for (const copy of chunkedCopies) {
+        await deleteStoredData(copy);
+      }
+
       await Promise.all(targets.map((dimensionId) =>
         HistoricoDocentes.findOneAndUpdate(
           { source_published_template: pubTem._id, dimension: dimensionId },
@@ -4311,6 +4324,10 @@ const saveToConsultaInformacion = async (pubTem, loadedEntries, user, email) => 
               file_name: fileName,
               uploaded_by: uploadedBy,
               file_type: "excel",
+              storage: "inline",
+              file_id: null,
+              rows_source: null,
+              snies_sync: null,
               sheets: sheetsToSave,
               // Cifras fijas (ej. total de matriculados) calculadas una sola vez aquí.
               resumen: buildResumenArchivo(fileName, sheetsToSave),
