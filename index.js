@@ -96,6 +96,7 @@ apiRouter.use("/phases",           require('./routes/phases'));
 apiRouter.use("/process-documents", require('./routes/phaseDocuments'));
 apiRouter.use("/process-history",  require('./routes/processHistory'));
 apiRouter.use("/process-reminders", require('./routes/processReminders'));
+apiRouter.use("/men-mailbox", require('./routes/menMailbox'));
 apiRouter.use("/casos",            require('./routes/casos'));
 apiRouter.use("/pqr",              require('./routes/pqr'));
 apiRouter.use("/task-assignments", require('./routes/taskAssignments'));
