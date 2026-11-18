@@ -1,14 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/users.js');
-const { requireAdmin, requireReadAccess, requireAdminOrProfilePermission } = require('../middleware/auth');
+const { requireAdmin, requireReadAccess, requireAdminOrProfilePermission, requireAdminOrView } = require('../middleware/auth');
 
 // Rutas con parámetros específicos PRIMERO (para evitar conflictos)
 router.get("/:dep_code/users", controller.getUsersByDependency);
 
 router.get("/all", controller.getUsers);
 
-router.get("/allPagination", controller.getUsersPagination);
+router.get("/allPagination", requireAdminOrView("users"), controller.getUsersPagination);
 
 router.get("/roles", controller.getUserRoles);
 
