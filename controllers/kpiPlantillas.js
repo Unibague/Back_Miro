@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const mongoose = require("mongoose");
 const XLSX = require("xlsx");
@@ -166,7 +167,8 @@ const periodOf = (record, file) => {
   return ano || file.period?.name || semestre;
 };
 
-const periodSort = (a, b) => a.localeCompare(b, "es", { numeric: true });
+const PERIOD_COLLATOR = new Intl.Collator("es", { numeric: true });
+const periodSort = (a, b) => PERIOD_COLLATOR.compare(a, b);
 
 // Filas de todas las cargas de la hoja, con las llaves normalizadas. Si un
 // mismo período está en varias cargas (p. ej. un histórico 2014-2024 y otro
@@ -291,12 +293,48 @@ const baseAsSource = (base) => ({
 
 // Todas las fuentes con las que se puede llenar una hoja: Consulta de
 // Información (todos los períodos) y las bases externas del módulo.
-const loadCandidates = async () => {
+// Vuelve a leer una base desde su archivo original en Drive cuando sus filas
+// ya no están (p. ej. si se restauró la base de datos desde una copia que no
+// las tenía). Devuelve la base con sus hojas actualizadas.
+const repairBase = async (base) => {
+  const ext = path.extname(base.file_name).toLowerCase();
+  const tmp = path.join(os.tmpdir(), `kpi-base-${base._id}-${Date.now()}${ext || ".xlsx"}`);
+  try {
+    fs.writeFileSync(tmp, await downloadDriveFileBuffer(base.drive_file_id));
+    await HistoricoRowChunk.deleteMany({ archivo: base._id });
+    const parsed = ext === ".csv"
+      ? await parseCsvToChunks(tmp, base._id, base.file_name.replace(/\.[^.]+$/, ""))
+      : await parseExcelToChunks(tmp, base._id);
+    const sheets = await addPeriodSheets(base._id, parsed);
+    await KpiBase.updateOne({ _id: base._id }, { $set: { sheets } });
+    return { ...base, sheets };
+  } finally {
+    fs.unlink(tmp, () => {});
+  }
+};
+
+const loadBases = async (advertencias = []) => {
+  const bases = await KpiBase.find({}).lean();
+  return Promise.all(bases.map(async (base) => {
+    const expected = (base.sheets || []).some((sheet) => sheet.totalRows > 0);
+    if (!expected || !base.drive_file_id || await HistoricoRowChunk.exists({ archivo: base._id })) return base;
+    try {
+      const repaired = await repairBase(base);
+      advertencias.push(`La base "${base.name}" no tenía sus filas guardadas; se volvió a leer desde su archivo original.`);
+      return repaired;
+    } catch (error) {
+      advertencias.push(`La base "${base.name}" no tiene sus filas guardadas y no se pudo volver a leer (${error.message}); cárgala de nuevo.`);
+      return base;
+    }
+  }));
+};
+
+const loadCandidates = async (advertencias) => {
   const archivos = await HistoricoDocentes.find(SOURCE_FILTER)
     .select("file_name category period createdAt sheets.name sheets.headers sheets.totalRows")
     .populate("period", "name")
     .lean();
-  const bases = await KpiBase.find({}).lean();
+  const bases = await loadBases(advertencias);
   archivos.push(...bases.map(baseAsSource));
   return buildCandidates(archivos);
 };
@@ -558,14 +596,14 @@ controller.traerInformacion = async (req, res) => {
       return res.status(400).json({ error: "Primero usa “Configurar hojas” para elegir qué hojas se llenan y con qué información." });
     }
 
-    const candidates = await loadCandidates();
+    const advertencias = [];
+    const candidates = await loadCandidates(advertencias);
     if (!candidates.length) {
       return res.status(400).json({ error: "No hay archivos con información en Consulta de Información ni bases externas cargadas." });
     }
 
     const book = new KpiWorkbook(await downloadDriveFileBuffer(plantilla.drive_file_id));
     const mapeo = new Map((plantilla.mapeo || []).map((item) => [item.hoja, item]));
-    const advertencias = [];
     const hojas = [];
     const hojasSinCambios = [];
     const filledSheets = [];

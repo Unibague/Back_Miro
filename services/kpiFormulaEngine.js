@@ -309,6 +309,7 @@ class FormulaEngine {
     this.inProgress = new Set();
     this.matchIndexes = new Map();
     this.groupIndexes = new Map();
+    this.columnCache = new Map();
     this.unsupported = new Map();
 
     virtualSheets.forEach((config, name) => {
@@ -543,8 +544,15 @@ class FormulaEngine {
     return index;
   }
 
-  // Valores de un rango de una columna, como arreglo
+  // Valores de un rango de una columna, como arreglo (se guarda: MAXIFS y
+  // COUNTIFS lo piden una vez por celda y copiarlo cada vez es muy lento)
   columnValues(range) {
+    const key = range.key;
+    if (!this.columnCache.has(key)) this.columnCache.set(key, this.readColumn(range));
+    return this.columnCache.get(key);
+  }
+
+  readColumn(range) {
     const vs = this.virtual.get(range.sheet);
     if (vs && range.r1 === 1 && range.r2 === vs.lastRow) {
       const head = [];
@@ -771,6 +779,30 @@ class FormulaEngine {
         const from = toText(val(1));
         const to = toText(val(2));
         return from ? text.split(from).join(to) : text;
+      }
+      case "UNICHAR": {
+        const n = num(0);
+        return isError(n) ? n : String.fromCodePoint(n);
+      }
+      case "NUMBERVALUE": {
+        const v = val(0);
+        if (typeof v === "number") return v;
+        const decimal = args.length > 1 ? toText(val(1)) : ".";
+        const group = args.length > 2 ? toText(val(2)) : ",";
+        let text = toText(v).replace(/\s/g, "");
+        if (group) text = text.split(group).join("");
+        if (decimal && decimal !== ".") text = text.split(decimal).join(".");
+        const percent = text.endsWith("%");
+        const n = Number(percent ? text.slice(0, -1) : text);
+        if (text === "" ) return 0;
+        return Number.isFinite(n) ? (percent ? n / 100 : n) : VALUE;
+      }
+      case "YEAR":
+      case "MONTH": {
+        const n = num(0);
+        if (isError(n)) return n;
+        const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000);
+        return name === "YEAR" ? date.getUTCFullYear() : date.getUTCMonth() + 1;
       }
       case "VALUE": {
         const v = val(0);
