@@ -13,6 +13,8 @@ const { getPoblacionEstudiantil } = require("../services/poblacionEstudiantil");
 const Dependency = require("../models/dependencies");
 const UserService = require("../services/users");
 const sniesController = require("./sniesTemplates");
+const { shiftFormula } = require("../services/kpiWorkbook");
+const { repairExcelJsOutput } = require("../services/excelJsRepair");
 const {
   uploadFileToGoogleDrive,
   deleteDriveFile,
@@ -163,6 +165,18 @@ const fetchSniesConnectedData = (templateId, email) =>
       .catch(reject);
   });
 
+// Porcentaje de dedicación por actividad (DOCENTE_CONTRATO de SNIES)
+const PORCENTAJES_SNIES = {
+  porcDocencia: ["porcentajedocencia"],
+  porcInvestigacion: ["porcentajeinvestigacion"],
+  porcAdministrativa: ["porcentajeadministrativa"],
+  porcExtension: ["porcentajeextension"],
+  porcOtras: ["porcentajeotrasactividades", "porcentajeotras"],
+};
+const PORCENTAJE_CAMPOS = Object.keys(PORCENTAJES_SNIES);
+
+const isBlankValue = (value) => value === undefined || value === null || String(value).trim() === "";
+
 const findHeader = (headers, candidates) =>
   headers.find((header) => candidates.includes(norm(header).replace(/[^a-z0-9]/g, "")));
 
@@ -196,6 +210,9 @@ const collectDocentesByPeriod = async (sniesTemplates, email, advertencias) => {
       const tipoDocHeader = findHeader(headers, ["idtipodocumento"]);
       const tituloHeader = findHeader(headers, ["titulorecibido"]);
       const paisHeader = findHeader(headers, ["idpaisinstitucionestudio"]);
+      const porcentajeHeaders = Object.fromEntries(
+        Object.entries(PORCENTAJES_SNIES).map(([campo, nombres]) => [campo, findHeader(headers, nombres)])
+      );
 
       for (const row of sheet.rows || []) {
         const documento = String(row[docHeader] ?? "").trim();
@@ -216,6 +233,9 @@ const collectDocentesByPeriod = async (sniesTemplates, email, advertencias) => {
         if (paisHeader && !docente.pais) docente.pais = row[paisHeader];
         if (contratoHeader && !docente.contrato) docente.contrato = row[contratoHeader];
         if (dedicacionHeader && !docente.dedicacion) docente.dedicacion = row[dedicacionHeader];
+        Object.entries(porcentajeHeaders).forEach(([campo, header]) => {
+          if (header && isBlankValue(docente[campo]) && !isBlankValue(row[header])) docente[campo] = row[header];
+        });
 
         docentes.set(documento, docente);
       }
@@ -238,6 +258,11 @@ const HISTORICO_CAMPOS = {
     dependencia: ["programa o dependencia"],
     contrato: ["tipo contrato"],
     dedicacion: ["dedicacion"],
+    porcDocencia: ["porcent docencia"],
+    porcInvestigacion: ["porcent investigacion"],
+    porcAdministrativa: ["porcent administrativa"],
+    porcExtension: ["porcent extension"],
+    porcOtras: ["porcent otras"],
   },
   estudio: {
     documento: ["documento"],
@@ -246,6 +271,37 @@ const HISTORICO_CAMPOS = {
     titulo: ["titulo recibido"],
     pais: ["pais estudio"],
   },
+  // Archivos con los encabezados de SNIES (p. ej. "Docentes_IES": hojas
+  // DOCENTE_CONTRATO y DOCENTE_IES); sus valores son códigos ("1", "81")
+  sniesContrato: {
+    documento: ["num_documento"],
+    tipoDocumento: ["id_tipo_documento"],
+    dependencia: ["programa"],
+    contrato: ["id_tipo_contrato"],
+    dedicacion: ["id_dedicacion"],
+    porcDocencia: ["porcentaje_docencia"],
+    porcInvestigacion: ["porcentaje_investigacion"],
+    porcAdministrativa: ["porcentaje_administrativa"],
+    porcExtension: ["porcentaje_extension"],
+    porcOtras: ["porcentaje_otras_actividades", "porcentaje_otras"],
+  },
+  sniesEstudio: {
+    documento: ["num_documento"],
+    tipoDocumento: ["id_tipo_documento"],
+    nivel: ["id_nivel_max_estudio"],
+    titulo: ["titulo_recibido"],
+    pais: ["id_pais_institucion_estudio"],
+  },
+};
+
+// Tipo de hoja del Histórico Docentes según sus encabezados (null si no es de docentes)
+const tipoHojaHistorico = (headers) => {
+  const normalized = headers.map((header) => norm(header));
+  if (normalized.includes("tipo contrato")) return "contrato";
+  if (normalized.includes("max nivel formacion")) return "estudio";
+  if (normalized.includes("num_documento") && normalized.includes("id_tipo_contrato")) return "sniesContrato";
+  if (normalized.includes("num_documento") && normalized.includes("id_nivel_max_estudio")) return "sniesEstudio";
+  return null;
 };
 
 const indicesHistorico = (headers, campos) => {
@@ -273,11 +329,7 @@ const collectDocentesFromHistorico = async () => {
     const sheets = archivo.sheets || [];
     for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
       const headers = sheets[sheetIndex].headers || [];
-      const tipo = headers.some((h) => norm(h) === "tipo contrato")
-        ? "contrato"
-        : headers.some((h) => norm(h) === "max nivel formacion")
-          ? "estudio"
-          : null;
+      const tipo = tipoHojaHistorico(headers);
       if (!tipo) continue;
       const idx = indicesHistorico(headers, HISTORICO_CAMPOS[tipo]);
       if (idx.year < 0 || idx.semester < 0 || idx.documento < 0) continue;
@@ -295,9 +347,15 @@ const collectDocentesFromHistorico = async () => {
         if (!byPeriod.has(key)) byPeriod.set(key, { year, semester, docentes: new Map() });
         const docentes = byPeriod.get(key).docentes;
         const docente = docentes.get(documento) || { documento };
+        // Los porcentajes de dedicación van juntos: una fila que trae alguno
+        // reemplaza los cinco (un vacío es 0), para no mezclar archivos.
+        const traePorcentajes = PORCENTAJE_CAMPOS.some((campo) => idx[campo] >= 0 && !isBlankValue(get(campo)));
         Object.keys(HISTORICO_CAMPOS[tipo]).forEach((campo) => {
+          if (campo === "documento") return;
           const value = get(campo);
-          if (campo !== "documento" && value !== undefined && value !== null && String(value).trim() !== "") {
+          if (PORCENTAJE_CAMPOS.includes(campo)) {
+            if (traePorcentajes) docente[campo] = isBlankValue(value) ? 0 : value;
+          } else if (!isBlankValue(value)) {
             docente[campo] = value;
           }
         });
@@ -335,6 +393,14 @@ const mergeHistoricoDocentes = (byPeriod, historico) => {
           completo = true;
         }
       });
+      // Porcentajes: los cinco del histórico, solo si SNIES no trae ninguno
+      const sinPorcentajes = (d) => PORCENTAJE_CAMPOS.every((campo) => isBlankValue(d[campo]));
+      if (sinPorcentajes(docente) && !sinPorcentajes(origen)) {
+        PORCENTAJE_CAMPOS.forEach((campo) => {
+          docente[campo] = origen[campo];
+        });
+        completo = true;
+      }
     });
     if (completo) periodosCompletados.push(`${actual.year}-${actual.semester === 1 ? "I" : "II"} (campos faltantes)`);
   });
@@ -628,7 +694,18 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
     else if (title.startsWith("facultad/departamento")) cols.dependencia ??= c;
     else if (title.startsWith("tipo de contratacion")) cols.contrato ??= c;
     else if (title.startsWith("tipo de dedicacion")) cols.dedicacion ??= c;
+    else if (title.startsWith("no. de horas de docencia")) cols.horasDocencia ??= c;
+    else if (title.startsWith("no. de horas de investigacion")) cols.horasInvestigacion ??= c;
+    else if (title.startsWith("no. de horas de extension")) cols.horasExtension ??= c;
+    else if (title.startsWith("no. de horas de gestion")) cols.horasGestion ??= c;
+    else if (title.startsWith("no. total de horas")) cols.horasTotal ??= c;
+    else if (/^campus\s*1$/.test(title)) cols.campus1 ??= c;
   }
+
+  // La tabla de la plantilla trae formato solo para unas filas: si hay más
+  // profesores, las filas nuevas toman el formato, las fórmulas y las listas
+  // de la última fila de la tabla.
+  extendTableRows(worksheet, headerRow + 1, headerRow + period.docentes.size);
 
   const menu = getMenuOptions(workbook);
   const templateHasMq = menu.nivel.some((option) => NIVEL_MENU_MATCH.mq1(norm(option)));
@@ -640,11 +717,18 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
   );
 
   let sinNombre = 0;
+  let sinPorcentajes = 0;
   docentes.forEach((docente, index) => {
     const row = worksheet.getRow(headerRow + 1 + index);
     const integra = integraUsers?.get(docente.documento);
     const nombre = nombreDe(docente.documento);
     const nivelKey = nivelSniesToKey(docente.nivel, templateHasMq);
+    const setFormulaResult = (col, result) => {
+      if (!col) return;
+      const cell = row.getCell(col);
+      if (hasFormula(cell)) cell.value = { ...cell.value, result };
+      else cell.value = result;
+    };
     const set = (col, value) => {
       if (!col) return;
       const cell = row.getCell(col);
@@ -666,12 +750,118 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
     );
     set(cols.contrato, contratoMenuValue(menu.contrato, docente));
     set(cols.dedicacion, dedicacionMenuValue(menu.dedicacion, docente));
+    // La Universidad tiene un solo campus: todos los profesores van en el 1
+    set(cols.campus1, "X");
+    const horas = horasSemanales(docente);
+    if (horas) {
+      set(cols.horasDocencia, horas.docencia);
+      set(cols.horasInvestigacion, horas.investigacion);
+      set(cols.horasExtension, horas.extension);
+      set(cols.horasGestion, horas.gestion);
+      // El total es una fórmula (SUMA): se guarda también su resultado para
+      // que se vea en la vista previa sin abrir el archivo en Excel.
+      setFormulaResult(cols.horasTotal, HORAS_SEMANA);
+    } else {
+      sinPorcentajes += 1;
+    }
     row.commit();
   });
 
   if (sinNombre > 0) {
     advertencias.push(`Profesores Detallado: ${sinNombre} profesor(es) no se encontraron en Integra ni en el Histórico Docentes, quedan sin nombre.`);
   }
+  if (sinPorcentajes > 0) {
+    advertencias.push(`Profesores Detallado: ${sinPorcentajes} profesor(es) no tienen porcentajes de dedicación en SNIES ni en el Histórico Docentes, quedan sin horas.`);
+  }
+};
+
+// Horas semanales de la plantilla: los porcentajes de dedicación de SNIES
+// (docencia, investigación, extensión, administrativa y otras) repartidos
+// sobre HORAS_SEMANA. Administrativa y otras van a "Gestión académica". Se
+// reparten en horas enteras que siempre suman HORAS_SEMANA.
+const HORAS_SEMANA = 42;
+const toPercent = (value) => {
+  const number = Number(String(value ?? "").replace(",", ".").replace("%", "").trim());
+  return Number.isFinite(number) && number > 0 ? number : 0;
+};
+const horasSemanales = (docente) => {
+  const partes = {
+    docencia: toPercent(docente.porcDocencia),
+    investigacion: toPercent(docente.porcInvestigacion),
+    extension: toPercent(docente.porcExtension),
+    gestion: toPercent(docente.porcAdministrativa) + toPercent(docente.porcOtras),
+  };
+  const total = Object.values(partes).reduce((a, b) => a + b, 0);
+  if (!total) return null;
+  // Método del mayor residuo: enteros que suman exactamente HORAS_SEMANA
+  const exactas = Object.entries(partes).map(([clave, valor]) => ({ clave, exacta: (valor / total) * HORAS_SEMANA }));
+  const horas = Object.fromEntries(exactas.map(({ clave, exacta }) => [clave, Math.floor(exacta)]));
+  let faltan = HORAS_SEMANA - Object.values(horas).reduce((a, b) => a + b, 0);
+  exactas
+    .sort((a, b) => (b.exacta - Math.floor(b.exacta)) - (a.exacta - Math.floor(a.exacta)))
+    .forEach(({ clave }) => {
+      if (faltan > 0) {
+        horas[clave] += 1;
+        faltan -= 1;
+      }
+    });
+  return horas;
+};
+
+// Extiende hacia abajo la tabla de una hoja (filas firstRow… con formato) hasta
+// lastRow: copia de la última fila con formato el estilo, el alto, las listas
+// desplegables y las fórmulas (desplazadas), y amplía los formatos
+// condicionales que terminaban en esa fila.
+const extendTableRows = (worksheet, firstRow, lastRow) => {
+  // Última fila de la tabla: la última seguida con borde en la primera columna de datos
+  const bordered = (r) => {
+    const border = worksheet.getRow(r).getCell(3).style?.border;
+    return Boolean(border && (border.top || border.bottom || border.left));
+  };
+  let templateRow = firstRow;
+  while (bordered(templateRow + 1)) templateRow += 1;
+  if (lastRow <= templateRow) return;
+
+  const source = worksheet.getRow(templateRow);
+  const maxCol = worksheet.columnCount;
+  const validations = worksheet.dataValidations?.model || {};
+
+  // Fórmula de cada columna en la fila modelo (resolviendo las compartidas)
+  const formulas = new Map();
+  for (let c = 1; c <= maxCol; c += 1) {
+    const value = source.getCell(c).value;
+    if (!value || typeof value !== "object") continue;
+    if (value.formula) {
+      formulas.set(c, { text: value.formula, row: templateRow });
+    } else if (value.sharedFormula) {
+      const master = worksheet.getCell(value.sharedFormula);
+      if (master.value?.formula) formulas.set(c, { text: master.value.formula, row: Number(master.row) });
+    }
+  }
+
+  for (let r = templateRow + 1; r <= lastRow; r += 1) {
+    const row = worksheet.getRow(r);
+    row.height = source.height;
+    for (let c = 1; c <= maxCol; c += 1) {
+      const from = source.getCell(c);
+      const cell = row.getCell(c);
+      cell.style = JSON.parse(JSON.stringify(from.style || {}));
+      const validation = validations[from.address];
+      if (validation) cell.dataValidation = JSON.parse(JSON.stringify(validation));
+      const formula = formulas.get(c);
+      if (formula && (cell.value === null || cell.value === undefined || cell.value === "")) {
+        cell.value = { formula: shiftFormula(formula.text, r - formula.row) };
+      }
+    }
+    row.commit();
+  }
+
+  (worksheet.conditionalFormattings || []).forEach((format) => {
+    format.ref = String(format.ref).split(/\s+/).map((range) => {
+      const match = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(range);
+      return match && Number(match[4]) === templateRow ? `${match[1]}${match[2]}:${match[3]}${lastRow}` : range;
+    }).join(" ");
+  });
 };
 
 // ── CUADRO 02. ESTUDIANTES ───────────────────────────────────────────────────
@@ -1073,6 +1263,43 @@ controller.deletePlantilla = async (req, res) => {
 };
 
 // Genera la plantilla CNA diligenciada con la información SNIES de los períodos elegidos
+// Último período con docentes entre todas las plantillas SNIES y el Histórico
+// Docentes. Si no estaba entre los seleccionados, se lee aparte.
+const latestDocentesPeriod = async (byPeriod, historico, email, advertencias) => {
+  const templates = await SniesTemplate.find({ period: { $ne: null } }).select("name period").populate("period", "name").lean();
+  const templatesByKey = new Map();
+  templates.forEach((template) => {
+    const { year, semester } = parsePeriodName(template.period?.name);
+    if (!year || !semester) return;
+    const key = periodKey(year, semester);
+    if (!templatesByKey.has(key)) templatesByKey.set(key, []);
+    templatesByKey.get(key).push(template);
+  });
+  const keys = new Set([...templatesByKey.keys(), ...byPeriod.keys(), ...(historico?.byPeriod.keys() || [])]);
+  const ordered = [...keys].sort((a, b) => {
+    const [ya, sa] = a.split("-").map(Number);
+    const [yb, sb] = b.split("-").map(Number);
+    return yb - ya || sb - sa;
+  });
+
+  for (const key of ordered) {
+    const selected = byPeriod.get(key);
+    if (selected?.docentes.size) return selected;
+    let period = null;
+    if (templatesByKey.has(key)) {
+      period = (await collectDocentesByPeriod(templatesByKey.get(key), email, advertencias)).get(key) || null;
+    }
+    const enHistorico = historico?.byPeriod.get(key);
+    if (enHistorico) {
+      const unido = new Map(period ? [[key, period]] : []);
+      mergeHistoricoDocentes(unido, { byPeriod: new Map([[key, enHistorico]]) });
+      period = unido.get(key);
+    }
+    if (period?.docentes.size) return period;
+  }
+  return null;
+};
+
 controller.generarPlantilla = async (req, res) => {
   try {
     const { email, periodIds = [], depCode = "", programaSnies = "", usarHistorico = true } = req.body || {};
@@ -1095,8 +1322,9 @@ controller.generarPlantilla = async (req, res) => {
 
     // Histórico Docentes (Consulta de Información): completa lo que SNIES no trae
     let nombresHistorico = null;
+    let historico = null;
     if (usarHistorico !== false) {
-      const historico = await collectDocentesFromHistorico();
+      historico = await collectDocentesFromHistorico();
       nombresHistorico = historico.nombres;
       const completados = mergeHistoricoDocentes(byPeriod, historico);
       if (historico.archivos.length && completados.length) {
@@ -1168,6 +1396,17 @@ controller.generarPlantilla = async (req, res) => {
       });
     }
 
+    // Profesores Detallado: siempre el último período con docentes (2026-I,
+    // por ejemplo), aunque no esté entre los períodos seleccionados.
+    const detalladoPeriod = await latestDocentesPeriod(byPeriod, historico, email, advertencias);
+    if (depCode && detalladoPeriod && integraUsers) {
+      const allowed = await getDependencyTree(String(depCode));
+      detalladoPeriod.docentes.forEach((docente, documento) => {
+        const dep = integraUsers.get(documento)?.dep_code;
+        if (!dep || !allowed.has(String(dep))) detalladoPeriod.docentes.delete(documento);
+      });
+    }
+
     const dependencyNames = new Map(
       (await Dependency.find({}).select("dep_code name").lean()).map((dep) => [String(dep.dep_code), dep.name])
     );
@@ -1224,9 +1463,11 @@ controller.generarPlantilla = async (req, res) => {
     // ── CUADROS 03 y 04. Profesores
     if (periodosDocentes.length) {
       fillProfesoresResumen(workbook, byPeriod, advertencias);
+      const periodoDetallado = detalladoPeriod || periodosDocentes[periodosDocentes.length - 1];
+      notas.push(`Profesores Detallado: docentes del período ${periodoDetallado.year}-${periodoDetallado.semester === 1 ? "I" : "II"} (el último con información), con sus horas semanales sobre un total de ${HORAS_SEMANA}.`);
       fillProfesoresDetallado(
         workbook,
-        periodosDocentes[periodosDocentes.length - 1],
+        periodoDetallado,
         integraUsers,
         nombresHistorico,
         dependencyNames,
@@ -1282,7 +1523,9 @@ controller.generarPlantilla = async (req, res) => {
 
     // Los totales de la plantilla son fórmulas: que Excel las recalcule al abrir
     workbook.calcProperties = { ...(workbook.calcProperties || {}), fullCalcOnLoad: true };
-    const outputBuffer = await workbook.xlsx.writeBuffer();
+    // ExcelJS daña los logos y los vínculos externos de la plantilla: se corrigen
+    // para que Excel no tenga que reparar el archivo al abrirlo.
+    const outputBuffer = repairExcelJsOutput(templateBuffer, Buffer.from(await workbook.xlsx.writeBuffer()));
     const fileName = `CNA_${plantilla.tipo}_${new Date().toISOString().slice(0, 10)}.xlsx`;
 
     res.setHeader("Content-Type", XLSX_MIME);

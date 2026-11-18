@@ -1,4 +1,4 @@
-const { colToNumber } = require("./kpiWorkbook");
+const { colToNumber, numberToCol, escapeXml, dateToSerial } = require("./kpiWorkbook");
 
 // Evalúa en el servidor las fórmulas de una plantilla KPI que leen hojas de
 // datos demasiado grandes para Excel (p. ej. 384.000 matriculados). Esas hojas
@@ -874,5 +874,54 @@ class FormulaEngine {
     };
   }
 }
+
+// Celda en XML con el valor ya calculado (sin fórmula)
+const valueCellXml = (ref, style, value) => {
+  if (value === null || value === undefined || value === "") return "";
+  const s = style ? ` s="${style}"` : "";
+  if (value instanceof Date) value = Number.isNaN(value.getTime()) ? null : dateToSerial(value);
+  if (value === null) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? `<c r="${ref}"${s}><v>${value}</v></c>` : "";
+  if (typeof value === "boolean") return `<c r="${ref}"${s} t="b"><v>${value ? 1 : 0}</v></c>`;
+  if (isError(value)) return `<c r="${ref}"${s} t="e"><v>${escapeXml(value.error)}</v></c>`;
+  return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+};
+
+// Tope del XML de una hoja (en caracteres): por encima no cabe en un solo texto
+const MAX_SHEET_XML = 400 * 1024 * 1024;
+
+// Escribe en cada hoja virtual todas sus filas: las columnas de datos y las
+// calculadas, como valores. Así la hoja se ve completa en el Excel, pero Excel
+// no tiene que recalcular cientos de miles de fórmulas al abrirlo.
+FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
+  const escritas = [];
+  this.virtual.forEach((vs) => {
+    const dataCells = vs.sheet.headCells.get(vs.dataRow) || new Map();
+    const cols = [...new Set([...vs.inputs.keys(), ...vs.formulas.keys()])].sort((a, b) => a - b);
+    const styles = new Map(cols.map((col) => [col, /\bs="(\d+)"/.exec(dataCells.get(col)?.attrs || "")?.[1] || null]));
+    const letters = new Map(cols.map((col) => [col, numberToCol(col)]));
+    const columns = new Map(cols.map((col) => [col, vs.inputs.get(col) || this.virtualColumn(vs, col)]));
+
+    const rows = new Array(vs.count);
+    let size = 0;
+    for (let i = 0; i < vs.count; i += 1) {
+      const rowNumber = vs.dataRow + i;
+      let cells = "";
+      for (const col of cols) cells += valueCellXml(`${letters.get(col)}${rowNumber}`, styles.get(col), columns.get(col)[i]);
+      rows[i] = `<row r="${rowNumber}">${cells}</row>`;
+      size += rows[i].length;
+      if (size > MAX_SHEET_XML) break;
+    }
+    // Una hoja así no cabría en un solo texto en memoria: se deja sin filas
+    if (size > MAX_SHEET_XML) {
+      escritas.push({ hoja: vs.sheet.name, filas: 0, omitida: true });
+      return;
+    }
+    const lastCol = cols[cols.length - 1] || 1;
+    this.book.replaceSheetRows(vs.sheet, vs.headerRow, rows, vs.lastRow, lastCol);
+    escritas.push({ hoja: vs.sheet.name, filas: vs.count });
+  });
+  return escritas;
+};
 
 module.exports = { FormulaEngine, UnsupportedFormula, parse };

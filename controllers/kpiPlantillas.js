@@ -694,7 +694,12 @@ controller.traerInformacion = async (req, res) => {
 
     let calculo = null;
     if (virtualSheets.size) {
-      calculo = new FormulaEngine(book, virtualSheets).materialize();
+      const engine = new FormulaEngine(book, virtualSheets);
+      calculo = engine.materialize();
+      // Las hojas grandes también quedan en el Excel, con sus valores ya calculados
+      engine.writeVirtualSheets()
+        .filter(({ omitida }) => omitida)
+        .forEach(({ hoja }) => advertencias.push(`Hoja "${hoja}": tiene demasiadas filas para copiarlas al Excel; sus cálculos sí quedaron en las hojas de resultados.`));
       if (calculo.errores) advertencias.push(`${calculo.errores} celda(s) calculadas dieron error (#N/A, #DIV/0!…); revisa sus fórmulas.`);
       calculo.noSoportadas.forEach((detalle) => advertencias.push(`No se pudo calcular en Miró: ${detalle}. Esas celdas quedaron con su fórmula.`));
     }
@@ -731,6 +736,44 @@ controller.traerInformacion = async (req, res) => {
 
 // Hojas del Excel con la fuente configurada (o sugerida) y todas las fuentes
 // disponibles, para la ventana "Configurar hojas".
+// Archivos (nombre sin extensión) de los que sale una fuente
+const candidateFiles = (candidate) => [...new Set(candidate.sources.map(({ file }) => baseName(file.file_name)))];
+
+// Palabras de un nombre de hoja: "IN_Matriculados" → ["matriculados"]
+const nameWords = (name) =>
+  String(name || "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 4 && !/^\d+$/.test(word));
+
+// Palabra igual: 2 puntos; una contenida en la otra ("matric" / "matriculados"): 1
+const nameSimilarity = (a, b) => {
+  const wordsB = nameWords(b);
+  return nameWords(a).reduce((total, word) => {
+    if (wordsB.includes(word)) return total + 2;
+    return total + (wordsB.some((other) => other.includes(word) || word.includes(other)) ? 1 : 0);
+  }, 0);
+};
+
+// Para una hoja del KPI, la hoja más parecida de cada archivo: primero por
+// encabezados en común y, si empatan (p. ej. UnoAUno de matriculados y de
+// graduados), por el nombre ("IN_Matriculados" ↔ "UnoAUno_Matriculados").
+const bestSheetByFile = (book, sheet, candidates) => {
+  const best = {};
+  candidates.forEach((candidate) => {
+    const match = matchSheetTo(book, sheet, candidate);
+    const score = (match?.score || 0) * 100 + nameSimilarity(sheet.name, candidate.name);
+    if (!match) return;
+    candidateFiles(candidate).forEach((archivo) => {
+      if (!best[archivo] || score > best[archivo].score) best[archivo] = { key: candidate.key, score };
+    });
+  });
+  return Object.fromEntries(Object.entries(best).map(([archivo, { key }]) => [archivo, key]));
+};
+
 controller.getHojas = async (req, res) => {
   try {
     await UserService.findUserByEmailAndRoles(req.query.email, ALLOWED_ROLES);
@@ -750,11 +793,18 @@ controller.getHojas = async (req, res) => {
         fuente: configurada && keys.has(configurada) ? configurada : null,
         sugerida: sugerida?.candidate.key || null,
         encabezados: sugerida ? [...sugerida.headers.values()].slice(0, 12) : [],
+        porArchivo: bestSheetByFile(book, sheet, candidates),
       };
     });
 
     const fuentes = candidates
-      .map((candidate) => ({ value: candidate.key, label: candidateLabel(candidate), group: candidateGroup(candidate) }))
+      .map((candidate) => ({
+        value: candidate.key,
+        label: candidateLabel(candidate),
+        group: candidateGroup(candidate),
+        hoja: candidate.name,
+        archivos: candidateFiles(candidate),
+      }))
       .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label, "es"));
 
     return res.status(200).json({ hojas, fuentes, configurada: (plantilla.mapeo || []).length > 0 });

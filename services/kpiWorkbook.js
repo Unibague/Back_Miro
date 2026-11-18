@@ -589,6 +589,53 @@ class KpiWorkbook {
     return `<row r="${rowNumber}"${withoutAttr(row.attrs, "spans")}>${parts.join("")}</row>`;
   }
 
+  // Reemplaza las filas de datos de una hoja (desde keepUntilRow + 1) por las
+  // dadas, ya en XML, sin cargar la hoja completa. Ajusta la dimensión y las
+  // tablas de Excel que empiezan en el encabezado.
+  replaceSheetRows(sheet, keepUntilRow, rowXmls, lastRow, lastCol) {
+    const xml = this.zip.file(sheet.path).asText();
+    const bounds = sheetDataBounds(xml);
+    if (!bounds) throw new Error(`La hoja "${sheet.name}" no tiene datos.`);
+    const kept = [];
+    const re = new RegExp(ROW_RE.source, "g");
+    re.lastIndex = bounds.bodyStart;
+    let match;
+    while ((match = re.exec(xml)) && match.index < bounds.bodyEnd) {
+      if (Number(attrOf(match[1], "r")) > keepUntilRow) break;
+      kept.push(match[0]);
+    }
+    const head = xml.slice(0, bounds.headEnd).replace(/<dimension\b[^>]*\/>/, `<dimension ref="A1:${numberToCol(lastCol)}${lastRow}"/>`);
+    const tail = xml.slice(bounds.tailStart);
+    this.zip.file(sheet.path, `${head}<sheetData>${kept.join("")}${rowXmls.join("")}</sheetData>${tail}`);
+
+    this.tablesOf(sheet).forEach((table) => {
+      const root = table.doc.documentElement;
+      const range = parseRange(root.getAttribute("ref"));
+      if (!range || range.from.row > keepUntilRow) return;
+      range.to.row = Math.max(lastRow, range.from.row + 1);
+      root.setAttribute("ref", formatRange(range));
+      const autoFilter = firstChild(root, "autoFilter");
+      if (autoFilter) autoFilter.setAttribute("ref", formatRange(range));
+      this.dirty.set(table.path, table.doc);
+    });
+    this.removeCalcChain();
+  }
+
+  // calcChain.xml lista las celdas con fórmula en el orden en que Excel las
+  // calcula. Si se agregan o quitan fórmulas deja de coincidir y Excel dice que
+  // el archivo tiene "un problema con el contenido". Sin ella, Excel la rearma.
+  removeCalcChain() {
+    const relsPath = relsPathOf(this.workbookPath);
+    const rels = this.zip.file(relsPath)?.asText();
+    const rel = rels && /<Relationship\b[^>]*\/calcChain"[^>]*\/>/.exec(rels);
+    if (!rel) return;
+    const target = resolveTarget(this.workbookPath, attrOf(rel[0], "Target"));
+    this.zip.remove(target);
+    this.zip.file(relsPath, rels.replace(rel[0], ""));
+    const types = this.zip.file("[Content_Types].xml")?.asText();
+    if (types) this.zip.file("[Content_Types].xml", types.replace(new RegExp(`<Override\\b[^>]*PartName="/${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*/>`), ""));
+  }
+
   toBuffer() {
     const serializer = new XMLSerializer();
     this.dirty.forEach((doc, filePath) => {
@@ -598,6 +645,7 @@ class KpiWorkbook {
       const rows = sheet.rowNumbers.map((rowNumber) => this.serializeRow(rowNumber, sheet.rows.get(rowNumber)));
       this.zip.file(sheet.path, `${sheet.head}<sheetData>${rows.join("")}</sheetData>${sheet.tail}`);
     });
+    if (this.dirtySheets.size) this.removeCalcChain();
     return this.zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
   }
 }
@@ -793,4 +841,6 @@ module.exports = {
   fillSheet,
   shiftFormula,
   toCellValue,
+  escapeXml,
+  dateToSerial,
 };
