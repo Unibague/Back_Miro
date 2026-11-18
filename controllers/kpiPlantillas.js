@@ -10,7 +10,8 @@ const HistoricoDocentes = require("../models/historicoDocentes");
 require("../models/periods");
 const UserService = require("../services/users");
 const { forEachSheetRow, parseExcelToChunks, parseCsvToChunks, writeRowsToChunks } = require("../services/historicoStorage");
-const { KpiWorkbook, compact, matchSheet, matchSheetTo, fillSheet } = require("../services/kpiWorkbook");
+const { KpiWorkbook, compact, matchSheet, matchSheetTo, fillSheet, toCellValue } = require("../services/kpiWorkbook");
+const { FormulaEngine } = require("../services/kpiFormulaEngine");
 const {
   uploadFileToGoogleDrive,
   deleteDriveFile,
@@ -159,7 +160,7 @@ const cleanSemestre = (value) => (/^\d+$/.test(value) ? String(Number(value)) : 
 const periodOf = (record, file) => {
   const periodo = textValue(record.get("periodo"));
   if (periodo) return periodo;
-  const ano = textValue(record.get("ano") ?? record.get("anio") ?? record.get("year"));
+  const ano = textValue(record.get("ano") ?? record.get("anio") ?? record.get("annio") ?? record.get("year"));
   const semestre = cleanSemestre(textValue(record.get("semestre")));
   if (ano && semestre) return semestre.includes(ano) ? semestre : `${ano}-${semestre}`;
   return ano || file.period?.name || semestre;
@@ -187,22 +188,32 @@ class SourceRecord {
   }
 }
 
-const collectRows = async (candidate, advertencias) => {
+// Columnas con las que se deduce el período de cada fila
+const PERIOD_KEYS = ["periodo", "ano", "anio", "annio", "year", "semestre"];
+
+// pickKeys: solo se guardan esas columnas (y las del período) de cada fila,
+// para no tener en memoria columnas que la hoja no usa.
+const collectRows = async (candidate, advertencias, pickKeys = null) => {
   const owners = new Map(); // período → carga más reciente que lo trae
   const loaded = [];
+  const wanted = pickKeys ? new Set([...pickKeys, ...PERIOD_KEYS]) : null;
   for (const { file, sheetIndex, headers } of candidate.sources) {
     try {
       const index = new Map();
+      const positions = [];
       headers.forEach((header, position) => {
         const key = compact(header);
-        if (key && !index.has(key)) index.set(key, position);
+        if (!key || index.has(key) || (wanted && !wanted.has(key))) return;
+        index.set(key, wanted ? positions.length : position);
+        positions.push(position);
       });
       const doc = file.kpiBase
         ? { _id: file._id, storage: "chunked", sheets: file.sheets }
         : await HistoricoDocentes.findById(file._id).select("storage rows_source sheets").lean();
       const rows = [];
       await forEachSheetRow(doc, sheetIndex, (row) => {
-        const record = new SourceRecord(index, Array.isArray(row) ? row : headers.map((header) => row?.[header]));
+        const values = Array.isArray(row) ? row : headers.map((header) => row?.[header]);
+        const record = new SourceRecord(index, wanted ? positions.map((position) => values[position]) : values);
         record.periodo = periodOf(record, file);
         rows.push(record);
       });
@@ -300,6 +311,25 @@ const candidateLabel = (candidate) => {
 
 const candidateGroup = (candidate) =>
   candidate.sources.some(({ file }) => file.kpiBase) ? "Bases externas" : "Consulta de Información";
+
+// Columnas de la hoja del KPI que se llenan con la fuente (y "Período")
+const mappedKeys = (match) => {
+  const keys = [];
+  match.headers.forEach((text, col) => {
+    const key = compact(text);
+    if (match.candidate.fieldKeys.has(key) || key === "periodo") keys.push({ col, key });
+  });
+  return keys;
+};
+
+// ¿La primera fila de datos tiene fórmulas en columnas que no vienen de la fuente?
+const hasHelperFormulas = (book, sheet, match) => {
+  book.headTexts(sheet, match.headerRow + 1);
+  const mapped = new Set(mappedKeys(match).map(({ col }) => col));
+  const cells = sheet.headCells.get(match.headerRow + 1);
+  if (!cells) return false;
+  return [...cells.entries()].some(([col, cell]) => !mapped.has(col) && book.hasFormula(cell));
+};
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
@@ -540,6 +570,7 @@ controller.traerInformacion = async (req, res) => {
     const hojasSinCambios = [];
     const filledSheets = [];
     const rowsCache = new Map();
+    const virtualSheets = new Map();
 
     for (const sheet of book.sheets) {
       let match = null;
@@ -554,6 +585,30 @@ controller.traerInformacion = async (req, res) => {
           const filasFuente = candidate.sources.reduce((total, { file, sheetIndex }) =>
             total + (file.sheets?.[sheetIndex]?.totalRows || 0), 0);
           const columnas = match ? Math.max(...match.headers.keys()) : 0;
+
+          // Hoja de datos con columnas de fórmulas que recibe más filas de las
+          // que la plantilla trae preparadas: Miró la calcula sin copiarla.
+          if (match && hasHelperFormulas(book, sheet, match) && filasFuente > sheet.lastDeclaredRow - match.headerRow) {
+            const keys = mappedKeys(match);
+            const { rows, periodos } = await collectRows(candidate, advertencias, new Set(keys.map(({ key }) => key)));
+            const inputs = new Map(keys.map(({ col, key }) => [
+              col,
+              rows.map((record) => toCellValue(key === "periodo" && !candidate.fieldKeys.has("periodo") ? record.periodo : record.get(key))),
+            ]));
+            virtualSheets.set(sheet.name, { headerRow: match.headerRow, count: rows.length, inputs });
+            hojas.push({
+              hoja: sheet.name,
+              plantilla: candidateLabel(candidate),
+              periodos,
+              filas: rows.length,
+              columnas: keys.length,
+              sinCoincidencia: [],
+              formulasExtendidas: [],
+              calculada: true,
+            });
+            continue;
+          }
+
           if (match && filasFuente * columnas > MAX_SHEET_CELLS) {
             return res.status(400).json({
               error: `La hoja "${sheet.name}" recibiría ${filasFuente.toLocaleString("es-CO")} filas de "${config.fuente_label || candidate.name}" con ${columnas} columnas: es demasiado grande para llenarla en Excel. Quita esa hoja en “Configurar hojas” o usa una fuente con menos filas.`,
@@ -599,6 +654,13 @@ controller.traerInformacion = async (req, res) => {
       return res.status(400).json({ error: `No se llenó ninguna hoja. ${advertencias.slice(0, 3).join(" ")}`.trim() });
     }
 
+    let calculo = null;
+    if (virtualSheets.size) {
+      calculo = new FormulaEngine(book, virtualSheets).materialize();
+      if (calculo.errores) advertencias.push(`${calculo.errores} celda(s) calculadas dieron error (#N/A, #DIV/0!…); revisa sus fórmulas.`);
+      calculo.noSoportadas.forEach((detalle) => advertencias.push(`No se pudo calcular en Miró: ${detalle}. Esas celdas quedaron con su fórmula.`));
+    }
+
     book.finalize(filledSheets);
     const outputBuffer = book.toBuffer();
 
@@ -606,7 +668,12 @@ controller.traerInformacion = async (req, res) => {
     plantilla.last_run_by = email;
     await plantilla.save();
 
-    const resumen = { hojas, hojasSinCambios: hojasSinCambios.slice(0, 30), advertencias: advertencias.slice(0, 20) };
+    const resumen = {
+      hojas,
+      hojasSinCambios: hojasSinCambios.slice(0, 30),
+      advertencias: advertencias.slice(0, 20),
+      calculo: calculo && { celdas: calculo.celdas, hojas: calculo.hojas },
+    };
     const ext = path.extname(plantilla.file_name).toLowerCase() || ".xlsx";
     const fileName = `${plantilla.file_name.slice(0, -ext.length)}_${new Date().toISOString().slice(0, 10)}${ext}`;
 
