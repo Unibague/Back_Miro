@@ -258,8 +258,12 @@ class KpiWorkbook {
   headTexts(sheet, maxRow) {
     if (sheet.headTexts) return sheet.headTexts;
     const texts = new Map();
+    const cellsByRow = new Map();
     const xml = this.zip.file(sheet.path).asText();
     const bounds = sheetDataBounds(xml);
+    // Última fila que declara la hoja (hasta dónde vienen preparadas sus fórmulas)
+    const dimension = parseRange(attrOf(/<dimension\b([^>]*?)\/>/.exec(xml)?.[1] || "", "ref"));
+    sheet.lastDeclaredRow = dimension?.to.row || 0;
     if (bounds) {
       const re = new RegExp(ROW_RE.source, "g");
       re.lastIndex = bounds.bodyStart;
@@ -269,11 +273,40 @@ class KpiWorkbook {
         const rowNumber = Number(attrOf(match[1], "r")) || lastRow + 1;
         lastRow = rowNumber;
         if (rowNumber > maxRow) break;
-        texts.set(rowNumber, this.textsOfCells(this.parseCells(match[2] || "", rowNumber)));
+        const cells = this.parseCells(match[2] || "", rowNumber);
+        cellsByRow.set(rowNumber, cells);
+        texts.set(rowNumber, this.textsOfCells(cells));
       }
     }
     sheet.headTexts = texts;
+    sheet.headCells = cellsByRow;
     return texts;
+  }
+
+  // Valor de una celda con su tipo (número, texto, booleano, error o null)
+  cellValue(cell) {
+    if (!cell) return null;
+    const type = attrOf(cell.attrs, "t");
+    if (type === "s" || type === "inlineStr" || type === "str") return this.cellText(cell);
+    const raw = /<v>([\s\S]*?)<\/v>/.exec(cell.inner)?.[1];
+    if (raw === undefined || raw === "") return null;
+    if (type === "b") return raw === "1";
+    if (type === "e") return { error: unescapeXml(raw) };
+    const number = Number(raw);
+    return Number.isFinite(number) ? number : unescapeXml(raw);
+  }
+
+  // Cambia la fórmula de una celda por su resultado (ya no se recalcula)
+  replaceFormulaWithValue(sheet, rowNumber, cell, value) {
+    cell.inner = "";
+    cell.attrs = withoutAttr(cell.attrs, "t");
+    if (value && typeof value === "object" && value.error) {
+      cell.attrs = withAttr(cell.attrs, "t", "e");
+      cell.inner = `<v>${escapeXml(value.error)}</v>`;
+      this.touch(sheet, rowNumber);
+      return;
+    }
+    this.writeValue(sheet, rowNumber, cell, value);
   }
 
   // Carga la hoja completa: cada fila queda como texto y sus celdas se leen
@@ -432,13 +465,15 @@ class KpiWorkbook {
   }
 
   // Fórmula efectiva de una celda (resuelve las fórmulas compartidas)
-  formulaOf(sheet, cell, row) {
+  // { text, row, col }: la fórmula y la celda donde está escrita (en las
+  // compartidas, la celda maestra; las demás celdas del grupo la desplazan).
+  formulaOf(sheet, cell, row, col = null) {
     const f = FORMULA_RE.exec(cell?.inner || "");
     if (!f) return null;
     const type = attrOf(f[1], "t");
     if (type && type !== "shared") return null; // matriciales / tablas de datos
     const text = unescapeXml(f[2] || "");
-    if (text) return { text, row };
+    if (text) return { text, row, col };
     if (type !== "shared") return null;
 
     if (!sheet.sharedFormulas) {
@@ -449,7 +484,8 @@ class KpiWorkbook {
           if (attrOf(master[1], "t") !== "shared") continue;
           const si = attrOf(master[1], "si");
           if (si !== undefined && !sheet.sharedFormulas.has(si)) {
-            sheet.sharedFormulas.set(si, { text: unescapeXml(master[2]), row: rowNumber });
+            const origin = parseRange(attrOf(master[1], "ref"))?.from;
+            sheet.sharedFormulas.set(si, { text: unescapeXml(master[2]), row: origin?.row || rowNumber, col: origin?.col || null });
           }
         }
       });
@@ -750,6 +786,8 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
 module.exports = {
   KpiWorkbook,
   compact,
+  colToNumber,
+  numberToCol,
   matchSheet,
   matchSheetTo,
   fillSheet,
