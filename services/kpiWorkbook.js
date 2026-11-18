@@ -78,21 +78,15 @@ const descendants = (node, name) => {
   return result;
 };
 
-const textOf = (node) => (node ? node.textContent || "" : "");
-
 const createElement = (doc, name) =>
   doc.createElementNS(doc.documentElement.namespaceURI, name);
-
-const removeChildren = (node, names) => {
-  childElements(node)
-    .filter((item) => names.includes(nodeName(item)))
-    .forEach((item) => node.removeChild(item));
-};
 
 // ── Valores ─────────────────────────────────────────────────────────────────
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 const PLAIN_NUMBER = /^-?(0|[1-9]\d{0,14})(\.\d+)?$/;
+const COMMA_DECIMAL = /^-?(0|[1-9]\d{0,14}),\d+$/;
+const PERCENT = /^(-?(?:0|[1-9]\d{0,14})(?:[.,]\d+)?)\s*%$/;
 
 // Convierte lo guardado en Miró al tipo de celda que espera Excel, para que
 // las fórmulas del archivo KPI (SUMA, CONTAR.SI, fechas…) funcionen.
@@ -108,6 +102,10 @@ const toCellValue = (raw) => {
     if (!Number.isNaN(date.getTime())) return date;
   }
   if (PLAIN_NUMBER.test(text)) return Number(text);
+  // CSV en español: coma decimal y porcentajes escritos como texto
+  if (COMMA_DECIMAL.test(text)) return Number(text.replace(",", "."));
+  const percent = PERCENT.exec(text);
+  if (percent) return Number(percent[1].replace(",", ".")) / 100;
   return text;
 };
 
@@ -152,11 +150,57 @@ const relsPathOf = (filePath) =>
 
 const BUILTIN_DATE_FORMATS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 45, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 58]);
 
+// ── Texto XML ───────────────────────────────────────────────────────────────
+
+// Las hojas se manejan como texto y no como DOM: una hoja de datos con
+// fórmulas preparadas para decenas de miles de filas pesa más de 100 MB de XML
+// y como árbol DOM ocupa varios GB. Solo se reconstruyen las filas que cambian.
+
+const XML_ENTITIES = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
+const unescapeXml = (text = "") =>
+  text.replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, (match, entity) => {
+    if (entity[0] !== "#") return XML_ENTITIES[entity.toLowerCase()] ?? match;
+    const code = entity[1] === "x" || entity[1] === "X" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+  });
+// eslint-disable-next-line no-control-regex
+const INVALID_XML_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g;
+const escapeXml = (text = "") =>
+  String(text)
+    .replace(INVALID_XML_CHARS, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+const attrOf = (attrs, name) => new RegExp(`\\b${name}="([^"]*)"`).exec(attrs)?.[1];
+const withoutAttr = (attrs, name) => attrs.replace(new RegExp(`\\s*\\b${name}="[^"]*"`), "");
+const withAttr = (attrs, name, value) =>
+  attrOf(attrs, name) === undefined
+    ? `${attrs} ${name}="${value}"`
+    : attrs.replace(new RegExp(`\\b${name}="[^"]*"`), `${name}="${value}"`);
+
+const ROW_RE = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
+const CELL_RE = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+const FORMULA_RE = /<f\b([^>]*?)(?:\/>|>([\s\S]*?)<\/f>)/;
+const HAS_VALUE_RE = /<v>[^<]+<\/v>|<is>/;
+const HAS_FORMULA_RE = /<f[\s>/]/;
+
+const sheetDataBounds = (xml) => {
+  const open = /<sheetData\b[^>]*?(\/>|>)/.exec(xml);
+  if (!open) return null;
+  const bodyStart = open.index + open[0].length;
+  if (open[1] === "/>") return { headEnd: open.index, bodyStart, bodyEnd: bodyStart, tailStart: bodyStart };
+  const bodyEnd = xml.indexOf("</sheetData>", bodyStart);
+  return { headEnd: open.index, bodyStart, bodyEnd, tailStart: bodyEnd + "</sheetData>".length };
+};
+
 class KpiWorkbook {
   constructor(buffer) {
     this.zip = new PizZip(buffer);
     this.parser = new DOMParser();
-    this.dirty = new Map(); // ruta → documento modificado
+    this.dirty = new Map(); // ruta → documento DOM modificado (archivos pequeños)
+    this.dirtySheets = new Set(); // hojas modificadas (texto)
 
     this.workbookPath = "xl/workbook.xml";
     this.workbookDoc = this.parse(this.workbookPath);
@@ -196,177 +240,221 @@ class KpiWorkbook {
     }));
   }
 
+  // Textos de las cadenas compartidas (sin las guías fonéticas <rPh>)
   readSharedStrings(filePath) {
-    const doc = filePath ? this.parse(filePath) : null;
-    if (!doc) return [];
-    return childElements(doc.documentElement, "si").map((si) => {
-      const direct = firstChild(si, "t");
-      if (direct) return textOf(direct);
-      return childElements(si, "r").map((run) => textOf(firstChild(run, "t"))).join("");
-    });
+    const file = filePath ? this.zip.file(filePath) : null;
+    if (!file) return [];
+    const strings = [];
+    for (const match of file.asText().matchAll(/<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g)) {
+      const inner = (match[1] || "").replace(/<rPh\b[\s\S]*?<\/rPh>/g, "");
+      let text = "";
+      for (const t of inner.matchAll(/<t\b[^>]*?(?:\/>|>([\s\S]*?)<\/t>)/g)) text += t[1] || "";
+      strings.push(unescapeXml(text));
+    }
+    return strings;
   }
 
-  // Carga una hoja y arma los índices fila → celdas
+  // Textos de las primeras filas, para buscar el encabezado sin cargar toda la hoja
+  headTexts(sheet, maxRow) {
+    if (sheet.headTexts) return sheet.headTexts;
+    const texts = new Map();
+    const xml = this.zip.file(sheet.path).asText();
+    const bounds = sheetDataBounds(xml);
+    if (bounds) {
+      const re = new RegExp(ROW_RE.source, "g");
+      re.lastIndex = bounds.bodyStart;
+      let lastRow = 0;
+      let match;
+      while ((match = re.exec(xml)) && match.index < bounds.bodyEnd) {
+        const rowNumber = Number(attrOf(match[1], "r")) || lastRow + 1;
+        lastRow = rowNumber;
+        if (rowNumber > maxRow) break;
+        texts.set(rowNumber, this.textsOfCells(this.parseCells(match[2] || "", rowNumber)));
+      }
+    }
+    sheet.headTexts = texts;
+    return texts;
+  }
+
+  // Carga la hoja completa: cada fila queda como texto y sus celdas se leen
+  // solo cuando se necesitan.
   loadSheet(sheet) {
-    if (sheet.doc) return sheet;
-    sheet.doc = this.parse(sheet.path);
-    sheet.sheetData = descendants(sheet.doc.documentElement, "sheetData")[0];
+    if (sheet.rows) return sheet;
+    const xml = this.zip.file(sheet.path).asText();
+    const bounds = sheetDataBounds(xml);
+    if (!bounds) throw new Error(`La hoja "${sheet.name}" no tiene datos.`);
+    sheet.head = xml.slice(0, bounds.headEnd);
+    sheet.tail = xml.slice(bounds.tailStart);
     sheet.rows = new Map();
 
     let lastRow = 0;
-    childElements(sheet.sheetData, "row").forEach((rowNode) => {
-      const rowNumber = Number(rowNode.getAttribute("r")) || lastRow + 1;
-      rowNode.setAttribute("r", String(rowNumber));
+    const body = xml.slice(bounds.bodyStart, bounds.bodyEnd);
+    for (const match of body.matchAll(ROW_RE)) {
+      const rowNumber = Number(attrOf(match[1], "r")) || lastRow + 1;
       lastRow = rowNumber;
-      const cells = new Map();
-      let lastCol = 0;
-      childElements(rowNode, "c").forEach((cellNode) => {
-        const col = parseRef(cellNode.getAttribute("r"))?.col || lastCol + 1;
-        cellNode.setAttribute("r", `${numberToCol(col)}${rowNumber}`);
-        lastCol = col;
-        cells.set(col, cellNode);
+      sheet.rows.set(rowNumber, {
+        raw: match[0],
+        attrs: withoutAttr(match[1], "r"),
+        inner: match[2] || "",
+        cells: null,
+        dirty: !attrOf(match[1], "r"),
       });
-      sheet.rows.set(rowNumber, { node: rowNode, cells });
-    });
+    }
     sheet.rowNumbers = [...sheet.rows.keys()].sort((a, b) => a - b);
     return sheet;
   }
 
-  cell(sheet, row, col) {
-    return sheet.rows.get(row)?.cells.get(col) || null;
-  }
-
-  cellText(cellNode) {
-    if (!cellNode) return "";
-    const type = cellNode.getAttribute("t");
-    if (type === "inlineStr") {
-      return descendants(firstChild(cellNode, "is"), "t").map(textOf).join("");
+  parseCells(inner, rowNumber) {
+    const cells = new Map();
+    let lastCol = 0;
+    for (const match of inner.matchAll(CELL_RE)) {
+      const ref = parseRef(attrOf(match[1], "r"));
+      const col = ref && ref.row === rowNumber ? ref.col : lastCol + 1;
+      lastCol = col;
+      cells.set(col, { attrs: withoutAttr(match[1], "r"), inner: match[2] || "" });
     }
-    const value = textOf(firstChild(cellNode, "v"));
+    return cells;
+  }
+
+  cellsOf(sheet, rowNumber) {
+    const row = sheet.rows.get(rowNumber);
+    if (!row) return null;
+    if (!row.cells) row.cells = this.parseCells(row.inner, rowNumber);
+    return row.cells;
+  }
+
+  cell(sheet, row, col) {
+    return this.cellsOf(sheet, row)?.get(col) || null;
+  }
+
+  cellText(cell) {
+    if (!cell) return "";
+    const type = attrOf(cell.attrs, "t");
+    if (type === "inlineStr") {
+      let text = "";
+      for (const t of cell.inner.matchAll(/<t\b[^>]*?(?:\/>|>([\s\S]*?)<\/t>)/g)) text += t[1] || "";
+      return unescapeXml(text);
+    }
+    const value = /<v>([\s\S]*?)<\/v>/.exec(cell.inner)?.[1] ?? "";
     if (type === "s") return this.sharedStrings[Number(value)] ?? "";
-    return value;
+    return unescapeXml(value);
   }
 
-  hasValue(cellNode) {
-    return Boolean(cellNode && (firstChild(cellNode, "v") || firstChild(cellNode, "is")));
-  }
-
-  hasFormula(cellNode) {
-    return Boolean(cellNode && firstChild(cellNode, "f"));
-  }
-
-  rowTexts(sheet, row) {
+  textsOfCells(cells) {
     const texts = new Map();
-    sheet.rows.get(row)?.cells.forEach((cellNode, col) => {
-      const text = this.cellText(cellNode).trim();
+    cells.forEach((cell, col) => {
+      const text = this.cellText(cell).trim();
       if (text) texts.set(col, text);
     });
     return texts;
   }
 
+  hasValue(cell) {
+    return Boolean(cell && HAS_VALUE_RE.test(cell.inner));
+  }
+
+  hasFormula(cell) {
+    return Boolean(cell && HAS_FORMULA_RE.test(cell.inner));
+  }
+
+  rowTexts(sheet, row) {
+    const cells = this.cellsOf(sheet, row);
+    return cells ? this.textsOfCells(cells) : new Map();
+  }
+
+  touch(sheet, rowNumber) {
+    sheet.rows.get(rowNumber).dirty = true;
+  }
+
   ensureRow(sheet, rowNumber) {
     const existing = sheet.rows.get(rowNumber);
     if (existing) return existing;
-
-    const rowNode = createElement(sheet.doc, "row");
-    rowNode.setAttribute("r", String(rowNumber));
-    const next = sheet.rowNumbers.find((number) => number > rowNumber);
-    if (next) {
-      sheet.sheetData.insertBefore(rowNode, sheet.rows.get(next).node);
-      sheet.rowNumbers.splice(sheet.rowNumbers.indexOf(next), 0, rowNumber);
-    } else {
-      sheet.sheetData.appendChild(rowNode);
-      sheet.rowNumbers.push(rowNumber);
-    }
-    const entry = { node: rowNode, cells: new Map() };
+    const entry = { raw: "", attrs: "", inner: "", cells: new Map(), dirty: true };
     sheet.rows.set(rowNumber, entry);
+    const numbers = sheet.rowNumbers;
+    if (!numbers.length || numbers[numbers.length - 1] < rowNumber) {
+      numbers.push(rowNumber);
+    } else {
+      let low = 0;
+      let high = numbers.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (numbers[mid] < rowNumber) low = mid + 1;
+        else high = mid;
+      }
+      numbers.splice(low, 0, rowNumber);
+    }
     return entry;
   }
 
   ensureCell(sheet, rowNumber, col, styleId) {
-    const row = this.ensureRow(sheet, rowNumber);
-    const existing = row.cells.get(col);
+    this.ensureRow(sheet, rowNumber);
+    const cells = this.cellsOf(sheet, rowNumber);
+    const existing = cells.get(col);
     if (existing) return existing;
-
-    const cellNode = createElement(sheet.doc, "c");
-    cellNode.setAttribute("r", `${numberToCol(col)}${rowNumber}`);
-    if (styleId) cellNode.setAttribute("s", styleId);
-
-    const nextCol = [...row.cells.keys()].filter((c) => c > col).sort((a, b) => a - b)[0];
-    if (nextCol) row.node.insertBefore(cellNode, row.cells.get(nextCol));
-    else row.node.appendChild(cellNode);
-    // El atributo "spans" es solo una pista de rendimiento y puede quedar desfasado
-    row.node.removeAttribute("spans");
-    row.cells.set(col, cellNode);
-    return cellNode;
+    const cell = { attrs: styleId ? ` s="${styleId}"` : "", inner: "" };
+    cells.set(col, cell);
+    this.touch(sheet, rowNumber);
+    return cell;
   }
 
-  clearValue(cellNode) {
-    removeChildren(cellNode, ["v", "is"]);
-    cellNode.removeAttribute("t");
+  clearValue(cell) {
+    cell.inner = cell.inner.replace(/<v\/>|<v>[\s\S]*?<\/v>|<is>[\s\S]*?<\/is>/g, "");
+    cell.attrs = withoutAttr(cell.attrs, "t");
   }
 
-  writeValue(sheet, cellNode, value) {
-    this.clearValue(cellNode);
+  writeValue(sheet, rowNumber, cell, value) {
+    this.clearValue(cell);
+    this.touch(sheet, rowNumber);
     if (value === null || value === undefined || value === "") return;
-    const doc = sheet.doc;
 
     if (value instanceof Date) {
-      cellNode.setAttribute("s", this.dateStyleFor(cellNode.getAttribute("s")));
+      cell.attrs = withAttr(cell.attrs, "s", this.dateStyleFor(attrOf(cell.attrs, "s")));
       value = dateToSerial(value);
     }
     if (typeof value === "number") {
-      const v = createElement(doc, "v");
-      v.appendChild(doc.createTextNode(String(value)));
-      cellNode.appendChild(v);
+      cell.inner += `<v>${value}</v>`;
       return;
     }
     if (typeof value === "boolean") {
-      cellNode.setAttribute("t", "b");
-      const v = createElement(doc, "v");
-      v.appendChild(doc.createTextNode(value ? "1" : "0"));
-      cellNode.appendChild(v);
+      cell.attrs = withAttr(cell.attrs, "t", "b");
+      cell.inner += `<v>${value ? 1 : 0}</v>`;
       return;
     }
-    cellNode.setAttribute("t", "inlineStr");
-    const is = createElement(doc, "is");
-    const t = createElement(doc, "t");
-    t.setAttribute("xml:space", "preserve");
-    t.appendChild(doc.createTextNode(String(value)));
-    is.appendChild(t);
-    cellNode.appendChild(is);
+    cell.attrs = withAttr(cell.attrs, "t", "inlineStr");
+    cell.inner += `<is><t xml:space="preserve">${escapeXml(value)}</t></is>`;
   }
 
-  writeFormula(sheet, cellNode, formula) {
-    this.clearValue(cellNode);
-    removeChildren(cellNode, ["f"]);
-    const f = createElement(sheet.doc, "f");
-    f.appendChild(sheet.doc.createTextNode(formula));
-    cellNode.insertBefore(f, cellNode.firstChild);
+  writeFormula(sheet, rowNumber, cell, formula) {
+    cell.inner = `<f>${escapeXml(formula)}</f>`;
+    cell.attrs = withoutAttr(cell.attrs, "t");
+    this.touch(sheet, rowNumber);
   }
 
   // Fórmula efectiva de una celda (resuelve las fórmulas compartidas)
-  formulaOf(sheet, cellNode, row) {
-    const f = firstChild(cellNode, "f");
+  formulaOf(sheet, cell, row) {
+    const f = FORMULA_RE.exec(cell?.inner || "");
     if (!f) return null;
-    const type = f.getAttribute("t");
+    const type = attrOf(f[1], "t");
     if (type && type !== "shared") return null; // matriciales / tablas de datos
-    const text = textOf(f);
+    const text = unescapeXml(f[2] || "");
     if (text) return { text, row };
     if (type !== "shared") return null;
 
     if (!sheet.sharedFormulas) {
       sheet.sharedFormulas = new Map();
-      sheet.rows.forEach(({ cells }, rowNumber) => {
-        cells.forEach((node) => {
-          const master = firstChild(node, "f");
-          if (master?.getAttribute("t") === "shared" && textOf(master)) {
-            sheet.sharedFormulas.set(master.getAttribute("si"), { text: textOf(master), row: rowNumber });
+      sheet.rows.forEach(({ inner }, rowNumber) => {
+        if (!inner.includes('t="shared"')) return;
+        for (const master of inner.matchAll(/<f\b([^>]*)>([^<]+)<\/f>/g)) {
+          if (attrOf(master[1], "t") !== "shared") continue;
+          const si = attrOf(master[1], "si");
+          if (si !== undefined && !sheet.sharedFormulas.has(si)) {
+            sheet.sharedFormulas.set(si, { text: unescapeXml(master[2]), row: rowNumber });
           }
-        });
+        }
       });
     }
-    return sheet.sharedFormulas.get(f.getAttribute("si")) || null;
+    return sheet.sharedFormulas.get(attrOf(f[1], "si")) || null;
   }
 
   // Estilo de fecha que conserva bordes/fuente del estilo original de la celda
@@ -411,28 +499,31 @@ class KpiWorkbook {
   }
 
   markDirty(sheet) {
-    this.dirty.set(sheet.path, sheet.doc);
+    this.dirtySheets.add(sheet);
   }
 
   // Después de llenar: tablas dinámicas se actualizan y fórmulas se recalculan al abrir
   finalize(filledSheets) {
-    const filledNames = new Set(filledSheets.map((sheet) => sheet.name));
     const headerRows = new Map(filledSheets.map((sheet) => [sheet.name, sheet]));
 
+    // Las definiciones de caché de tablas dinámicas pueden ser grandes: se
+    // editan como texto (solo el rango de origen y refreshOnLoad).
     this.zip.file(/^xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/).forEach((file) => {
-      const doc = this.parse(file.name);
-      const source = descendants(doc.documentElement, "worksheetSource")[0];
-      const sheetName = source?.getAttribute("sheet");
-      if (!sheetName || !filledNames.has(sheetName)) return;
-
-      doc.documentElement.setAttribute("refreshOnLoad", "1");
-      const range = parseRange(source.getAttribute("ref"));
+      let xml = file.asText();
+      const source = /<worksheetSource\b([^>]*?)\/?>/.exec(xml);
+      const sheetName = source ? unescapeXml(attrOf(source[1], "sheet") || "") : "";
       const filled = headerRows.get(sheetName);
-      if (range && filled && range.from.row === filled.headerRow && filled.lastRow > range.to.row) {
+      if (!filled) return;
+
+      const range = parseRange(attrOf(source[1], "ref"));
+      if (range && range.from.row === filled.headerRow && filled.lastRow > range.to.row) {
         range.to.row = filled.lastRow;
-        source.setAttribute("ref", formatRange(range));
+        const attrs = withAttr(source[1], "ref", formatRange(range));
+        xml = xml.slice(0, source.index) + source[0].replace(source[1], attrs) + xml.slice(source.index + source[0].length);
       }
-      this.dirty.set(file.name, doc);
+      xml = xml.replace(/<pivotCacheDefinition\b([^>]*)>/, (match, attrs) =>
+        `<pivotCacheDefinition${withAttr(attrs, "refreshOnLoad", "1")}>`);
+      this.zip.file(file.name, xml);
     });
 
     const workbook = this.workbookDoc.documentElement;
@@ -449,27 +540,44 @@ class KpiWorkbook {
     this.dirty.set(this.workbookPath, this.workbookDoc);
   }
 
+  serializeRow(rowNumber, row) {
+    if (!row.dirty) return row.raw;
+    const cells = row.cells || this.parseCells(row.inner, rowNumber);
+    const cols = [...cells.keys()].sort((a, b) => a - b);
+    const parts = cols.map((col) => {
+      const cell = cells.get(col);
+      const ref = `${numberToCol(col)}${rowNumber}`;
+      return cell.inner ? `<c r="${ref}"${cell.attrs}>${cell.inner}</c>` : `<c r="${ref}"${cell.attrs}/>`;
+    });
+    // El atributo "spans" es solo una pista de rendimiento y puede quedar desfasado
+    return `<row r="${rowNumber}"${withoutAttr(row.attrs, "spans")}>${parts.join("")}</row>`;
+  }
+
   toBuffer() {
     const serializer = new XMLSerializer();
     this.dirty.forEach((doc, filePath) => {
       this.zip.file(filePath, serializer.serializeToString(doc));
     });
+    this.dirtySheets.forEach((sheet) => {
+      const rows = sheet.rowNumbers.map((rowNumber) => this.serializeRow(rowNumber, sheet.rows.get(rowNumber)));
+      this.zip.file(sheet.path, `${sheet.head}<sheetData>${rows.join("")}</sheetData>${sheet.tail}`);
+    });
     return this.zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
   }
 }
 
-// ── Emparejar hojas del KPI con plantillas del sistema ──────────────────────
+// ── Emparejar hojas del KPI con las fuentes ─────────────────────────────────
 
 // Busca en las primeras filas de la hoja el encabezado que mejor coincide con
-// los campos de alguna plantilla. Devuelve null si ninguna coincide.
+// los campos de alguna fuente. Devuelve null si ninguna coincide. Solo lee
+// esas primeras filas, no la hoja completa.
 const matchSheet = (book, sheet, candidates) => {
-  book.loadSheet(sheet);
+  const headRows = book.headTexts(sheet, HEADER_SCAN_ROWS);
   const sheetKey = compact(sheet.name);
   let best = null;
 
-  for (let row = 1; row <= HEADER_SCAN_ROWS; row += 1) {
-    const texts = book.rowTexts(sheet, row);
-    if (texts.size === 0) continue;
+  headRows.forEach((texts, row) => {
+    if (texts.size === 0) return;
 
     candidates.forEach((candidate) => {
       let score = 0;
@@ -481,20 +589,37 @@ const matchSheet = (book, sheet, candidates) => {
       const nameMatch = candidate.nameKeys.some((key) =>
         key === sheetKey || (sheetKey.length >= 10 && key.startsWith(sheetKey))
       );
-      const ratio = score / candidate.fieldKeys.size;
+      // Proporción de encabezados del KPI que existen en la hoja de origen: la
+      // hoja del KPI suele usar solo algunas columnas de una fuente muy ancha.
+      const ratio = score / texts.size;
       const valid = score >= Math.min(2, candidate.fieldKeys.size) && (ratio >= 0.5 || (nameMatch && score >= 1));
       if (!valid) return;
 
       const rank = (nameMatch ? 1000 : 0) + score + ratio;
       if (!best || rank > best.rank) best = { candidate, headerRow: row, headers: texts, rank };
     });
-  }
+  });
+  return best;
+};
+
+// Encabezado de la hoja para una fuente elegida por el usuario: la fila (entre
+// las primeras) con más encabezados que existen en esa fuente.
+const matchSheetTo = (book, sheet, candidate) => {
+  let best = null;
+  book.headTexts(sheet, HEADER_SCAN_ROWS).forEach((texts, row) => {
+    let score = 0;
+    texts.forEach((text) => {
+      if (candidate.fieldKeys.has(compact(text))) score += 1;
+    });
+    if (score > 0 && (!best || score > best.score)) best = { candidate, headerRow: row, headers: texts, score };
+  });
   return best;
 };
 
 // Escribe las filas en la hoja bajo el encabezado. Solo toca las columnas cuyo
 // encabezado coincide con un campo; las celdas con fórmula nunca se sobrescriben.
 const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
+  book.loadSheet(sheet);
   const { headerRow, headers } = match;
   const dataStart = headerRow + 1;
   const advertencias = [];
@@ -519,9 +644,10 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
 
   // Contenido que estaba debajo de los datos y que las filas nuevas alcanzan
   for (let row = oldLast + 1; row <= newLast; row += 1) {
+    if (!sheet.rows.has(row)) continue;
     const occupied = mappedCols.some((col) => {
-      const cellNode = book.cell(sheet, row, col);
-      return book.hasValue(cellNode) || book.hasFormula(cellNode);
+      const cell = book.cell(sheet, row, col);
+      return book.hasValue(cell) || book.hasFormula(cell);
     });
     if (occupied) {
       advertencias.push(`Hoja "${sheet.name}": había contenido en la fila ${row}, debajo de los datos anteriores; revisa que no se haya mezclado con la información nueva.`);
@@ -530,7 +656,8 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
   }
 
   // Estilo de referencia de cada columna: primera fila de datos
-  const styleOf = (col) => book.cell(sheet, dataStart, col)?.getAttribute("s") || null;
+  const styleOf = (col) => attrOf(book.cell(sheet, dataStart, col)?.attrs || "", "s") || null;
+  const styles = new Map(mappedCols.map((col) => [col, styleOf(col)]));
 
   rows.forEach((record, index) => {
     const rowNumber = dataStart + index;
@@ -539,16 +666,19 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
       if (book.hasFormula(existing)) return;
       const value = toCellValue(extraColumns[key] ? extraColumns[key](record) : record.get(key));
       if (value === null && !existing) return;
-      const cellNode = existing || book.ensureCell(sheet, rowNumber, col, styleOf(col));
-      book.writeValue(sheet, cellNode, value);
+      const cell = existing || book.ensureCell(sheet, rowNumber, col, styles.get(col));
+      book.writeValue(sheet, rowNumber, cell, value);
     });
   });
 
   // Limpia lo que sobra de la información anterior
   for (let row = newLast + 1; row <= oldLast; row += 1) {
     mappedCols.forEach((col) => {
-      const cellNode = book.cell(sheet, row, col);
-      if (cellNode && !book.hasFormula(cellNode)) book.clearValue(cellNode);
+      const cell = book.cell(sheet, row, col);
+      if (cell && !book.hasFormula(cell) && book.hasValue(cell)) {
+        book.clearValue(cell);
+        book.touch(sheet, row);
+      }
     });
   }
 
@@ -560,10 +690,10 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
     if (!formula) return;
     let extendida = false;
     for (let row = dataStart + 1; row <= newLast; row += 1) {
-      const cellNode = book.cell(sheet, row, col);
-      if (book.hasFormula(cellNode) || book.hasValue(cellNode)) continue;
-      const target = cellNode || book.ensureCell(sheet, row, col, first.getAttribute("s"));
-      book.writeFormula(sheet, target, shiftFormula(formula.text, row - formula.row));
+      const cell = book.cell(sheet, row, col);
+      if (book.hasFormula(cell) || book.hasValue(cell)) continue;
+      const target = cell || book.ensureCell(sheet, row, col, attrOf(first.attrs, "s"));
+      book.writeFormula(sheet, row, target, shiftFormula(formula.text, row - formula.row));
       extendida = true;
     }
     if (extendida) formulasExtendidas.push(text);
@@ -587,24 +717,22 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
     book.dirty.set(table.path, table.doc);
   });
 
-  const sheetRoot = sheet.doc.documentElement;
-  const sheetFilter = firstChild(sheetRoot, "autoFilter");
-  const filterRange = parseRange(sheetFilter?.getAttribute("ref"));
-  if (filterRange && filterRange.from.row === headerRow && lastRow > filterRange.to.row) {
-    filterRange.to.row = lastRow;
-    sheetFilter.setAttribute("ref", formatRange(filterRange));
-  }
+  sheet.tail = sheet.tail.replace(/<autoFilter\b([^>]*?)(\/?>)/, (whole, attrs, end) => {
+    const range = parseRange(attrOf(attrs, "ref"));
+    if (!range || range.from.row !== headerRow || lastRow <= range.to.row) return whole;
+    range.to.row = lastRow;
+    return `<autoFilter${withAttr(attrs, "ref", formatRange(range))}${end}`;
+  });
 
-  const dimension = firstChild(sheetRoot, "dimension");
-  const dimRange = parseRange(dimension?.getAttribute("ref"));
-  if (dimRange) {
-    const maxCol = Math.max(dimRange.to.col, ...mappedCols);
-    if (lastRow > dimRange.to.row || maxCol > dimRange.to.col) {
-      dimRange.to.row = Math.max(dimRange.to.row, lastRow);
-      dimRange.to.col = maxCol;
-      dimension.setAttribute("ref", formatRange(dimRange));
-    }
-  }
+  sheet.head = sheet.head.replace(/<dimension\b([^>]*?)\/>/, (whole, attrs) => {
+    const range = parseRange(attrOf(attrs, "ref"));
+    if (!range) return whole;
+    const maxCol = Math.max(range.to.col, ...mappedCols);
+    if (lastRow <= range.to.row && maxCol <= range.to.col) return whole;
+    range.to.row = Math.max(range.to.row, lastRow);
+    range.to.col = maxCol;
+    return `<dimension${withAttr(attrs, "ref", formatRange(range))}/>`;
+  });
 
   book.markDirty(sheet);
   return {
@@ -623,6 +751,7 @@ module.exports = {
   KpiWorkbook,
   compact,
   matchSheet,
+  matchSheetTo,
   fillSheet,
   shiftFormula,
   toCellValue,

@@ -145,8 +145,64 @@ const requireAdminOrProfilePermission = async (req, res, next) => {
     }
 };
 
+// Correo de quien hace la petición: el frontend lo envía en el encabezado
+// "user-email" en todas las llamadas a la API (ver Front_Miro/app/providers.tsx).
+const requesterEmail = (req) =>
+    req.headers['user-email'] ||
+    req.headers['x-user-email'] ||
+    req.query.email ||
+    req.body?.email;
+
+// Solo usuarios registrados y activos en Miró (cualquier rol)
+const requireActiveUser = async (req, res, next) => {
+    try {
+        const email = requesterEmail(req);
+        if (!email) return res.status(401).json({ message: 'Debes iniciar sesión para consultar esta información.' });
+
+        const user = await User.findOne({ email: String(email), isActive: true });
+        if (!user) return res.status(403).json({ message: 'Usuario no encontrado o inactivo' });
+
+        req.user = user;
+        next();
+    } catch (error) {
+        console.error('Error en middleware requireActiveUser:', error);
+        res.status(500).json({ message: 'Error verificando permisos', error: error.message });
+    }
+};
+
+// Administrador, o usuario cuyo perfil de su rol activo le da la vista indicada
+// (las mismas llaves de vista de Front_Miro/app/utils/ProtectedRoutes.tsx)
+const requireAdminOrView = (viewKey) => async (req, res, next) => {
+    try {
+        const email = requesterEmail(req);
+        if (!email) return res.status(401).json({ message: 'Debes iniciar sesión para consultar esta información.' });
+
+        const user = await User.findOne({ email: String(email), isActive: true });
+        if (!user) return res.status(403).json({ message: 'Usuario no encontrado o inactivo' });
+
+        if (user.activeRole === 'Administrador') {
+            req.user = user;
+            return next();
+        }
+
+        const { viewPermissions } = await getMergedViewPermissions(user);
+        const levels = viewPermissions[viewKey] || [];
+        if (Array.isArray(levels) && levels.length > 0) {
+            req.user = user;
+            return next();
+        }
+
+        return res.status(403).json({ message: 'Acceso denegado. No tienes permiso para consultar esta información.' });
+    } catch (error) {
+        console.error('Error en middleware requireAdminOrView:', error);
+        res.status(500).json({ message: 'Error verificando permisos', error: error.message });
+    }
+};
+
 module.exports = {
     requireAdmin,
     requireReadAccess,
-    requireAdminOrProfilePermission
+    requireAdminOrProfilePermission,
+    requireActiveUser,
+    requireAdminOrView
 };

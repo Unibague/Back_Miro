@@ -27,6 +27,34 @@ const kpiPlantillaSchema = new Schema(
       type: String,
       default: "",
     },
+    // Período y carpeta en que se organiza la plantilla. Las plantillas
+    // anteriores a los períodos quedan sin período hasta que se abre el módulo.
+    period: {
+      type: Schema.Types.ObjectId,
+      ref: "periods",
+      default: null,
+    },
+    folder: {
+      type: Schema.Types.ObjectId,
+      ref: "kpiCarpetas",
+      default: null,
+    },
+    // Qué fuente llena cada hoja del Excel (la elige el administrador). Las
+    // hojas que no están aquí no se tocan. Vacío = emparejamiento automático
+    // por encabezados (plantillas configuradas antes de esta opción).
+    mapeo: {
+      type: [
+        new Schema(
+          {
+            hoja: { type: String, required: true },
+            fuente: { type: String, required: true },
+            fuente_label: { type: String, default: "" },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     last_run_at: {
       type: Date,
       required: false,
