@@ -1,5 +1,7 @@
 const path = require("path");
+const { Readable } = require("stream");
 const PizZip = require("pizzip");
+const archiver = require("archiver");
 const { DOMParser, XMLSerializer } = require("@xmldom/xmldom");
 
 // Llena un Excel KPI editando directamente el XML de las hojas de datos.
@@ -201,6 +203,7 @@ class KpiWorkbook {
     this.parser = new DOMParser();
     this.dirty = new Map(); // ruta → documento DOM modificado (archivos pequeños)
     this.dirtySheets = new Set(); // hojas modificadas (texto)
+    this.streamedSheets = new Map(); // ruta → función que genera la hoja por partes
 
     this.workbookPath = "xl/workbook.xml";
     this.workbookDoc = this.parse(this.workbookPath);
@@ -592,7 +595,9 @@ class KpiWorkbook {
   // Reemplaza las filas de datos de una hoja (desde keepUntilRow + 1) por las
   // dadas, ya en XML, sin cargar la hoja completa. Ajusta la dimensión y las
   // tablas de Excel que empiezan en el encabezado.
-  replaceSheetRows(sheet, keepUntilRow, rowXmls, lastRow, lastCol) {
+  // rowChunks: iterable de textos XML de filas; se recorre al generar el
+  // archivo, sin tener toda la hoja en memoria a la vez.
+  replaceSheetRows(sheet, keepUntilRow, rowChunks, lastRow, lastCol) {
     const xml = this.zip.file(sheet.path).asText();
     const bounds = sheetDataBounds(xml);
     if (!bounds) throw new Error(`La hoja "${sheet.name}" no tiene datos.`);
@@ -604,9 +609,15 @@ class KpiWorkbook {
       if (Number(attrOf(match[1], "r")) > keepUntilRow) break;
       kept.push(match[0]);
     }
-    const head = xml.slice(0, bounds.headEnd).replace(/<dimension\b[^>]*\/>/, `<dimension ref="A1:${numberToCol(lastCol)}${lastRow}"/>`);
-    const tail = xml.slice(bounds.tailStart);
-    this.zip.file(sheet.path, `${head}<sheetData>${kept.join("")}${rowXmls.join("")}</sheetData>${tail}`);
+    // Copias propias: un trozo de un texto mantiene vivo el texto completo (100+ MB)
+    const own = (text) => Buffer.from(text, "utf8");
+    const head = own(`${xml.slice(0, bounds.headEnd).replace(/<dimension\b[^>]*\/>/, `<dimension ref="A1:${numberToCol(lastCol)}${lastRow}"/>`)}<sheetData>${kept.join("")}`);
+    const tail = own(`</sheetData>${xml.slice(bounds.tailStart)}`);
+    this.streamedSheets.set(sheet.path, function* sheetChunks() {
+      yield head;
+      for (const chunk of rowChunks) yield Buffer.from(chunk, "utf8");
+      yield tail;
+    });
 
     this.tablesOf(sheet).forEach((table) => {
       const root = table.doc.documentElement;
@@ -636,7 +647,9 @@ class KpiWorkbook {
     if (types) this.zip.file("[Content_Types].xml", types.replace(new RegExp(`<Override\\b[^>]*PartName="/${target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[^>]*/>`), ""));
   }
 
-  toBuffer() {
+  // Genera el .xlsx. Se comprime parte por parte (con archiver) para no tener
+  // a la vez en memoria el contenido completo y el comprimido de cada hoja.
+  async toBuffer() {
     const serializer = new XMLSerializer();
     this.dirty.forEach((doc, filePath) => {
       this.zip.file(filePath, serializer.serializeToString(doc));
@@ -644,9 +657,29 @@ class KpiWorkbook {
     this.dirtySheets.forEach((sheet) => {
       const rows = sheet.rowNumbers.map((rowNumber) => this.serializeRow(rowNumber, sheet.rows.get(rowNumber)));
       this.zip.file(sheet.path, `${sheet.head}<sheetData>${rows.join("")}</sheetData>${sheet.tail}`);
+      // Ya escrita: se liberan sus filas
+      sheet.rows = null;
     });
-    if (this.dirtySheets.size) this.removeCalcChain();
-    return this.zip.generate({ type: "nodebuffer", compression: "DEFLATE" });
+    if (this.dirtySheets.size || this.streamedSheets.size) this.removeCalcChain();
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    const chunks = [];
+    archive.on("data", (chunk) => chunks.push(chunk));
+    const done = new Promise((resolve, reject) => {
+      archive.on("end", resolve);
+      archive.on("error", reject);
+      archive.on("warning", reject);
+    });
+    // Mismo orden de la plantilla ([Content_Types].xml primero)
+    Object.keys(this.zip.files).forEach((name) => {
+      const entry = this.zip.files[name];
+      if (entry.dir) return;
+      const streamed = this.streamedSheets.get(name);
+      archive.append(streamed ? Readable.from(streamed(), { objectMode: false }) : entry.asNodeBuffer(), { name });
+    });
+    archive.finalize();
+    await done;
+    return Buffer.concat(chunks);
   }
 }
 

@@ -697,15 +697,14 @@ controller.traerInformacion = async (req, res) => {
       const engine = new FormulaEngine(book, virtualSheets);
       calculo = engine.materialize();
       // Las hojas grandes también quedan en el Excel, con sus valores ya calculados
-      engine.writeVirtualSheets()
-        .filter(({ omitida }) => omitida)
-        .forEach(({ hoja }) => advertencias.push(`Hoja "${hoja}": tiene demasiadas filas para copiarlas al Excel; sus cálculos sí quedaron en las hojas de resultados.`));
+      engine.writeVirtualSheets();
+      engine.release();
       if (calculo.errores) advertencias.push(`${calculo.errores} celda(s) calculadas dieron error (#N/A, #DIV/0!…); revisa sus fórmulas.`);
       calculo.noSoportadas.forEach((detalle) => advertencias.push(`No se pudo calcular en Miró: ${detalle}. Esas celdas quedaron con su fórmula.`));
     }
 
     book.finalize(filledSheets);
-    const outputBuffer = book.toBuffer();
+    const outputBuffer = await book.toBuffer();
 
     plantilla.last_run_at = new Date();
     plantilla.last_run_by = email;

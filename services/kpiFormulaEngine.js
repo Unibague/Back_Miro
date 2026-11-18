@@ -188,6 +188,11 @@ const parse = (text) => {
 
 // ── Valores ─────────────────────────────────────────────────────────────────
 
+const parseTableRange = (ref) => {
+  const match = /^([A-Z]+)(\d+):([A-Z]+)(\d+)$/.exec(String(ref || ""));
+  return match ? { c1: colToNumber(match[1]), r1: Number(match[2]), c2: colToNumber(match[3]), r2: Number(match[4]) } : null;
+};
+
 class Range {
   constructor(sheet, c1, r1, c2, r2) {
     this.sheet = sheet;
@@ -256,15 +261,18 @@ const compareValues = (a, b) => {
   return a < b ? -1 : a > b ? 1 : 0;
 };
 
-// Llave para búsquedas exactas (MATCH, criterios de igualdad): "5" y 5 coinciden
+// Llave para búsquedas exactas (MATCH, criterios de igualdad): "5" y 5 coinciden.
+// Los números quedan como número (no texto): con cientos de miles de filas
+// los índices ocupan mucha menos memoria. Los textos llevan prefijo para no
+// confundirse con números.
 const lookupKey = (value) => {
   if (isBlank(value) || value === "") return "";
-  if (typeof value === "number") return `n${value}`;
+  if (typeof value === "number") return value;
   if (typeof value === "boolean") return `b${value}`;
   if (isError(value)) return `e${value.error}`;
   const text = String(value);
   const number = Number(text);
-  if (text.trim() !== "" && Number.isFinite(number)) return `n${number}`;
+  if (text.trim() !== "" && Number.isFinite(number)) return number;
   return `s${text.toLowerCase()}`;
 };
 
@@ -815,12 +823,24 @@ class FormulaEngine {
     }
   }
 
+  // Libera índices y cachés (las columnas calculadas se conservan para escribir la hoja)
+  release() {
+    this.cellCache.clear();
+    this.matchIndexes.clear();
+    this.groupIndexes.clear();
+    this.columnCache.clear();
+    this.compiled.clear();
+  }
+
   // ── Resultado ──
 
   // Reemplaza por su resultado cada fórmula (de las hojas no virtuales) que
   // lee una hoja virtual. Las demás fórmulas quedan para que Excel las calcule.
   materialize() {
     const names = [...this.virtual.keys()];
+    // Solo las que agregan sobre la hoja grande (COUNTIFS, MINIFS, MAX…): las
+    // búsquedas exactas (INDEX/MATCH) Excel las resuelve rápido por sí mismo.
+    const AGGREGATE = /\b(?:_xlfn\.)?(COUNTIFS?|SUMIFS?|AVERAGEIFS?|MAXIFS|MINIFS|MAX|MIN|SUM|SUMPRODUCT|COUNTA?|AVERAGE)\(/i;
     const readsVirtual = new RegExp(names.map((name) => `(^|[^A-Za-z0-9_.])'?${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'?!`).join("|"));
     let celdas = 0;
     let errores = 0;
@@ -833,13 +853,21 @@ class FormulaEngine {
       if (xml && !names.some((name) => xml.includes(`${name}!`))) continue;
       this.book.loadSheet(sheet);
 
+      // Las tablas de Excel de las hojas de datos (TPrimerCurso…) se dejan con
+      // sus fórmulas: son cálculos fila por fila que Excel resuelve rápido.
+      const tables = this.book.tablesOf(sheet)
+        .map((table) => parseTableRange(table.doc.documentElement.getAttribute("ref")))
+        .filter(Boolean);
+      const inTable = (row, col) => tables.some((t) => row >= t.r1 && row <= t.r2 && col >= t.c1 && col <= t.c2);
+
       const pending = [];
       for (const rowNumber of sheet.rowNumbers) {
         const row = sheet.rows.get(rowNumber);
         if (!row.inner.includes("<f")) continue;
         this.book.cellsOf(sheet, rowNumber).forEach((cell, col) => {
+          if (inTable(rowNumber, col)) return;
           const formula = this.book.formulaOf(sheet, cell, rowNumber, col);
-          if (formula && readsVirtual.test(formula.text)) pending.push({ rowNumber, col, cell });
+          if (formula && readsVirtual.test(formula.text) && AGGREGATE.test(formula.text)) pending.push({ rowNumber, col, cell });
         });
       }
       if (!pending.length) continue;
@@ -887,8 +915,8 @@ const valueCellXml = (ref, style, value) => {
   return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
 };
 
-// Tope del XML de una hoja (en caracteres): por encima no cabe en un solo texto
-const MAX_SHEET_XML = 400 * 1024 * 1024;
+// Filas por bloque al escribir una hoja virtual en el archivo
+const ROWS_PER_CHUNK = 2000;
 
 // Escribe en cada hoja virtual todas sus filas: las columnas de datos y las
 // calculadas, como valores. Así la hoja se ve completa en el Excel, pero Excel
@@ -902,23 +930,23 @@ FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
     const letters = new Map(cols.map((col) => [col, numberToCol(col)]));
     const columns = new Map(cols.map((col) => [col, vs.inputs.get(col) || this.virtualColumn(vs, col)]));
 
-    const rows = new Array(vs.count);
-    let size = 0;
-    for (let i = 0; i < vs.count; i += 1) {
-      const rowNumber = vs.dataRow + i;
-      let cells = "";
-      for (const col of cols) cells += valueCellXml(`${letters.get(col)}${rowNumber}`, styles.get(col), columns.get(col)[i]);
-      rows[i] = `<row r="${rowNumber}">${cells}</row>`;
-      size += rows[i].length;
-      if (size > MAX_SHEET_XML) break;
-    }
-    // Una hoja así no cabría en un solo texto en memoria: se deja sin filas
-    if (size > MAX_SHEET_XML) {
-      escritas.push({ hoja: vs.sheet.name, filas: 0, omitida: true });
-      return;
+    // Las filas se arman por bloques al generar el archivo (no todas a la vez)
+    const { count, dataRow } = vs;
+    function* rowChunks() {
+      for (let start = 0; start < count; start += ROWS_PER_CHUNK) {
+        let xml = "";
+        const end = Math.min(count, start + ROWS_PER_CHUNK);
+        for (let i = start; i < end; i += 1) {
+          const rowNumber = dataRow + i;
+          let cells = "";
+          for (const col of cols) cells += valueCellXml(`${letters.get(col)}${rowNumber}`, styles.get(col), columns.get(col)[i]);
+          xml += `<row r="${rowNumber}">${cells}</row>`;
+        }
+        yield xml;
+      }
     }
     const lastCol = cols[cols.length - 1] || 1;
-    this.book.replaceSheetRows(vs.sheet, vs.headerRow, rows, vs.lastRow, lastCol);
+    this.book.replaceSheetRows(vs.sheet, vs.headerRow, rowChunks(), vs.lastRow, lastCol);
     escritas.push({ hoja: vs.sheet.name, filas: vs.count });
   });
   return escritas;
