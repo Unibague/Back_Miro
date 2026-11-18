@@ -1485,7 +1485,7 @@ const applyStructuredColumnsToValidator = (validator, nextColumns) => {
     return changed;
 };
 
-validatorController.createValidatorsFromDropdownOptions = async (fields, periodId) => {
+validatorController.createValidatorsFromDropdownOptions = async (fields, periodId, { preserveExisting = false } = {}) => {
     if (!hasPeriodId(periodId)) return;
     if (!mongoose.Types.ObjectId.isValid(String(periodId))) return;
 
@@ -1529,6 +1529,10 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
 
         const nameLower = sanitizeName(validatorName).toLowerCase();
         const normalizedNameLower = normalizeValidatorToken(validatorName).toLowerCase();
+
+        if (preserveExisting && [validatorName, legacyValidatorName, field.name].some((name) => (
+            period.screenshot.validators.some((existing) => sameValidatorName(existing.name, name))
+        ))) continue;
 
         if (hasStructuredOptions) {
             const lookupKeys = [
@@ -1654,6 +1658,67 @@ validatorController.createValidatorsFromDropdownOptions = async (fields, periodI
         period.markModified('screenshot.validators');
         await period.save();
     }
+};
+
+// Copia catálogos completos al período destino sin reemplazar sus versiones.
+validatorController.copyTemplateValidatorsToPeriod = async (template, sourcePeriodId, targetPeriodId) => {
+    const sourcePeriod = await getPeriodOrThrow(sourcePeriodId);
+    if (!await getPeriodOrThrow(targetPeriodId)) throw createHttpError(404, 'Periodo destino no encontrado');
+    const fields = [...(template.fields || []), ...(template.workbook_sheets || []).flatMap((sheet) => sheet.fields || [])];
+    const references = new Map();
+    for (const field of fields) {
+        const reference = splitValidateWithReference(field.validate_with);
+        const name = reference.validatorName || String(field.name || '').trim();
+        if (!name || ['FUNCIONARIOS', 'ESTUDIANTES'].includes(normalizeValidatorNameKey(name))) continue;
+        const key = normalizeValidatorNameKey(name);
+        const previous = references.get(key);
+        if (!previous || reference.text) references.set(key, { ...reference, validatorName: name, explicit: !!reference.text });
+    }
+
+    const summary = { copied: [], reused: [] };
+    for (const reference of references.values()) {
+        let target = await getPeriodOrThrow(targetPeriodId);
+        const existing = findValidatorInPeriod(target, reference.validatorName);
+        if (existing) {
+            summary.reused.push(existing.name);
+            continue;
+        }
+        const source = await validatorController.findValidatorByName(reference.validatorName, sourcePeriodId, sourcePeriod)
+            || (reference.columnName ? await validatorController.findValidatorByName(reference.columnName, sourcePeriodId, sourcePeriod) : null);
+        if (!source) {
+            if (reference.explicit) throw createHttpError(400, `No se encontró el validador "${reference.validatorName}" en el período de origen.`);
+            continue;
+        }
+        const plain = toPlainValidator(source);
+        const copy = new Validator({ name: plain.name, columns: plain.columns });
+        await copy.validate();
+
+        // Comparar la cantidad antes del $push evita duplicados entre solicitudes
+        // simultáneas sin guardar una copia antigua del resto del período.
+        let saved = false;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            const reused = findValidatorInPeriod(target, plain.name);
+            if (reused) {
+                summary.reused.push(reused.name);
+                saved = true;
+                break;
+            }
+            const count = (target.screenshot?.validators || []).length;
+            const update = await Period.updateOne({
+                _id: targetPeriodId,
+                $expr: { $eq: [{ $size: { $ifNull: ['$screenshot.validators', []] } }, count] },
+            }, { $push: { 'screenshot.validators': copy.toObject() } });
+            if (update.modifiedCount === 1) {
+                summary.copied.push(plain.name);
+                saved = true;
+                break;
+            }
+            target = await getPeriodOrThrow(targetPeriodId);
+        }
+        if (!saved) throw createHttpError(409, 'El período destino está siendo actualizado. Intenta nuevamente.');
+    }
+    await validatorController.createValidatorsFromDropdownOptions(fields, targetPeriodId, { preserveExisting: true });
+    return summary;
 };
 
 validatorController.giveValidatorToExcel = async (name, periodId = null) => {

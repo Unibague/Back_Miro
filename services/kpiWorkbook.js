@@ -759,12 +759,13 @@ const fillSheet = (book, sheet, match, rows, extraColumns = {}) => {
   }
   const newLast = headerRow + rows.length;
 
-  // Contenido que estaba debajo de los datos y que las filas nuevas alcanzan
+  // Solo advertir por valores previos: las fórmulas preparadas se conservan,
+  // incluso cuando incluyen un resultado calculado en caché.
   for (let row = oldLast + 1; row <= newLast; row += 1) {
     if (!sheet.rows.has(row)) continue;
     const occupied = mappedCols.some((col) => {
       const cell = book.cell(sheet, row, col);
-      return book.hasValue(cell) || book.hasFormula(cell);
+      return !book.hasFormula(cell) && book.hasValue(cell);
     });
     if (occupied) {
       advertencias.push(`Hoja "${sheet.name}": había contenido en la fila ${row}, debajo de los datos anteriores; revisa que no se haya mezclado con la información nueva.`);

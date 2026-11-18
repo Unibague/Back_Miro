@@ -586,7 +586,7 @@ templateController.createPlantilla = async (req, res) => {
 // tocar el periodo.
 templateController.duplicatePlantilla = async (req, res) => {
   try {
-    const { id, targetPeriodId, email } = req.body;
+    const { id, targetPeriodId, email, sourcePeriodId } = req.body;
 
     if (!id) {
       return res.status(400).json({ mensaje: "El id de la plantilla es requerido" });
@@ -606,6 +606,10 @@ templateController.duplicatePlantilla = async (req, res) => {
     }
 
     const user = await UserService.findUserByEmailAndRole(email, "Administrador");
+
+    const validatorCopy = await Validator.copyTemplateValidatorsToPeriod(
+      sourceTemplate, sourcePeriodId || sourceTemplate.period || null, targetPeriodId
+    );
 
     const baseName = sourceTemplate.name;
     let templateName = `${baseName} - ${targetPeriod.name}`;
@@ -670,12 +674,6 @@ templateController.duplicatePlantilla = async (req, res) => {
       console.warn('Audit logging failed (non-critical):', auditError.message);
     }
 
-    try {
-      await Validator.createValidatorsFromDropdownOptions(duplicated.fields, targetPeriodId);
-    } catch (autoValidatorError) {
-      console.warn('Auto-validator creation failed (non-critical):', autoValidatorError.message);
-    }
-
     // Publicar automáticamente en el periodo destino elegido, igual que al
     // crear una plantilla nueva: no-blocking, si falla la copia igual queda
     // creada.
@@ -685,10 +683,10 @@ templateController.duplicatePlantilla = async (req, res) => {
       console.warn('Auto-publish on template duplication failed (non-critical):', autoPublishError.message);
     }
 
-    res.status(200).json({ status: "Plantilla duplicada", _id: duplicated._id, template: duplicated });
+    res.status(200).json({ status: "Plantilla duplicada", _id: duplicated._id, template: duplicated, validators: validatorCopy });
   } catch (error) {
     console.error("Error al duplicar la plantilla:", error);
-    res.status(500).json({ mensaje: "Error al duplicar la plantilla", error: error.message });
+    res.status(error.statusCode || 500).json({ mensaje: error.message || "Error al duplicar la plantilla" });
   }
 };
 
