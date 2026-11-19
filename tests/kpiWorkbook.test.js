@@ -45,3 +45,34 @@ test('una fórmula no oculta valores antiguos en otras columnas de la misma fila
   assert.equal(result.advertencias.length, 1);
   assert.match(result.advertencias[0], /fila 4/);
 });
+
+test('las fórmulas calculadas en Miró se conservan en el Excel con su resultado', async () => {
+  const { FormulaEngine } = require('../services/kpiFormulaEngine');
+  const workbook = new ExcelJS.Workbook();
+  const datos = workbook.addWorksheet('Datos');
+  datos.addRow(['CODIGO', 'DOBLE']);
+  datos.getCell('A2').value = 1;
+  datos.getCell('B2').value = { formula: 'A2*2' };
+  const resumen = workbook.addWorksheet('Resumen');
+  resumen.getCell('A1').value = { formula: 'SUM(Datos!B2:B4)' };
+  const book = new KpiWorkbook(await workbook.xlsx.writeBuffer());
+
+  const engine = new FormulaEngine(book, new Map([['Datos', { headerRow: 1, count: 3, inputs: new Map([[1, [1, 2, 3]]]) }]]));
+  const calculo = engine.materialize();
+  engine.writeVirtualSheets();
+  engine.release();
+  book.finalize([]);
+
+  assert.equal(calculo.celdas, 1);
+  const saved = new ExcelJS.Workbook();
+  await saved.xlsx.load(await book.toBuffer());
+  const total = saved.getWorksheet('Resumen').getCell('A1').value;
+  assert.equal(total.formula, 'SUM(Datos!B2:B4)');
+  assert.equal(total.result, 12);
+  const hoja = saved.getWorksheet('Datos');
+  assert.equal(hoja.getCell('B2').value.formula, 'A2*2');
+  assert.equal(hoja.getCell('B2').value.result, 2);
+  assert.equal(hoja.getCell('B4').value.result, 6);
+  assert.equal(hoja.getCell('B4').formula, 'A4*2');
+  assert.equal(hoja.getCell('A4').value, 3);
+});

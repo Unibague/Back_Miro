@@ -738,39 +738,83 @@ controller.traerInformacion = async (req, res) => {
 // Archivos (nombre sin extensión) de los que sale una fuente
 const candidateFiles = (candidate) => [...new Set(candidate.sources.map(({ file }) => baseName(file.file_name)))];
 
+// Abreviaturas de los nombres de hoja del KPI y las palabras de la hoja de
+// la base a la que se refieren: "IN_SPADIES_TDA_Prog" ↔ "Deserción anual-Programa".
+const NAME_ALIASES = {
+  tda: ["desercion", "anual"],
+  tdp: ["desercion", "periodo"],
+  coh: ["cohorte"],
+  prog: ["programa"],
+};
+// Palabras cortas que sí distinguen hojas
+const SHORT_WORDS = new Set(["ies"]);
+
 // Palabras de un nombre de hoja: "IN_Matriculados" → ["matriculados"]
 const nameWords = (name) =>
   String(name || "")
+    .replace(PERIOD_SHEET_SUFFIX, "")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((word) => word.length >= 4 && !/^\d+$/.test(word));
+    .flatMap((word) => NAME_ALIASES[word] || [word])
+    .filter((word) => (word.length >= 4 || SHORT_WORDS.has(word)) && !/^\d+$/.test(word));
 
 // Palabra igual: 2 puntos; una contenida en la otra ("matric" / "matriculados"): 1
 const nameSimilarity = (a, b) => {
   const wordsB = nameWords(b);
-  return nameWords(a).reduce((total, word) => {
+  return [...new Set(nameWords(a))].reduce((total, word) => {
     if (wordsB.includes(word)) return total + 2;
-    return total + (wordsB.some((other) => other.includes(word) || word.includes(other)) ? 1 : 0);
+    if (SHORT_WORDS.has(word)) return total;
+    return total + (wordsB.some((other) => !SHORT_WORDS.has(other) && (other.includes(word) || word.includes(other))) ? 1 : 0);
   }, 0);
 };
 
-// Para una hoja del KPI, la hoja más parecida de cada archivo: primero por
-// encabezados en común y, si empatan (p. ej. UnoAUno de matriculados y de
-// graduados), por el nombre ("IN_Matriculados" ↔ "UnoAUno_Matriculados").
+// Qué tan bien sirve una fuente para una hoja del KPI. Si la mayoría de los
+// encabezados del KPI están en la fuente, manda el nombre: las hojas de SPADIES
+// tienen casi los mismos encabezados (NOMBRE, 2020-1, 2020-2…) y solo el
+// nombre distingue deserción anual de deserción por período, o programa de
+// IES. Si no, mandan los encabezados en común y el nombre solo desempata
+// (p. ej. UnoAUno de matriculados y de graduados).
+const sheetScore = (book, sheet, candidate) => {
+  const match = matchSheetTo(book, sheet, candidate);
+  if (!match) return null;
+  const name = nameSimilarity(sheet.name, candidate.name);
+  const covers = match.score / (match.headers.size || 1) >= 0.5;
+  return (covers ? name * 10000 : 0) + match.score * 100 + name;
+};
+
+// Para una hoja del KPI, la hoja más parecida de cada archivo
 const bestSheetByFile = (book, sheet, candidates) => {
   const best = {};
   candidates.forEach((candidate) => {
-    const match = matchSheetTo(book, sheet, candidate);
-    const score = (match?.score || 0) * 100 + nameSimilarity(sheet.name, candidate.name);
-    if (!match) return;
+    const score = sheetScore(book, sheet, candidate);
+    if (score === null) return;
     candidateFiles(candidate).forEach((archivo) => {
       if (!best[archivo] || score > best[archivo].score) best[archivo] = { key: candidate.key, score };
     });
   });
   return Object.fromEntries(Object.entries(best).map(([archivo, { key }]) => [archivo, key]));
+};
+
+// Fuente sugerida: la que se encuentra por encabezados, salvo que otra hoja
+// del mismo archivo se parezca más por nombre (TDA/TDP, Programa/IES…).
+const suggestedSource = (book, sheet, candidates) => {
+  const sugerida = matchSheet(book, sheet, candidates);
+  if (!sugerida) return null;
+  const files = new Set(candidateFiles(sugerida.candidate));
+  let best = sugerida.candidate;
+  let bestScore = sheetScore(book, sheet, best) ?? -1;
+  candidates.forEach((candidate) => {
+    if (!candidateFiles(candidate).some((archivo) => files.has(archivo))) return;
+    const score = sheetScore(book, sheet, candidate);
+    if (score !== null && score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  });
+  return best === sugerida.candidate ? sugerida : matchSheetTo(book, sheet, best);
 };
 
 controller.getHojas = async (req, res) => {
@@ -785,7 +829,7 @@ controller.getHojas = async (req, res) => {
     const keys = new Set(candidates.map((candidate) => candidate.key));
 
     const hojas = book.sheets.map((sheet) => {
-      const sugerida = matchSheet(book, sheet, candidates);
+      const sugerida = suggestedSource(book, sheet, candidates);
       const configurada = mapeo.get(sheet.name);
       return {
         hoja: sheet.name,

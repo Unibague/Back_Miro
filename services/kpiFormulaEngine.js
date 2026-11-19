@@ -1,4 +1,4 @@
-const { colToNumber, numberToCol, escapeXml, dateToSerial } = require("./kpiWorkbook");
+const { colToNumber, numberToCol, escapeXml, dateToSerial, shiftFormula, formulaResultXml } = require("./kpiWorkbook");
 
 // Evalúa en el servidor las fórmulas de una plantilla KPI que leen hojas de
 // datos demasiado grandes para Excel (p. ej. 384.000 matriculados). Esas hojas
@@ -834,8 +834,8 @@ class FormulaEngine {
 
   // ── Resultado ──
 
-  // Reemplaza por su resultado cada fórmula (de las hojas no virtuales) que
-  // lee una hoja virtual. Las demás fórmulas quedan para que Excel las calcule.
+  // Calcula cada fórmula (de las hojas no virtuales) que lee una hoja virtual
+  // y guarda su resultado junto a la fórmula, que se conserva en el Excel.
   materialize() {
     const names = [...this.virtual.keys()];
     // Solo las que agregan sobre la hoja grande (COUNTIFS, MINIFS, MAX…): las
@@ -887,7 +887,7 @@ class FormulaEngine {
         if (!result) return;
         const { rowNumber, cell, value } = result;
         if (isError(value)) errores += 1;
-        this.book.replaceFormulaWithValue(sheet, rowNumber, cell, isError(value) ? { error: value.error } : value === "" ? null : value);
+        this.book.setFormulaResult(sheet, rowNumber, cell, isError(value) ? { error: value.error } : value);
         celdas += 1;
       });
       this.book.markDirty(sheet);
@@ -903,7 +903,7 @@ class FormulaEngine {
   }
 }
 
-// Celda en XML con el valor ya calculado (sin fórmula)
+// Celda en XML de una columna de datos (sin fórmula)
 const valueCellXml = (ref, style, value) => {
   if (value === null || value === undefined || value === "") return "";
   const s = style ? ` s="${style}"` : "";
@@ -918,9 +918,9 @@ const valueCellXml = (ref, style, value) => {
 // Filas por bloque al escribir una hoja virtual en el archivo
 const ROWS_PER_CHUNK = 2000;
 
-// Escribe en cada hoja virtual todas sus filas: las columnas de datos y las
-// calculadas, como valores. Así la hoja se ve completa en el Excel, pero Excel
-// no tiene que recalcular cientos de miles de fórmulas al abrirlo.
+// Escribe en cada hoja virtual todas sus filas: las columnas de datos como
+// valores y las calculadas con su fórmula (compartida, como la escribe Excel
+// al arrastrarla) y su resultado ya calculado.
 FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
   const escritas = [];
   this.virtual.forEach((vs) => {
@@ -930,8 +930,32 @@ FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
     const letters = new Map(cols.map((col) => [col, numberToCol(col)]));
     const columns = new Map(cols.map((col) => [col, vs.inputs.get(col) || this.virtualColumn(vs, col)]));
 
-    // Las filas se arman por bloques al generar el archivo (no todas a la vez)
+    // Cada columna calculada es un grupo de fórmula compartida con un si que
+    // no use ya la hoja (las filas del encabezado se conservan).
     const { count, dataRow } = vs;
+    const lastDataRow = dataRow + count - 1;
+    const sheetXml = this.book.zip.file(vs.sheet.path).asText();
+    let nextSi = Math.max(-1, ...[...sheetXml.matchAll(/<f\b[^>]*\bsi="(\d+)"/g)].map((m) => Number(m[1]))) + 1;
+    const shared = new Map();
+    cols.forEach((col) => {
+      if (vs.inputs.has(col)) return;
+      const formula = vs.formulas.get(col);
+      const text = shiftFormula(formula.text, dataRow - formula.row, formula.col === null || formula.col === undefined ? 0 : col - formula.col);
+      shared.set(col, { si: nextSi, text: escapeXml(text) });
+      nextSi += 1;
+    });
+
+    const formulaCellXml = (col, rowNumber, value) => {
+      const { si, text } = shared.get(col);
+      const style = styles.get(col);
+      const { type, xml } = formulaResultXml(isError(value) ? { error: value.error } : value);
+      const f = rowNumber === dataRow
+        ? `<f t="shared" ref="${letters.get(col)}${dataRow}:${letters.get(col)}${lastDataRow}" si="${si}">${text}</f>`
+        : `<f t="shared" si="${si}"/>`;
+      return `<c r="${letters.get(col)}${rowNumber}"${style ? ` s="${style}"` : ""}${type ? ` t="${type}"` : ""}>${f}${xml}</c>`;
+    };
+
+    // Las filas se arman por bloques al generar el archivo (no todas a la vez)
     function* rowChunks() {
       for (let start = 0; start < count; start += ROWS_PER_CHUNK) {
         let xml = "";
@@ -939,7 +963,11 @@ FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
         for (let i = start; i < end; i += 1) {
           const rowNumber = dataRow + i;
           let cells = "";
-          for (const col of cols) cells += valueCellXml(`${letters.get(col)}${rowNumber}`, styles.get(col), columns.get(col)[i]);
+          for (const col of cols) {
+            cells += shared.has(col)
+              ? formulaCellXml(col, rowNumber, columns.get(col)[i])
+              : valueCellXml(`${letters.get(col)}${rowNumber}`, styles.get(col), columns.get(col)[i]);
+          }
           xml += `<row r="${rowNumber}">${cells}</row>`;
         }
         yield xml;

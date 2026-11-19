@@ -122,21 +122,34 @@ const dateToSerial = (date) => {
     Date.UTC(1899, 11, 30)) / 86400000;
 };
 
-// Desplaza las referencias relativas de una fórmula (A2 → A5) sin tocar
-// textos entre comillas ni nombres de hoja.
-const shiftFormula = (formula, rowOffset) => {
-  if (!rowOffset) return formula;
+// Desplaza las referencias relativas de una fórmula (A2 → A5, y B2 → C2 con
+// colOffset) sin tocar textos entre comillas ni nombres de hoja.
+const shiftFormula = (formula, rowOffset, colOffset = 0) => {
+  if (!rowOffset && !colOffset) return formula;
   return String(formula)
     .split(/("(?:[^"]|"")*"|'(?:[^']|'')*')/)
     .map((part, index) => {
       if (index % 2 === 1) return part;
       return part.replace(
         /(?<![A-Za-z0-9_.$])(\$?)([A-Z]{1,3})(\$?)(\d{1,7})(?![A-Za-z0-9_(![])/g,
-        (match, colAbs, col, rowAbs, row) =>
-          rowAbs ? match : `${colAbs}${col}${rowAbs}${Number(row) + rowOffset}`
+        (match, colAbs, col, rowAbs, row) => {
+          const newCol = colAbs || !colOffset ? col : numberToCol(colToNumber(col) + colOffset);
+          const newRow = rowAbs ? row : Number(row) + rowOffset;
+          return `${colAbs}${newCol}${rowAbs}${newRow}`;
+        }
       );
     })
     .join("");
+};
+
+// Valor en caché de una celda con fórmula: tipo (atributo t) y <v>
+const formulaResultXml = (value) => {
+  if (value instanceof Date) value = Number.isNaN(value.getTime()) ? null : dateToSerial(value);
+  if (value === null || value === undefined) return { type: null, xml: "" };
+  if (typeof value === "object" && value.error) return { type: "e", xml: `<v>${escapeXml(value.error)}</v>` };
+  if (typeof value === "number") return Number.isFinite(value) ? { type: null, xml: `<v>${value}</v>` } : { type: null, xml: "" };
+  if (typeof value === "boolean") return { type: "b", xml: `<v>${value ? 1 : 0}</v>` };
+  return { type: "str", xml: `<v>${escapeXml(value)}</v>` };
 };
 
 // ── Libro ───────────────────────────────────────────────────────────────────
@@ -299,17 +312,14 @@ class KpiWorkbook {
     return Number.isFinite(number) ? number : unescapeXml(raw);
   }
 
-  // Cambia la fórmula de una celda por su resultado (ya no se recalcula)
-  replaceFormulaWithValue(sheet, rowNumber, cell, value) {
-    cell.inner = "";
-    cell.attrs = withoutAttr(cell.attrs, "t");
-    if (value && typeof value === "object" && value.error) {
-      cell.attrs = withAttr(cell.attrs, "t", "e");
-      cell.inner = `<v>${escapeXml(value.error)}</v>`;
-      this.touch(sheet, rowNumber);
-      return;
-    }
-    this.writeValue(sheet, rowNumber, cell, value);
+  // Guarda el resultado de una fórmula como su valor en caché: la fórmula se
+  // conserva y Excel la sigue recalculando.
+  setFormulaResult(sheet, rowNumber, cell, value) {
+    const formula = FORMULA_RE.exec(cell.inner)?.[0] || "";
+    const { type, xml } = formulaResultXml(value);
+    cell.attrs = type ? withAttr(cell.attrs, "t", type) : withoutAttr(cell.attrs, "t");
+    cell.inner = `${formula}${xml}`;
+    this.touch(sheet, rowNumber);
   }
 
   // Carga la hoja completa: cada fila queda como texto y sus celdas se leen
@@ -874,6 +884,7 @@ module.exports = {
   matchSheetTo,
   fillSheet,
   shiftFormula,
+  formulaResultXml,
   toCellValue,
   escapeXml,
   dateToSerial,
