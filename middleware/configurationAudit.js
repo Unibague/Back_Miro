@@ -2,6 +2,7 @@ const ConfigurationAuditService = require('../services/configurationAudit');
 const Template = require('../models/templates');
 const Report = require('../models/reports');
 const ProducerReport = require('../models/producerReports');
+const User = require('../models/users');
 
 const getModelByType = (entityType) => {
   switch (entityType) {
@@ -48,8 +49,15 @@ const auditMiddleware = (entityType) => {
           // Buscar usuario en múltiples fuentes
           const userEmail = req.body.email || req.body.userEmail || req.query.email || 
                            req.headers['user-email'] || req.user?.email || 'system';
-          const userFullName = req.body.full_name || req.body.userName || req.body.fullName || 
-                              req.headers['user-name'] || req.user?.full_name || req.user?.name || 'System';
+          let userFullName = req.body.full_name || req.body.userName || req.body.fullName ||
+                            req.headers['user-name'] || req.user?.full_name || req.user?.name;
+          // La duplicación individual y masiva envía el correo del actor.
+          // Resolver su nombre en servidor evita registrar la copia como System.
+          if ((!userFullName || userFullName === 'System') && userEmail !== 'system') {
+            const actor = await User.findOne({ email: userEmail }).select('full_name').lean();
+            userFullName = actor?.full_name || userEmail;
+          }
+          userFullName ||= 'System';
           
           console.log('🔍 Audit - Usuario capturado:', { email: userEmail, full_name: userFullName });
           

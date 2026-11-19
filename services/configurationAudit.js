@@ -1,7 +1,19 @@
 const mongoose = require('mongoose');
 const ConfigurationAudit = require('../models/configurationAudit');
+const User = require('../models/users');
 
 class ConfigurationAuditService {
+  static async resolveAuditUserNames(audits) {
+    const unresolved = audits.filter((audit) => audit.user?.email && audit.user.email !== 'system'
+      && (!audit.user.full_name || audit.user.full_name === 'System'));
+    if (!unresolved.length) return;
+    const emails = [...new Set(unresolved.map((audit) => audit.user.email))];
+    const users = await User.find({ email: { $in: emails } }).select('email full_name').lean();
+    const names = new Map(users.map((user) => [user.email, user.full_name]));
+    for (const audit of unresolved) {
+      audit.user.full_name = names.get(audit.user.email) || audit.user.email;
+    }
+  }
   
   static async logTemplateChange(templateId, templateName, user, action, changes) {
     try {
@@ -108,6 +120,7 @@ class ConfigurationAuditService {
       .limit(limit);
     
     const total = await ConfigurationAudit.countDocuments(query);
+    await this.resolveAuditUserNames(audits);
     
     return {
       audits,
@@ -131,6 +144,7 @@ class ConfigurationAuditService {
       { $group: { _id: '$entity_id', doc: { $first: '$$ROOT' } } },
     ]);
 
+    await this.resolveAuditUserNames(results.map((result) => result.doc));
     const map = {};
     for (const r of results) map[String(r._id)] = r.doc;
     return map;
