@@ -935,7 +935,9 @@ FormulaEngine.prototype.writeVirtualSheets = function writeVirtualSheets() {
     const { count, dataRow } = vs;
     const lastDataRow = dataRow + count - 1;
     const sheetXml = this.book.zip.file(vs.sheet.path).asText();
-    let nextSi = Math.max(-1, ...[...sheetXml.matchAll(/<f\b[^>]*\bsi="(\d+)"/g)].map((m) => Number(m[1]))) + 1;
+    // Se recorre sin Math.max(...): una hoja grande tiene cientos de miles de fórmulas
+    let nextSi = 0;
+    for (const m of sheetXml.matchAll(/<f\b[^>]*\bsi="(\d+)"/g)) nextSi = Math.max(nextSi, Number(m[1]) + 1);
     const shared = new Map();
     cols.forEach((col) => {
       if (vs.inputs.has(col)) return;
