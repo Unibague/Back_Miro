@@ -55,4 +55,4 @@ const getPdiAdminEmails = async () => {
     }
 };
 
-module.exports = { getPdiAdminUsers, getPdiAdminEmails };
+module.exports = { getPdiAdminUsers, getPdiAdminEmails, userBelongsToProfile };

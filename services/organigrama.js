@@ -193,6 +193,50 @@ const getRamaPorDepCode = async (depCode) => {
     return { nodo, dep_codes: depCodes, total_nodos: nodosRama.length + 1 };
 };
 
+// Por encima de la facultad la línea ya no es académica: ahí se corta la subida
+const TIPOS_DIRECTIVOS = ['Órgano de gobierno', 'Rectoría', 'Vicerrectoría', 'Dirección', 'Gerencia'];
+
+/**
+ * Programas activos con su línea de mando de abajo hacia arriba:
+ * [programa, área, escuela, facultad]. Sirve para dirigir correos a un
+ * programa y a todas las unidades de las que depende. Cada unidad trae su
+ * correo del organigrama y los líderes de su dependencia vinculada.
+ */
+const getProgramasConLinea = async () => {
+    const nodos = await getAll();
+    const porId = new Map(nodos.map((n) => [String(n._id), n]));
+
+    // Líder(es) de la dependencia vinculada a cada unidad; 'responsible' puede traer varios correos
+    const depCodes = [...new Set(nodos.map((n) => n.dep_code).filter(Boolean))];
+    const dependencias = await Dependency.find({ dep_code: { $in: depCodes } }, 'dep_code responsible').lean();
+    const lideresPorDep = new Map(dependencias.map((d) => [
+        d.dep_code,
+        [...new Set(String(d.responsible || '').toLowerCase().split(/[\s,;]+/).filter((c) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c)))],
+    ]));
+
+    const resumen = (n) => ({
+        _id: n._id,
+        nombre: n.nombre,
+        tipo: n.tipo,
+        correo: n.correo || '',
+        lideres: lideresPorDep.get(n.dep_code) || [],
+    });
+
+    return nodos
+        .filter((n) => n.tipo === 'Programa')
+        .map((programa) => {
+            const linea = [];
+            let actual = programa;
+            while (actual && !TIPOS_DIRECTIVOS.includes(actual.tipo)) {
+                linea.push(resumen(actual));
+                if (actual.tipo === 'Facultad') break;
+                actual = actual.parent ? porId.get(String(actual.parent)) : null;
+            }
+            return { ...resumen(programa), nivel: programa.nivel, linea };
+        })
+        .sort((a, b) => a.nombre.localeCompare(b.nombre));
+};
+
 const validarPadre = async (id, parentId) => {
     if (!parentId) return;
     if (id && String(parentId) === String(id)) {
@@ -215,6 +259,7 @@ const limpiarDatos = (data = {}) => {
     });
     if (data.parent !== undefined) limpio.parent = data.parent || null;
     if (data.dep_code !== undefined) limpio.dep_code = data.dep_code ? String(data.dep_code).trim() : null;
+    if (data.correo !== undefined) limpio.correo = data.correo ? String(data.correo).trim().toLowerCase() : '';
     if (data.nivel !== undefined || data.tipo !== undefined) {
         limpio.nivel = (data.tipo ?? 'Programa') === 'Programa' ? (data.nivel || null) : null;
     }
@@ -311,10 +356,12 @@ const cargarEstructuraBase = async () => {
 };
 
 module.exports = {
+    normalizar,
     getAll,
     getTree,
     getDescendantIds,
     getRamaPorDepCode,
+    getProgramasConLinea,
     create,
     update,
     remove,

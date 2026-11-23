@@ -155,6 +155,8 @@ async function start() {
     console.error('[cronVigencia] Error en sincronización inicial:', e.message);
   });
 
+  require('./helpers/cronBuzonMen').iniciarCronBuzonMen();
+
   const server = app.listen(PORT, () => {
     if (process.env.NODE_ENV === 'production') {
       console.log('Servr running in production mode on ' + PORT);

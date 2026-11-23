@@ -35,7 +35,16 @@ const organigramaSchema = new mongoose.Schema({
     // El organigrama NO modifica dep_father: la sincronización lo sobrescribiría.
     dep_code:    { type: String, default: null },
     descripcion: { type: String, default: '' },
-    active:      { type: Boolean, default: true },
+    // Correo de contacto de la unidad, registrado manualmente
+    // ('email' en el body se reserva para identificar al usuario que hace la petición)
+    correo: {
+        type: String,
+        trim: true,
+        lowercase: true,
+        default: '',
+        match: [/^$|^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'El correo electrónico no es válido'],
+    },
+    active:     { type: Boolean, default: true },
 }, {
     versionKey: false,
     timestamps: true,
