@@ -17,6 +17,7 @@ const VALUE = new XlError("#VALUE!");
 const DIV0 = new XlError("#DIV/0!");
 const REF = new XlError("#REF!");
 const isError = (value) => value instanceof XlError;
+const isNA = (value) => isError(value) && value.error === "#N/A";
 
 class UnsupportedFormula extends Error {}
 
@@ -25,6 +26,21 @@ class UnsupportedFormula extends Error {}
 const SHEET_CHARS = /[^\s'!(),&+\-*/^=<>:";{}%]/;
 const CELL_REF = /^(\$?)([A-Z]{1,3})(\$?)(\d+)$/;
 const COL_REF = /^(\$?)([A-Z]{1,3})$/;
+
+// Posición siguiente al corchete que cierra el que abre en `start`
+// (dentro de los corchetes, ' escapa el carácter siguiente)
+const bracketEnd = (text, start) => {
+  let depth = 0;
+  for (let i = start; i < text.length; i += 1) {
+    if (text[i] === "'") { i += 1; continue; }
+    if (text[i] === "[") depth += 1;
+    else if (text[i] === "]") {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  throw new UnsupportedFormula("Corchete sin cerrar");
+};
 
 const tokenize = (text) => {
   const tokens = [];
@@ -76,10 +92,21 @@ const tokenize = (text) => {
     }
     if (SHEET_CHARS.test(ch) || ch === "$") {
       let word = "";
-      while (i < text.length && (SHEET_CHARS.test(text[i]) || text[i] === "$")) { word += text[i]; i += 1; }
+      while (i < text.length) {
+        // Referencia estructurada: Tabla[Columna], Tabla[[#Data],[Col]], Tabla[@Col]…
+        if (text[i] === "[") {
+          const end = bracketEnd(text, i);
+          word += text.slice(i, end);
+          i = end;
+          continue;
+        }
+        if (!SHEET_CHARS.test(text[i]) && text[i] !== "$") break;
+        word += text[i];
+        i += 1;
+      }
       if (text[i] === "!") { tokens.push({ type: "sheet", value: word }); i += 1; continue; }
       if (text[i] === "(") { tokens.push({ type: "func", value: word.toUpperCase().replace(/^_XLFN\.|^_XLWS\./, "") }); continue; }
-      tokens.push({ type: "word", value: word });
+      tokens.push({ type: word.includes("[") ? "table" : "word", value: word });
       continue;
     }
     throw new UnsupportedFormula(`Carácter no reconocido "${ch}"`);
@@ -95,10 +122,69 @@ const parseRefPart = (word) => {
   return null;
 };
 
+// Referencia estructurada → { table, areas: ['#DATA'…], cols: [desde, hasta] | null }
+//   Tabla               → datos de todas las columnas
+//   Tabla[Col]          → datos de una columna
+//   Tabla[@Col]         → la celda de esa columna en la fila actual
+//   Tabla[[#All],[A]:[B]], Tabla[#Headers]…
+const TABLE_AREAS = new Set(["#ALL", "#DATA", "#HEADERS", "#TOTALS", "#THIS ROW"]);
+const unescapeColumn = (name) => name.replace(/'(.)/g, "$1").trim();
+
+const parseTableRef = (text) => {
+  const open = text.indexOf("[");
+  const table = open < 0 ? text : text.slice(0, open);
+  if (!table) throw new UnsupportedFormula(`Referencia de tabla no soportada: ${text}`);
+  const node = { kind: "table", table, areas: [], cols: null };
+  if (open < 0) return node;
+  if (bracketEnd(text, open) !== text.length) throw new UnsupportedFormula(`Referencia de tabla no soportada: ${text}`);
+
+  const inner = text.slice(open + 1, -1);
+  // Partes: [x],[y]:[z] o una sola sin corchetes internos
+  const parts = [];
+  if (inner.trimStart().startsWith("[")) {
+    let i = 0;
+    while (i < inner.length) {
+      const ch = inner[i];
+      if (ch === "[") {
+        const end = bracketEnd(inner, i);
+        parts.push(inner.slice(i + 1, end - 1));
+        i = end;
+      } else if (ch === ":") {
+        parts.push(":");
+        i += 1;
+      } else {
+        i += 1; // comas y espacios
+      }
+    }
+  } else if (inner) {
+    parts.push(inner);
+  }
+
+  const columns = [];
+  for (let k = 0; k < parts.length; k += 1) {
+    let part = parts[k];
+    if (part === ":") continue;
+    if (part.startsWith("@")) {
+      node.areas.push("#THIS ROW");
+      part = part.slice(1);
+      if (!part) continue;
+      if (part.startsWith("[")) part = part.slice(1, bracketEnd(part, 0) - 1); // [@[Columna con espacios]]
+    }
+    const upper = part.trim().toUpperCase();
+    if (TABLE_AREAS.has(upper)) { node.areas.push(upper); continue; }
+    const name = unescapeColumn(part);
+    if (parts[k - 1] === ":" && columns.length) columns[columns.length - 1][1] = name;
+    else columns.push([name, name]);
+  }
+  if (columns.length > 1) throw new UnsupportedFormula(`Referencia de tabla no soportada: ${text}`);
+  node.cols = columns[0] || null;
+  return node;
+};
+
 const parse = (text) => {
   const tokens = tokenize(text);
   let pos = 0;
-  const peek = () => tokens[pos];
+  const peek = (ahead = 0) => tokens[pos + ahead];
   const next = () => tokens[pos++];
   const isOp = (...ops) => peek()?.type === "op" && ops.includes(peek().value);
 
@@ -146,9 +232,14 @@ const parse = (text) => {
       return { kind: "call", name: token.value, args };
     }
     if (token.type === "sheet") { next(); return parseRef(token.value); }
+    if (token.type === "table") { next(); return parseTableRef(token.value); }
     if (token.type === "word") {
       const upper = token.value.toUpperCase();
       if (upper === "TRUE" || upper === "FALSE") { next(); return { kind: "lit", value: upper === "TRUE" }; }
+      // Variable de LET (Excel la guarda como _xlpm.nombre)
+      if (/^_XLPM\./.test(upper)) { next(); return { kind: "var", name: upper }; }
+      // Nombre suelto que no es celda: tabla completa (sus datos)
+      if (!parseRefPart(token.value) && peek(1)?.type !== ":") { next(); return parseTableRef(token.value); }
       return parseRef(null);
     }
     throw new UnsupportedFormula("Expresión no soportada");
@@ -455,6 +546,60 @@ class FormulaEngine {
     return new Range(sheet, a.col, a.row, b.col, b.row);
   }
 
+  // Tablas de Excel del libro, por nombre (en mayúsculas)
+  tableIndex() {
+    if (this.tables) return this.tables;
+    this.tables = new Map();
+    for (const sheet of this.book.sheets) {
+      for (const { doc } of this.book.tablesOf(sheet)) {
+        const root = doc.documentElement;
+        const range = parseTableRange(root.getAttribute("ref"));
+        if (!range) continue;
+        const headers = Number(root.getAttribute("headerRowCount") || 1);
+        const totals = Number(root.getAttribute("totalsRowCount") || 0);
+        const columns = Array.from(root.getElementsByTagName("tableColumn")).map((col) => String(col.getAttribute("name") || "").trim().toUpperCase());
+        const table = { sheet: sheet.name, ...range, headers, totals, columns };
+        // Una tabla sobre una hoja virtual llega hasta su última fila de datos
+        const vs = this.virtual.get(sheet.name);
+        if (vs && !totals) table.r2 = Math.max(table.r2, vs.lastRow);
+        for (const name of [root.getAttribute("displayName"), root.getAttribute("name")]) {
+          if (name) this.tables.set(name.toUpperCase(), table);
+        }
+      }
+    }
+    return this.tables;
+  }
+
+  resolveTable(node, ctx) {
+    const table = this.tableIndex().get(node.table.toUpperCase());
+    if (!table) throw new UnsupportedFormula(`Nombre no soportado: ${node.table}`);
+
+    let c1 = table.c1;
+    let c2 = table.c2;
+    if (node.cols) {
+      const [from, to] = node.cols.map((name) => table.columns.indexOf(name.toUpperCase()));
+      if (from < 0 || to < 0) return REF;
+      c1 = table.c1 + Math.min(from, to);
+      c2 = table.c1 + Math.max(from, to);
+    }
+
+    const dataStart = table.r1 + table.headers;
+    const dataEnd = table.r2 - table.totals;
+    const areas = node.areas.length ? node.areas : ["#DATA"];
+    if (areas.includes("#THIS ROW")) {
+      if (ctx.sheet !== table.sheet || ctx.row < dataStart || ctx.row > dataEnd) return VALUE;
+      return new Range(table.sheet, c1, ctx.row, c2, ctx.row);
+    }
+    const spans = areas.map((area) => {
+      if (area === "#ALL") return [table.r1, table.r2];
+      if (area === "#HEADERS") return table.headers ? [table.r1, table.r1] : null;
+      if (area === "#TOTALS") return table.totals ? [dataEnd + 1, table.r2] : null;
+      return [dataStart, dataEnd];
+    }).filter(Boolean);
+    if (!spans.length) return REF;
+    return new Range(table.sheet, c1, Math.min(...spans.map((s) => s[0])), c2, Math.max(...spans.map((s) => s[1])));
+  }
+
   scalar(value) {
     if (value instanceof Range) {
       if (value.rows === 1 && value.cols === 1) return this.value(value.sheet, value.c1, value.r1);
@@ -467,6 +612,11 @@ class FormulaEngine {
     switch (node.kind) {
       case "lit": return node.value;
       case "ref": return this.resolveRef(node, ctx);
+      case "table": return this.resolveTable(node, ctx);
+      case "var": {
+        if (!ctx.vars || !(node.name in ctx.vars)) throw new UnsupportedFormula(`Nombre no soportado: ${node.name}`);
+        return ctx.vars[node.name];
+      }
       case "neg": {
         const n = toNumber(this.scalar(this.evaluate(node.operand, ctx)));
         return isError(n) ? n : -n;
@@ -616,6 +766,16 @@ class FormulaEngine {
     const num = (i) => toNumber(val(i));
 
     switch (name) {
+      case "LET": {
+        // LET(nombre1, valor1, [nombre2, valor2…], cálculo)
+        if (args.length < 3 || args.length % 2 === 0) return VALUE;
+        const inner = { ...ctx, vars: { ...ctx.vars } };
+        for (let i = 0; i < args.length - 1; i += 2) {
+          if (args[i].kind !== "var") throw new UnsupportedFormula("LET: nombre de variable no soportado");
+          inner.vars[args[i].name] = this.evaluate(args[i + 1], inner);
+        }
+        return this.evaluate(args[args.length - 1], inner);
+      }
       case "IF": {
         const condition = toBool(val(0));
         if (isError(condition)) return condition;
@@ -646,6 +806,15 @@ class FormulaEngine {
       case "ISNUMBER": return typeof val(0) === "number";
       case "ISBLANK": return isBlank(val(0));
       case "ISERROR": return isError(val(0));
+      case "ISNA": return isNA(val(0));
+      case "ISERR": { const v = val(0); return isError(v) && !isNA(v); }
+      case "ISTEXT": return typeof val(0) === "string";
+      case "ISLOGICAL": return typeof val(0) === "boolean";
+      case "NA": return NA;
+      case "IFNA": {
+        const value = val(0);
+        return isNA(value) ? val(1) : value;
+      }
       case "N": {
         const v = val(0);
         return typeof v === "number" ? v : typeof v === "boolean" ? (v ? 1 : 0) : isError(v) ? v : 0;
@@ -766,6 +935,13 @@ class FormulaEngine {
         const v = val(0);
         const n = args.length > 1 ? num(1) : 1;
         return isError(v) ? v : isError(n) ? n : toText(v).slice(0, n);
+      }
+      case "RIGHT": {
+        const v = val(0);
+        const n = args.length > 1 ? num(1) : 1;
+        if (isError(v)) return v;
+        if (isError(n)) return n;
+        return n <= 0 ? "" : toText(v).slice(-n);
       }
       case "MID": {
         const v = val(0);
