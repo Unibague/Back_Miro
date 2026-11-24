@@ -470,11 +470,6 @@ ctrl.uploadDocumentoFinal = async (req, res) => {
             return res.status(404).json({ error: 'Respuesta no encontrada' });
         }
 
-        if (doc.estado_aval === 'Aprobado') {
-            files.forEach((file) => deleteFile(file.filename));
-            return res.status(400).json({ error: 'No se puede reemplazar una evidencia aprobada' });
-        }
-
         const documentosConservados = doc.documentos?.length
             ? doc.documentos
             : (hasLegacyDocumento(doc) ? [buildLegacyDocumento(doc)] : []);
@@ -526,10 +521,6 @@ ctrl.deleteDocumentoFinal = async (req, res) => {
     try {
         const doc = await Respuesta.findById(req.params.respuestaId);
         if (!doc) return res.status(404).json({ error: 'Respuesta no encontrada' });
-        if (doc.estado_aval === 'Aprobado') {
-            return res.status(400).json({ error: 'No se puede eliminar una evidencia aprobada' });
-        }
-
         const { documentoId } = req.query;
 
         if (documentoId && documentoId !== 'legacy') {
