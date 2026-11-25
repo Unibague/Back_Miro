@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const axios = require("axios");
 const ExcelJS = require("exceljs");
 const CnaPlantilla = require("../models/cnaPlantillas");
 const SniesTemplate = require("../models/sniesTemplates");
@@ -210,6 +209,7 @@ const collectDocentesByPeriod = async (sniesTemplates, email, advertencias) => {
       const tipoDocHeader = findHeader(headers, ["idtipodocumento"]);
       const tituloHeader = findHeader(headers, ["titulorecibido"]);
       const paisHeader = findHeader(headers, ["idpaisinstitucionestudio"]);
+      const programaHeader = findHeader(headers, ["programa", "programaodependencia"]);
       const porcentajeHeaders = Object.fromEntries(
         Object.entries(PORCENTAJES_SNIES).map(([campo, nombres]) => [campo, findHeader(headers, nombres)])
       );
@@ -231,6 +231,9 @@ const collectDocentesByPeriod = async (sniesTemplates, email, advertencias) => {
         if (nivelHeader && !docente.nivel) docente.nivel = row[nivelHeader];
         if (tituloHeader && !docente.titulo) docente.titulo = row[tituloHeader];
         if (paisHeader && !docente.pais) docente.pais = row[paisHeader];
+        if (programaHeader && !docente.dependencia && !isBlankValue(row[programaHeader])) {
+          docente.dependencia = String(row[programaHeader]).trim();
+        }
         if (contratoHeader && !docente.contrato) docente.contrato = row[contratoHeader];
         if (dedicacionHeader && !docente.dedicacion) docente.dedicacion = row[dedicacionHeader];
         Object.entries(porcentajeHeaders).forEach(([campo, header]) => {
@@ -254,8 +257,6 @@ const collectDocentesByPeriod = async (sniesTemplates, email, advertencias) => {
 const HISTORICO_CAMPOS = {
   contrato: {
     documento: ["documento"],
-    nombre: ["nombre identificado"],
-    dependencia: ["programa o dependencia"],
     contrato: ["tipo contrato"],
     dedicacion: ["dedicacion"],
     porcDocencia: ["porcent docencia"],
@@ -266,7 +267,6 @@ const HISTORICO_CAMPOS = {
   },
   estudio: {
     documento: ["documento"],
-    nombre: ["nombre identificado"],
     nivel: ["max nivel formacion"],
     titulo: ["titulo recibido"],
     pais: ["pais estudio"],
@@ -313,7 +313,7 @@ const indicesHistorico = (headers, campos) => {
   return indices;
 };
 
-// Devuelve { byPeriod, nombres, archivos } a partir de los archivos de histórico docentes
+// Devuelve { byPeriod, archivos } a partir de los archivos de histórico docentes
 const collectDocentesFromHistorico = async () => {
   const archivos = await HistoricoDocentes.find({ active: { $ne: false }, file_type: "excel" })
     .select("file_name sheets createdAt storage rows_source")
@@ -321,7 +321,6 @@ const collectDocentesFromHistorico = async () => {
     .lean();
 
   const byPeriod = new Map();
-  const nombres = new Map();
   const usados = [];
 
   for (const archivo of archivos) {
@@ -360,15 +359,12 @@ const collectDocentesFromHistorico = async () => {
           }
         });
         docentes.set(documento, docente);
-
-        const nombre = String(get("nombre") ?? "").trim();
-        if (nombre && norm(nombre) !== "no identificado") nombres.set(documento, nombre);
       });
     }
     if (usado) usados.push(archivo.file_name);
   }
 
-  return { byPeriod, nombres, archivos: usados };
+  return { byPeriod, archivos: usados };
 };
 
 // Completa la información SNIES de Miró con el histórico:
@@ -407,26 +403,82 @@ const mergeHistoricoDocentes = (byPeriod, historico) => {
   return periodosCompletados;
 };
 
-// Integra: cédula → { full_name, dep_code }
-const getIntegraUsersByIdentification = async (advertencias) => {
-  if (!process.env.USERS_ENDPOINT) {
-    advertencias.push("No está configurado USERS_ENDPOINT: no se pudieron completar nombres ni dependencias de los profesores.");
-    return null;
-  }
-  try {
-    const response = await axios.get(process.env.USERS_ENDPOINT, { timeout: 20000 });
-    const users = Array.isArray(response.data) ? response.data : [];
-    return users.reduce((acc, user) => {
-      if (user?.identification) acc.set(String(user.identification).trim(), user);
-      return acc;
-    }, new Map());
-  } catch (error) {
-    advertencias.push(`No se pudo consultar Integra para nombres y dependencias: ${error.message}`);
-    return null;
-  }
+// ── Histórico Participantes (módulo Consulta de Información) ─────────────────
+//
+// Maestro de personas de SNIES (PARTICIPANTE): una fila por documento, con
+// ID_PARTICIPANTE, nombres y apellidos. Una persona puede tener varios
+// documentos (TI y luego CC) con el mismo ID_PARTICIPANTE, por eso el nombre
+// se busca por el participante y no solo por el número de documento.
+
+const PARTICIPANTE_CAMPOS = {
+  participante: ["id_participante"],
+  documento: ["num_documento"],
+  primerNombre: ["primer_nombre"],
+  segundoNombre: ["segundo_nombre"],
+  primerApellido: ["primer_apellido"],
+  segundoApellido: ["segundo_apellido"],
 };
 
-// Dependencia seleccionada + todas sus dependencias hijas
+const esHojaParticipantes = (headers) => {
+  const normalized = headers.map((header) => norm(header));
+  return ["id_participante", "num_documento", "primer_nombre", "primer_apellido"].every((h) => normalized.includes(h));
+};
+
+// Devuelve { nombres: Map(documento → "Nombres Apellidos"), archivos }
+const collectParticipantes = async () => {
+  const archivos = await HistoricoDocentes.find({
+    active: { $ne: false },
+    file_type: "excel",
+    "sheets.headers": { $in: ["ID_PARTICIPANTE", "id_participante"] },
+  })
+    .select("file_name sheets.name sheets.headers sheets.totalRows createdAt storage rows_source")
+    .sort({ createdAt: 1 }) // los más recientes sobrescriben a los anteriores
+    .lean();
+
+  const documentoAParticipante = new Map();
+  const nombrePorParticipante = new Map();
+  const usados = [];
+
+  for (const archivo of archivos) {
+    let usado = false;
+    const sheets = archivo.sheets || [];
+    for (let sheetIndex = 0; sheetIndex < sheets.length; sheetIndex++) {
+      const headers = sheets[sheetIndex].headers || [];
+      if (!esHojaParticipantes(headers)) continue;
+      const idx = indicesHistorico(headers, PARTICIPANTE_CAMPOS);
+      usado = true;
+
+      await forEachSheetRow(archivo, sheetIndex, (row) => {
+        const get = (campo) =>
+          String((idx[campo] >= 0 && Array.isArray(row) ? row[idx[campo]] : row?.[headers[idx[campo]]]) ?? "").trim();
+        const documento = get("documento");
+        if (!documento) return;
+        const participante = get("participante") || `doc:${documento}`;
+        documentoAParticipante.set(documento, participante);
+        const nombre = ["primerNombre", "segundoNombre", "primerApellido", "segundoApellido"]
+          .map(get)
+          .filter(Boolean)
+          .join(" ");
+        if (nombre) nombrePorParticipante.set(participante, nombre);
+      });
+    }
+    if (usado) usados.push(archivo.file_name);
+  }
+
+  const nombres = new Map();
+  documentoAParticipante.forEach((participante, documento) => {
+    const nombre = nombrePorParticipante.get(participante);
+    if (nombre) nombres.set(documento, nombre);
+  });
+  return { nombres, archivos: usados };
+};
+
+// Nombre de dependencia comparable: SNIES trae "PROGRAMA DERECHO" y el
+// catálogo de dependencias "DERECHO".
+const dependenciaKey = (value = "") => compactName(String(value).replace(/^\s*programa\s+/i, ""));
+
+// Dependencia seleccionada + todas sus dependencias hijas (por nombre, porque
+// los datos de SNIES y del histórico traen el nombre, no el código)
 const getDependencyTree = async (depCode) => {
   const all = await Dependency.find({}).select("dep_code dep_father name").lean();
   const codes = new Set([depCode]);
@@ -440,7 +492,7 @@ const getDependencyTree = async (depCode) => {
       }
     });
   }
-  return codes;
+  return new Set(all.filter((dep) => codes.has(dep.dep_code)).map((dep) => dependenciaKey(dep.name)));
 };
 
 // ── Escritura en el Excel CNA ────────────────────────────────────────────────
@@ -658,7 +710,7 @@ const countryName = (() => {
   };
 })();
 
-const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistorico, dependencyNames, advertencias) => {
+const fillProfesoresDetallado = (workbook, period, nombresParticipantes, advertencias) => {
   const worksheet = findWorksheet(workbook, /profesores detallado/);
   if (!worksheet) {
     advertencias.push("La plantilla no tiene la hoja \"Profesores Detallado\".");
@@ -709,9 +761,8 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
 
   const menu = getMenuOptions(workbook);
   const templateHasMq = menu.nivel.some((option) => NIVEL_MENU_MATCH.mq1(norm(option)));
-  // Nombre: Integra y, si no está allí, el del Histórico Docentes
-  const nombreDe = (documento) =>
-    integraUsers?.get(documento)?.full_name || nombresHistorico?.get(documento) || "";
+  // Nombre: Histórico Participantes (maestro de personas de SNIES)
+  const nombreDe = (documento) => nombresParticipantes?.get(documento) || "";
   const docentes = [...period.docentes.values()].sort((a, b) =>
     nombreDe(a.documento).localeCompare(nombreDe(b.documento), "es")
   );
@@ -720,7 +771,6 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
   let sinPorcentajes = 0;
   docentes.forEach((docente, index) => {
     const row = worksheet.getRow(headerRow + 1 + index);
-    const integra = integraUsers?.get(docente.documento);
     const nombre = nombreDe(docente.documento);
     const nivelKey = nivelSniesToKey(docente.nivel, templateHasMq);
     const setFormulaResult = (col, result) => {
@@ -744,10 +794,7 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
     set(cols.nivel, nivelKey ? pickOption(menu.nivel, NIVEL_MENU_MATCH[nivelKey]) : "");
     set(cols.titulo, docente.titulo || "");
     set(cols.pais, countryName(docente.pais));
-    set(
-      cols.dependencia,
-      (integra?.dep_code ? dependencyNames.get(String(integra.dep_code)) : "") || docente.dependencia || ""
-    );
+    set(cols.dependencia, docente.dependencia || "");
     set(cols.contrato, contratoMenuValue(menu.contrato, docente));
     set(cols.dedicacion, dedicacionMenuValue(menu.dedicacion, docente));
     // La Universidad tiene un solo campus: todos los profesores van en el 1
@@ -768,7 +815,7 @@ const fillProfesoresDetallado = (workbook, period, integraUsers, nombresHistoric
   });
 
   if (sinNombre > 0) {
-    advertencias.push(`Profesores Detallado: ${sinNombre} profesor(es) no se encontraron en Integra ni en el Histórico Docentes, quedan sin nombre.`);
+    advertencias.push(`Profesores Detallado: ${sinNombre} profesor(es) no se encontraron en el Histórico Participantes, quedan sin nombre.`);
   }
   if (sinPorcentajes > 0) {
     advertencias.push(`Profesores Detallado: ${sinPorcentajes} profesor(es) no tienen porcentajes de dedicación en SNIES ni en el Histórico Docentes, quedan sin horas.`);
@@ -1321,11 +1368,9 @@ controller.generarPlantilla = async (req, res) => {
     const byPeriod = await collectDocentesByPeriod(sniesTemplates, email, advertencias);
 
     // Histórico Docentes (Consulta de Información): completa lo que SNIES no trae
-    let nombresHistorico = null;
     let historico = null;
     if (usarHistorico !== false) {
       historico = await collectDocentesFromHistorico();
-      nombresHistorico = historico.nombres;
       const completados = mergeHistoricoDocentes(byPeriod, historico);
       if (historico.archivos.length && completados.length) {
         const completos = completados.filter((p) => !p.includes("("));
@@ -1377,39 +1422,33 @@ controller.generarPlantilla = async (req, res) => {
       return res.status(400).json({ error: "No hay información SNIES para los períodos seleccionados." });
     }
 
-    const needsIntegra = byPeriod.size > 0;
-    const integraUsers = needsIntegra ? await getIntegraUsersByIdentification(advertencias) : null;
-
-    // Filtro opcional por dependencia (útil para la plantilla de programa)
-    if (depCode) {
-      if (!integraUsers) {
-        return res.status(400).json({
-          error: "No se puede filtrar por dependencia porque no fue posible consultar Integra.",
-        });
-      }
-      const allowed = await getDependencyTree(String(depCode));
-      byPeriod.forEach((period) => {
-        period.docentes.forEach((docente, documento) => {
-          const dep = integraUsers.get(documento)?.dep_code;
-          if (!dep || !allowed.has(String(dep))) period.docentes.delete(documento);
-        });
+    // Filtro opcional por dependencia (útil para la plantilla de programa):
+    // por el programa o dependencia que SNIES reporta para cada docente.
+    const allowedDeps = depCode ? await getDependencyTree(String(depCode)) : null;
+    const filtrarPorDependencia = (period) => {
+      if (!allowedDeps || !period) return;
+      period.docentes.forEach((docente, documento) => {
+        if (!allowedDeps.has(dependenciaKey(docente.dependencia))) period.docentes.delete(documento);
       });
-    }
+    };
+    byPeriod.forEach(filtrarPorDependencia);
 
     // Profesores Detallado: siempre el último período con docentes (2026-I,
     // por ejemplo), aunque no esté entre los períodos seleccionados.
     const detalladoPeriod = await latestDocentesPeriod(byPeriod, historico, email, advertencias);
-    if (depCode && detalladoPeriod && integraUsers) {
-      const allowed = await getDependencyTree(String(depCode));
-      detalladoPeriod.docentes.forEach((docente, documento) => {
-        const dep = integraUsers.get(documento)?.dep_code;
-        if (!dep || !allowed.has(String(dep))) detalladoPeriod.docentes.delete(documento);
-      });
-    }
+    filtrarPorDependencia(detalladoPeriod);
 
-    const dependencyNames = new Map(
-      (await Dependency.find({}).select("dep_code name").lean()).map((dep) => [String(dep.dep_code), dep.name])
-    );
+    // Histórico Participantes (Consulta de Información): nombres por cédula
+    let nombresParticipantes = null;
+    if (detalladoPeriod?.docentes.size || byPeriod.size) {
+      const participantes = await collectParticipantes();
+      nombresParticipantes = participantes.nombres;
+      if (participantes.archivos.length) {
+        notas.push(`Nombres de los profesores tomados del Histórico Participantes de Consulta de Información (${participantes.archivos.join(", ")}).`);
+      } else {
+        advertencias.push("No hay un Histórico Participantes cargado en Consulta de Información: los profesores quedan sin nombre.");
+      }
+    }
 
     const templateBuffer = await downloadDriveFileBuffer(plantilla.drive_file_id);
     const workbook = new ExcelJS.Workbook();
@@ -1465,14 +1504,7 @@ controller.generarPlantilla = async (req, res) => {
       fillProfesoresResumen(workbook, byPeriod, advertencias);
       const periodoDetallado = detalladoPeriod || periodosDocentes[periodosDocentes.length - 1];
       notas.push(`Profesores Detallado: docentes del período ${periodoDetallado.year}-${periodoDetallado.semester === 1 ? "I" : "II"} (el último con información), con sus horas semanales sobre un total de ${HORAS_SEMANA}.`);
-      fillProfesoresDetallado(
-        workbook,
-        periodoDetallado,
-        integraUsers,
-        nombresHistorico,
-        dependencyNames,
-        advertencias
-      );
+      fillProfesoresDetallado(workbook, periodoDetallado, nombresParticipantes, advertencias);
       hojas.push("Profesores Resúmen", "Profesores Detallado");
     } else {
       advertencias.push("Profesores: las plantillas SNIES de los períodos seleccionados no tienen información de docentes.");

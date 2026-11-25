@@ -237,6 +237,40 @@ const getProgramasConLinea = async () => {
         .sort((a, b) => a.nombre.localeCompare(b.nombre));
 };
 
+/**
+ * Facultad(es) a las que pertenecen unas dependencias según el organigrama
+ * (subiendo desde la unidad vinculada a cada dep_code), con los dep_code de
+ * toda su rama y los nombres normalizados de sus programas. Sirve para que
+ * una unidad vea lo de su facultad completa (p. ej. un área ve los programas
+ * de las otras áreas de su facultad). Devuelve null si ninguna dependencia
+ * cuelga de una facultad.
+ */
+const getAlcanceFacultad = async (depCodes = []) => {
+    const codigos = new Set(depCodes.filter(Boolean).map(String));
+    if (!codigos.size) return null;
+    const nodos = await getAll();
+    const porId = new Map(nodos.map((n) => [String(n._id), n]));
+
+    const facultadDe = (nodo) => {
+        let actual = nodo;
+        while (actual && actual.tipo !== 'Facultad') {
+            actual = actual.parent ? porId.get(String(actual.parent)) : null;
+        }
+        return actual ? String(actual._id) : null;
+    };
+
+    const facultades = new Set(
+        nodos.filter((n) => n.dep_code && codigos.has(n.dep_code)).map(facultadDe).filter(Boolean)
+    );
+    if (!facultades.size) return null;
+
+    const rama = nodos.filter((n) => facultades.has(facultadDe(n)));
+    return {
+        dep_codes: new Set(rama.map((n) => n.dep_code).filter(Boolean)),
+        programas: new Set(rama.filter((n) => n.tipo === 'Programa').map((n) => normalizar(n.nombre))),
+    };
+};
+
 const validarPadre = async (id, parentId) => {
     if (!parentId) return;
     if (id && String(parentId) === String(id)) {
@@ -362,6 +396,7 @@ module.exports = {
     getDescendantIds,
     getRamaPorDepCode,
     getProgramasConLinea,
+    getAlcanceFacultad,
     create,
     update,
     remove,

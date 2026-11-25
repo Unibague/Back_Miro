@@ -26,6 +26,7 @@ const simpleCache = require('../helpers/simpleCache');
 const axios = require('axios');
 const { addStudentProgramColumn } = require('../services/studentsDirectory');
 const { buildResumenArchivo } = require('../services/historicoResumen');
+const organigramaService = require('../services/organigrama');
 
 const publTempController = {};
 
@@ -969,6 +970,22 @@ const getEntrySenderEmail = (entry = {}) =>
 const isEntryVisibleToProducer = (entry, dependencyCodes = [], email = '') =>
   dependencyCodes.includes(getEntryDependencyCode(entry)) ||
   Boolean(email && getEntrySenderEmail(entry) === email);
+
+// Fila de otra dependencia que se muestra por facultad (ver
+// getFilledDataMergedForDimension): su programa académico debe pertenecer a
+// la facultad del usuario; si la fila no trae programa, cuenta la dependencia
+// que la envió.
+const isRowInFacultad = (row, entry) => {
+  const alcance = entry._alcanceFacultad;
+  if (!alcance) return true;
+  const keys = Object.keys(row);
+  const programKey = keys.find(key => key.startsWith('PROGRAMA_ACAD')) || keys.find(key => key.startsWith('PROGRAMA'));
+  const programa = programKey
+    ? organigramaService.normalizar(String(row[programKey] ?? '').replace(/^\s*\d+\s*-\s*/, '')).replace(/^programa /, '')
+    : '';
+  if (programa) return alcance.programas.has(programa);
+  return alcance.dep_codes.has(getEntryDependencyCode(entry));
+};
 
 const hasProducerDataConfirmation = (publishedTemplate, email = '', dependencyCodes = []) =>
   (publishedTemplate?.data_confirmations || []).some((confirmation) => (
@@ -3013,9 +3030,23 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
       );
 
       if (!isEncargado && !confirmedExistingData) {
-        filteredLoadedData = filteredLoadedData.filter(data =>
-          isEntryVisibleToProducer(data, allUserDependencies, email)
-        );
+        // Plantillas con QR: el productor autorizado para generar el QR ve,
+        // además de lo propio, lo que otras dependencias enviaron para
+        // programas de su misma facultad (según el organigrama). Los demás
+        // productores solo ven lo que enviaron. Esas filas se filtran por
+        // programa más abajo.
+        const qrAuthorizedIds = (template.template?.qr_authorized_producers || []).map(id => id.toString());
+        const tieneQr = template.template?.allows_qr === true &&
+          userDepIds.some(id => qrAuthorizedIds.includes(id));
+        const alcanceFacultad = tieneQr
+          ? await organigramaService.getAlcanceFacultad(allUserDependencies)
+          : null;
+        filteredLoadedData = filteredLoadedData.filter(data => {
+          if (isEntryVisibleToProducer(data, allUserDependencies, email)) return true;
+          if (!alcanceFacultad) return false;
+          data._alcanceFacultad = alcanceFacultad;
+          return true;
+        });
       }
     } else if (filterByUserDependency === 'true' && userRole === 'Responsable') {
       // Obtener todas las dependencias del usuario
@@ -3125,8 +3156,10 @@ publTempController.getFilledDataMergedForDimension = async (req, res) => {
 
 
        console.log('INFO CARGADA', finalData);
-    
-      return finalData.filter(hasMergedRowInformation);
+
+      return finalData
+        .filter(hasMergedRowInformation)
+        .filter(row => isRowInFacultad(row, data));
     }));
     
     data = data.flat().filter(hasMergedRowInformation);
@@ -3460,6 +3493,24 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
     console.log(`Templates after member verification: ${finalFilteredTemplates.length} of ${filteredTemplates.length}`);
     console.log('=== DEBUG END ===\n');
 
+    // ¿Le falta cargar la plantilla Participante? Se calcula aparte de la
+    // búsqueda, la categoría y la paginación: el aviso de las plantillas SNIES
+    // que dependen de ella solo debe salir mientras Participante esté pendiente.
+    const participanteTemplates = await PublishedTemplate.find({
+      name: { $regex: /^\s*participantes?(\s*-\s*\d{4}[a-z]?)?\s*$/i },
+      'template.producers': { $in: dependencyIds },
+      'template.active': true,
+      ...(periodId && { period: periodId }),
+    }).select('name loaded_data data_confirmations template.producers').lean();
+    const participantePendiente = participanteTemplates.some((template) => {
+      const producerIds = (template.template?.producers || []).map(id => id.toString());
+      const isMember = userMemberDependencies.some(dep => producerIds.includes(dep._id.toString()));
+      const hasLoadedData =
+        hasProducerDataConfirmation(template, email, dependenciesToQuery) ||
+        (template.loaded_data || []).some((data) => isEntryVisibleToProducer(data, dependenciesToQuery, email));
+      return isMember && !hasLoadedData;
+    });
+
     const total = finalFilteredTemplates.length;
     const paginatedTemplates = finalFilteredTemplates.slice(skip, skip + limitNumber);
 
@@ -3504,6 +3555,7 @@ publTempController.getAvailableTemplatesToProductor = async (req, res) => {
       total,
       page: pageNumber,
       pages: Math.ceil(total / limitNumber),
+      participantePendiente,
     });
   } catch (error) {
     console.error('Error fetching available templates:', error);

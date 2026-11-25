@@ -8,6 +8,7 @@ const Validator = require("./validators");
 const mongoose = require("mongoose");
 const UserService = require("../services/users");
 const Dependency = require('../models/dependencies');
+const Category = require('../models/categories');
 const AuditLogger = require('../services/auditLogger');
 const { sanitizeTemplateDropdownPayload } = require('../helpers/workbookDropdownSanitizer');
 const { syncTemplateCategories } = require('../helpers/templateCategorySync');
@@ -1008,7 +1009,14 @@ templateController.deletePlantilla = async (req, res) => {
     }
     
     const plantillaEliminada = await Template.findByIdAndDelete(id);
-    
+
+    // Quitar la plantilla eliminada de las categorías que la referencian
+    try {
+      await Category.updateMany({}, { $pull: { templates: { templateId: id } } });
+    } catch (categoryError) {
+      console.warn('Category cleanup failed (non-critical):', categoryError.message);
+    }
+
     // Registrar en auditoría (non-blocking)
     try {
       const userEmail = req.body.userEmail || req.query.email || 'user';
